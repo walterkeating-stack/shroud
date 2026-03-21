@@ -57,4 +57,11 @@ export interface ShroudConfig {
   auditEnabled: boolean;
   logMappings: boolean;
   customPatterns: Array<{ name: string; pattern: string; category?: string }>;
+  // Verbose audit logging
+  verboseLogging: boolean;
+  auditLogFormat: "human" | "json";
+  auditIncludeProofHashes: boolean;
+  auditHashSalt: string;
+  auditHashTruncate: number;
+  auditMaxFakesSample: number;
 }

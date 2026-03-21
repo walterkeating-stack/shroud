@@ -1,4 +1,4 @@
-import { describe, test, expect } from "vitest";
+import { describe, test, expect, vi } from "vitest";
 
 import { ShroudConfig } from "../src/types.js";
 import { Obfuscator } from "../src/obfuscator.js";
@@ -15,6 +15,12 @@ const testConfig: ShroudConfig = {
   auditEnabled: false,
   logMappings: false,
   customPatterns: [],
+  verboseLogging: false,
+  auditLogFormat: "human",
+  auditIncludeProofHashes: false,
+  auditHashSalt: "",
+  auditHashTruncate: 12,
+  auditMaxFakesSample: 0,
 };
 
 /**
@@ -23,18 +29,19 @@ const testConfig: ShroudConfig = {
  */
 function createMockApi() {
   const handlers: Record<string, Function> = {};
+  const logLines: string[] = [];
   const api = {
     on(event: string, handler: Function) {
       handlers[event] = handler;
     },
     registerTool() {},
     logger: {
-      info() {},
-      warn() {},
-      error() {},
+      info(...args: any[]) { logLines.push(args.map(String).join(" ")); },
+      warn(...args: any[]) { logLines.push(args.map(String).join(" ")); },
+      error(...args: any[]) { logLines.push(args.map(String).join(" ")); },
     },
   };
-  return { api, handlers };
+  return { api, handlers, logLines };
 }
 
 describe("hooks - before_agent_start", () => {
@@ -276,5 +283,209 @@ describe("hooks - full flow with before_llm_send", () => {
     const deobfuscated = step2.transformResponse(llmOutput);
     expect(deobfuscated).toContain("john@acme.com");
     expect(deobfuscated).not.toContain(fakeEmail);
+  });
+});
+
+// =========================================================================
+// Verbose audit logging tests
+// =========================================================================
+
+describe("hooks - audit logging", () => {
+  const auditConfig: ShroudConfig = {
+    ...testConfig,
+    auditEnabled: true,
+    auditLogFormat: "human",
+    auditIncludeProofHashes: false,
+  };
+
+  test("no raw leakage: logs never contain real entity values", async () => {
+    const SECRET = "SECRET_MARKER_123@example.com";
+    const obf = new Obfuscator({
+      ...auditConfig,
+      auditIncludeProofHashes: true,
+      auditHashSalt: "test-salt",
+      auditMaxFakesSample: 5,
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const messages = [
+      { role: "user", content: `Contact ${SECRET} for details` },
+    ];
+    await handlers["before_llm_send"]({ messages });
+
+    // No log line should contain the raw secret value
+    for (const line of logLines) {
+      expect(line).not.toContain(SECRET);
+    }
+    // But audit lines should exist with counts/categories
+    const auditLines = logLines.filter((l) => l.includes("[shroud][audit]"));
+    expect(auditLines.length).toBeGreaterThanOrEqual(1);
+    expect(auditLines[0]).toContain("entities=");
+    expect(auditLines[0]).toContain("byCat=");
+  });
+
+  test("human format: emits line starting with [shroud][audit] req=", async () => {
+    const obf = new Obfuscator(auditConfig);
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const messages = [
+      { role: "user", content: "Email alice@secret.org and 10.0.0.1" },
+    ];
+    await handlers["before_llm_send"]({ messages });
+
+    const auditLines = logLines.filter((l) => l.includes("[shroud][audit] req="));
+    expect(auditLines.length).toBe(1);
+    expect(auditLines[0]).toMatch(/req=[0-9a-f]+/);
+    expect(auditLines[0]).toContain("entities=");
+    expect(auditLines[0]).toContain("touched=");
+    expect(auditLines[0]).toContain("blocks=");
+    expect(auditLines[0]).toContain("chars=");
+    expect(auditLines[0]).toContain("proof=off");
+  });
+
+  test("JSON format: emits valid JSON with expected fields", async () => {
+    const obf = new Obfuscator({
+      ...auditConfig,
+      auditLogFormat: "json",
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const messages = [
+      { role: "user", content: "Contact bob@corp.net please" },
+    ];
+    await handlers["before_llm_send"]({ messages });
+
+    const auditLines = logLines.filter((l) => l.includes("shroud.audit.before_llm_send"));
+    expect(auditLines.length).toBe(1);
+
+    const parsed = JSON.parse(auditLines[0]);
+    expect(parsed.event).toBe("shroud.audit.before_llm_send");
+    expect(parsed.req).toMatch(/^[0-9a-f]+$/);
+    expect(typeof parsed.totalEntities).toBe("number");
+    expect(parsed.totalEntities).toBeGreaterThan(0);
+    expect(typeof parsed.byCategory).toBe("object");
+    expect(parsed.proof.enabled).toBe(false);
+  });
+
+  test("proof hashes: off → proof=off, on → h_in/h_out with correct truncation", async () => {
+    // Proof OFF
+    const obf1 = new Obfuscator(auditConfig);
+    const { api: api1, handlers: h1, logLines: log1 } = createMockApi();
+    registerHooks(api1, obf1);
+    await h1["before_llm_send"]({
+      messages: [{ role: "user", content: "test@example.com" }],
+    });
+    const auditOff = log1.filter((l) => l.includes("[shroud][audit] req="));
+    expect(auditOff[0]).toContain("proof=off");
+    expect(auditOff[0]).not.toContain("h_in=");
+
+    // Proof ON with custom truncation
+    const obf2 = new Obfuscator({
+      ...auditConfig,
+      auditIncludeProofHashes: true,
+      auditHashSalt: "salt123",
+      auditHashTruncate: 8,
+    });
+    const { api: api2, handlers: h2, logLines: log2 } = createMockApi();
+    registerHooks(api2, obf2);
+    await h2["before_llm_send"]({
+      messages: [{ role: "user", content: "test@example.com" }],
+    });
+    const auditOn = log2.filter((l) => l.includes("[shroud][audit] req="));
+    expect(auditOn[0]).toContain("proof=on");
+    // h_in and h_out should be exactly 8 hex chars
+    const hashMatch = auditOn[0].match(/h_in=([0-9a-f]+) h_out=([0-9a-f]+)/);
+    expect(hashMatch).not.toBeNull();
+    expect(hashMatch![1].length).toBe(8);
+    expect(hashMatch![2].length).toBe(8);
+  });
+
+  test("behavior unchanged: obfuscation identical whether audit on or off", async () => {
+    const inputMessages = [
+      { role: "user", content: "Contact alice@secret.org and 10.0.0.1" },
+    ];
+
+    // Audit OFF
+    const obf1 = new Obfuscator(testConfig);
+    const { api: api1, handlers: h1 } = createMockApi();
+    registerHooks(api1, obf1);
+    const r1 = await h1["before_llm_send"]({ messages: inputMessages });
+
+    // Audit ON
+    const obf2 = new Obfuscator(auditConfig);
+    const { api: api2, handlers: h2 } = createMockApi();
+    registerHooks(api2, obf2);
+    const r2 = await h2["before_llm_send"]({ messages: inputMessages });
+
+    // Both should produce the same obfuscated output (same key + salt = deterministic)
+    expect(r1.messages[0].content).toBe(r2.messages[0].content);
+  });
+
+  test("verboseLogging enables audit output same as auditEnabled", async () => {
+    const obf = new Obfuscator({
+      ...testConfig,
+      auditEnabled: false,
+      verboseLogging: true,
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    await handlers["before_llm_send"]({
+      messages: [{ role: "user", content: "test@example.com" }],
+    });
+
+    const auditLines = logLines.filter((l) => l.includes("[shroud][audit] req="));
+    expect(auditLines.length).toBe(1);
+  });
+
+  test("fakesSample includes only fake tokens, limited to N", async () => {
+    const obf = new Obfuscator({
+      ...auditConfig,
+      auditLogFormat: "json",
+      auditMaxFakesSample: 2,
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    await handlers["before_llm_send"]({
+      messages: [
+        { role: "user", content: "Email alice@a.com and bob@b.com and carol@c.com" },
+      ],
+    });
+
+    const auditLines = logLines.filter((l) => l.includes("shroud.audit.before_llm_send"));
+    const parsed = JSON.parse(auditLines[0]);
+    expect(parsed.fakesSample).toBeDefined();
+    expect(parsed.fakesSample.length).toBeLessThanOrEqual(2);
+    // Fakes should not be real values
+    for (const fake of parsed.fakesSample) {
+      expect(fake).not.toContain("alice@a.com");
+      expect(fake).not.toContain("bob@b.com");
+      expect(fake).not.toContain("carol@c.com");
+    }
+  });
+
+  test("response deobfuscation audit log emitted", async () => {
+    const obf = new Obfuscator(auditConfig);
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate to populate the store
+    const obResult = obf.obfuscate("john@acme.com");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+
+    const result = await handlers["before_llm_send"]({
+      messages: [{ role: "user", content: "test" }],
+    });
+
+    // Simulate LLM response with fake value
+    result.transformResponse(`The email is ${fakeEmail}`);
+
+    const deobLines = logLines.filter((l) => l.includes("deobfuscations="));
+    expect(deobLines.length).toBe(1);
+    expect(deobLines[0]).toContain("deobfuscations=1");
   });
 });

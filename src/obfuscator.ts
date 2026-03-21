@@ -231,6 +231,54 @@ export class Obfuscator {
     return result;
   }
 
+  /**
+   * Deobfuscate text and return replacement count alongside the result.
+   * Used by audit logging to report deobfuscation stats without logging text.
+   */
+  deobfuscateWithStats(text: string): { text: string; replacementCount: number } {
+    const startTime = Date.now();
+
+    // Strip canary tokens
+    if (this._canary) {
+      const prefix = this.config.canaryPrefix.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&",
+      );
+      const canaryRe = new RegExp(
+        `\\n?<!-- ${prefix}-[a-f0-9]+ -->`,
+        "g",
+      );
+      text = text.replace(canaryRe, "");
+    }
+
+    const allMappings = this._store.allMappings();
+    if (allMappings.size === 0) return { text, replacementCount: 0 };
+
+    const reverse = new Map<string, string>();
+    for (const [real, fake] of allMappings) {
+      reverse.set(fake, real);
+    }
+
+    let result = text;
+    const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
+    let replacementCount = 0;
+    for (const fake of fakes) {
+      const real = reverse.get(fake)!;
+      const parts = result.split(fake);
+      if (parts.length > 1) {
+        replacementCount += parts.length - 1;
+        result = parts.join(real);
+      }
+    }
+
+    if (this._audit && replacementCount > 0) {
+      const elapsed = Date.now() - startTime;
+      this._audit.logDeobfuscation(replacementCount, undefined, elapsed);
+    }
+
+    return { text: result, replacementCount };
+  }
+
   /** Clear all mappings and start fresh. */
   reset(): void {
     this._store.clear();
