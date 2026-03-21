@@ -21,6 +21,20 @@ export const FILE_NAMES = [
   "app.toml", "file.dat", "runner.sh", "artifact.tar.gz",
 ];
 
+/** Compute Luhn check digit for a string of digits. */
+function luhnCheckDigit(digits: string): number {
+  let sum = 0;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let d = parseInt(digits[i], 10);
+    if ((digits.length - i) % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return (10 - (sum % 10)) % 10;
+}
+
 export class CodeGenerator implements BaseGenerator {
   readonly categories = [
     Category.API_KEY,
@@ -52,18 +66,17 @@ export class CodeGenerator implements BaseGenerator {
     const h = createHash("sha256").update(buf).digest("hex");
 
     if (original) {
-      // Preserve prefix pattern (e.g., "sk-prod-" -> "sk-shroud-")
-      const prefixMatch = original.match(/^([a-zA-Z]+[-_])/);
+      // Preserve prefix pattern (e.g., "sk-prod-" -> "sk-test-")
+      const prefixMatch = original.match(/^([a-zA-Z]+[-_](?:[a-zA-Z]+[-_])?)/);
       if (prefixMatch) {
         const prefix = prefixMatch[1];
-        // Match original length
         const remainingLen = Math.max(8, original.length - prefix.length);
         const fakeBody = h.slice(0, remainingLen);
-        return `${prefix}shroud-${fakeBody}`;
+        return `${prefix}${fakeBody}`;
       }
     }
 
-    return `sk-shroud-${h.slice(0, 32)}`;
+    return `sk-test-${h.slice(0, 32)}`;
   }
 
   _fakeFilePath(seed: number, original: string): string {
@@ -116,10 +129,12 @@ export class CodeGenerator implements BaseGenerator {
   }
 
   _fakeCreditCard(seed: number, original: string): string {
-    // Use two seed portions to generate 16 digits without BigInt
+    // Generate 15 digits, then compute Luhn check digit for digit 16
     const part1 = String((seed & 0xffffffff) >>> 0).padStart(8, "0").slice(0, 8);
-    const part2 = String(((seed >>> 4) ^ 0x12345678) >>> 0).padStart(8, "0").slice(0, 8);
-    const digits = (part1 + part2).slice(0, 16).padStart(16, "0");
+    const part2 = String(((seed >>> 4) ^ 0x12345678) >>> 0).padStart(8, "0").slice(0, 7);
+    const first15 = (part1 + part2).slice(0, 15).padStart(15, "0");
+    const checkDigit = luhnCheckDigit(first15 + "0");
+    const digits = first15 + String(checkDigit);
 
     if (original) {
       // Detect separator
@@ -137,9 +152,15 @@ export class CodeGenerator implements BaseGenerator {
   }
 
   _fakeSsn(seed: number): string {
-    const n = seed % 1000000000;
-    const s = String(n).padStart(9, "0");
-    return `${s.slice(0, 3)}-${s.slice(3, 5)}-${s.slice(5, 9)}`;
+    // Avoid invalid area numbers: 000, 666, 900-999
+    let area = (seed % 898) + 1; // 1-898
+    if (area >= 666) area++; // skip 666 -> gives us 1-665, 667-899
+
+    // Avoid invalid group 00 and serial 0000
+    const group = (Math.floor(seed / 898) % 99) + 1; // 01-99
+    const serial = (Math.floor(seed / (898 * 99)) % 9999) + 1; // 0001-9999
+
+    return `${String(area).padStart(3, "0")}-${String(group).padStart(2, "0")}-${String(serial).padStart(4, "0")}`;
   }
 
   _fakePhone(seed: number, original: string): string {

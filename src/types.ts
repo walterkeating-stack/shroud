@@ -18,6 +18,12 @@ export enum Category {
   SNMP_COMMUNITY = "snmp_community",
   BGP_ASN = "bgp_asn",
   NETWORK_CREDENTIAL = "network_credential",
+  // Network infrastructure identifiers
+  VLAN_ID = "vlan_id",
+  INTERFACE_DESC = "interface_desc",
+  ROUTE_MAP = "route_map",
+  OSPF_ID = "ospf_id",
+  ACL_NAME = "acl_name",
   CUSTOM = "custom",
 }
 

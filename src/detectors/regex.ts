@@ -45,9 +45,11 @@ export interface PatternDef {
 
 /** All built-in patterns. */
 export const BUILTIN_PATTERNS: PatternDef[] = [
+  // --- Core PII ---
   {
     name: "email",
-    pattern: /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g,
+    // Stricter: local part must start/end with alnum, no consecutive dots
+    pattern: /\b[a-zA-Z0-9](?:[a-zA-Z0-9._%+\-]*[a-zA-Z0-9])?@[a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}\b/g,
     category: Category.EMAIL,
     confidence: 0.95,
   },
@@ -59,7 +61,8 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "ipv6",
-    pattern: /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,7}:\b|\b::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b/g,
+    // Full, compressed (::), and IPv4-mapped forms
+    pattern: /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,7}:(?:[0-9a-fA-F]{1,4})?(?::\b[0-9a-fA-F]{1,4})*\b|\b::(?:ffff:)?(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b|\b(?:[0-9a-fA-F]{1,4}:){1,5}:(?:[0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4}\b|\b::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b/g,
     category: Category.IP_ADDRESS,
     confidence: 0.9,
   },
@@ -87,6 +90,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     category: Category.SSN,
     confidence: 0.9,
   },
+  // --- API keys and tokens ---
   {
     name: "api_key_generic",
     pattern: /\b(?:sk|pk|api|key|token|secret|access)[-_][a-zA-Z0-9\-_]{20,}\b/gi,
@@ -100,6 +104,13 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.95,
   },
   {
+    name: "bearer_token",
+    pattern: /(?:Bearer\s+)([A-Za-z0-9\-_=]+\.?[A-Za-z0-9\-_=]*\.?[A-Za-z0-9\-_=]*)/g,
+    category: Category.API_KEY,
+    confidence: 0.9,
+  },
+  // --- URLs and paths ---
+  {
     name: "url",
     pattern: /https?:\/\/[^\s<>"')\]]+/g,
     category: Category.URL,
@@ -107,7 +118,8 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "file_path_unix",
-    pattern: /(?<!\w)(?:\/[\w.\-]+){2,}(?:\.\w+)?/g,
+    // Require at least 3 segments to avoid matching git diff /a/ /b/ paths
+    pattern: /(?<!\w)(?:\/[\w.\-]+){3,}(?:\.\w+)?/g,
     category: Category.FILE_PATH,
     confidence: 0.7,
   },
@@ -117,7 +129,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     category: Category.FILE_PATH,
     confidence: 0.8,
   },
-  // --- Network infrastructure patterns ---
+  // --- Network infrastructure ---
   {
     name: "mac_address",
     pattern: /\b(?:[0-9a-fA-F]{2}[:\-]){5}[0-9a-fA-F]{2}\b|\b(?:[0-9a-fA-F]{4}\.){2}[0-9a-fA-F]{4}\b/g,
@@ -136,9 +148,24 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
   },
+  // --- Cisco secrets and hashes ---
   {
     name: "cisco_enable_secret",
     pattern: /(?:enable\s+secret\s+\d+\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    name: "cisco_password_line",
+    // "password 7 XXXX" or "password 0 XXXX"
+    pattern: /(?:password\s+(?:[057]\s+))(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    name: "cisco_username_secret",
+    // "username admin secret 5 $1$..." or "username admin password 7 ..."
+    pattern: /(?:username\s+\S+\s+(?:secret|password)\s+\d+\s+)(\S+)/g,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
   },
@@ -149,8 +176,21 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 1.0,
   },
   {
+    name: "cisco_password_hash_type8",
+    pattern: /\$8\$[A-Za-z0-9./]+\$[A-Za-z0-9./+]+/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
     name: "cisco_password_hash_type9",
     pattern: /\$9\$[A-Za-z0-9./]+\$[A-Za-z0-9./+]+/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    name: "cisco_type7",
+    // Cisco type 7 obfuscated passwords: even-length hex starting with known salts
+    pattern: /(?:password\s+7\s+)([0-9A-Fa-f]{4,})/g,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
   },
@@ -161,10 +201,96 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 1.0,
   },
   {
+    name: "tacacs_key",
+    pattern: /(?:tacacs-server\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    name: "radius_key",
+    pattern: /(?:radius-server\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    name: "ntp_auth_key",
+    pattern: /(?:ntp\s+authentication-key\s+\d+\s+md5\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  // --- BGP / OSPF / routing ---
+  {
     name: "bgp_asn",
     pattern: /\b(?:router\s+bgp|remote-as|local-as|peer-as)\s+(\d{4,6})\b/gi,
     category: Category.BGP_ASN,
     confidence: 0.95,
+  },
+  {
+    name: "bgp_neighbor_password",
+    pattern: /(?:neighbor\s+\S+\s+password\s+(?:\d+\s+)?)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    name: "ospf_router_id",
+    pattern: /(?:router-id\s+)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/g,
+    category: Category.OSPF_ID,
+    confidence: 0.95,
+  },
+  {
+    name: "ospf_area",
+    // "area 0.0.0.1" or "area 1" style
+    pattern: /(?:area\s+)(\d{1,3}(?:\.\d{1,3}){3})\b/g,
+    category: Category.OSPF_ID,
+    confidence: 0.85,
+  },
+  {
+    name: "ospf_auth_key",
+    pattern: /(?:(?:ip\s+ospf\s+)?(?:authentication-key|message-digest-key\s+\d+\s+md5)\s+(?:\d+\s+)?)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  // --- VLAN ---
+  {
+    name: "vlan_name",
+    // "name VLAN_NAME" inside a vlan context, or "vlan 100" with a name
+    pattern: /(?:vlan\s+\d+\s*\n\s*name\s+)(\S+)/gm,
+    category: Category.VLAN_ID,
+    confidence: 0.9,
+  },
+  {
+    name: "vlan_range",
+    // "switchport trunk allowed vlan 100,200,300-400"
+    pattern: /(?:allowed\s+vlan\s+(?:add\s+)?)(\d[\d,\-]+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+  // --- Interface descriptions ---
+  {
+    name: "interface_description",
+    // "description LINK TO CUSTOMER-X" on an interface
+    pattern: /(?:^\s*description\s+)(.+)$/gm,
+    category: Category.INTERFACE_DESC,
+    confidence: 0.9,
+  },
+  // --- Route maps / ACLs ---
+  {
+    name: "route_map_name",
+    pattern: /(?:route-map\s+)(\S+)(?:\s+(?:permit|deny))?/g,
+    category: Category.ROUTE_MAP,
+    confidence: 0.85,
+  },
+  {
+    name: "prefix_list_name",
+    pattern: /(?:ip\s+prefix-list\s+)(\S+)/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
+  },
+  {
+    name: "acl_name",
+    pattern: /(?:ip\s+access-list\s+(?:standard|extended)\s+)(\S+)/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
   },
 ];
 

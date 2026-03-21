@@ -211,9 +211,12 @@ export class Obfuscator {
     let replacementCount = 0;
     for (const fake of fakes) {
       const real = reverse.get(fake)!;
-      while (result.includes(fake)) {
-        result = result.replace(fake, real);
-        replacementCount++;
+      // Use split+join for safe replacement — avoids infinite loops when
+      // the real value contains a substring matching another fake value.
+      const parts = result.split(fake);
+      if (parts.length > 1) {
+        replacementCount += parts.length - 1;
+        result = parts.join(real);
       }
     }
 
