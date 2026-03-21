@@ -10,7 +10,7 @@ import { Obfuscator } from "./obfuscator.js";
 import { registerHooks } from "./hooks.js";
 
 export default {
-  id: "shroud",
+  id: "openclaw-shroud",
   name: "Shroud",
   register(api: any) {
     const config = resolveConfig(api.pluginConfig);
