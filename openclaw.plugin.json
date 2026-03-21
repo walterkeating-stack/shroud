@@ -15,6 +15,12 @@
       "canaryEnabled": { "type": "boolean", "default": false, "description": "Inject tracking tokens to detect data leakage" },
       "canaryPrefix": { "type": "string", "default": "SHROUD-CANARY", "description": "Prefix for canary tokens" },
       "auditEnabled": { "type": "boolean", "default": false, "description": "Track obfuscation events with tamper-evident chain hashing" },
+      "verboseLogging": { "type": "boolean", "default": false, "description": "Alias for auditEnabled — enable verbose audit lines" },
+      "auditLogFormat": { "type": "string", "enum": ["human", "json"], "default": "human", "description": "Audit log output format" },
+      "auditIncludeProofHashes": { "type": "boolean", "default": false, "description": "Include salted SHA-256 proof hashes in audit lines" },
+      "auditHashSalt": { "type": "string", "default": "", "description": "Salt for proof hashes" },
+      "auditHashTruncate": { "type": "integer", "default": 12, "minimum": 4, "maximum": 64, "description": "Truncate proof hashes to N hex chars" },
+      "auditMaxFakesSample": { "type": "integer", "default": 0, "minimum": 0, "maximum": 20, "description": "Include up to N fake replacement values in audit log (0 = disabled)" },
       "logMappings": { "type": "boolean", "default": false, "description": "Log mapping table (debug only)" },
       "customPatterns": {
         "type": "array",
