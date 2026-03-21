@@ -230,6 +230,10 @@ function emitAuditLog(
     .map(([k, v]) => `${k}:${v}`)
     .join(",");
 
+  const modified = stats.inputChars !== stats.outputChars || stats.totalEntities > 0;
+  const charDelta = stats.outputChars - stats.inputChars;
+
+  // Always compute proof hashes when proofs enabled
   let proofHashIn = "";
   let proofHashOut = "";
   if (config.auditIncludeProofHashes) {
@@ -248,39 +252,40 @@ function emitAuditLog(
       event: "shroud.audit.before_llm_send",
       req: requestId,
       ts: new Date().toISOString(),
+      modified,
       totalEntities: stats.totalEntities,
       messagesTouched: stats.messagesTouched,
       blocksTouched: stats.blocksTouched,
       inputChars: stats.inputChars,
       outputChars: stats.outputChars,
+      charDelta,
       byCategory: stats.byCategory,
-      proof: {
-        enabled: config.auditIncludeProofHashes,
-        ...(config.auditIncludeProofHashes
-          ? { hashIn: proofHashIn, hashOut: proofHashOut }
-          : {}),
-      },
     };
+    if (config.auditIncludeProofHashes) {
+      obj.proofIn = proofHashIn;
+      obj.proofOut = proofHashOut;
+    }
     if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
       obj.fakesSample = stats.fakesSample;
     }
     logger?.info(JSON.stringify(obj));
   } else {
-    let line =
-      `[shroud][audit] req=${requestId}` +
-      ` entities=${stats.totalEntities}` +
-      ` touched=${stats.messagesTouched}/${totalMessages}` +
-      ` blocks=${stats.blocksTouched}` +
-      ` chars=${stats.inputChars}/${stats.outputChars}` +
-      ` byCat=${byCatStr || "none"}` +
-      ` proof=${config.auditIncludeProofHashes ? "on" : "off"}`;
+    const parts = [
+      `[shroud][audit] OBFUSCATE req=${requestId}`,
+      `entities=${stats.totalEntities}`,
+      `touched=${stats.messagesTouched}/${totalMessages}`,
+      `blocks=${stats.blocksTouched}`,
+      `chars=${stats.inputChars}->${stats.outputChars} (delta=${charDelta >= 0 ? "+" : ""}${charDelta})`,
+      `modified=${modified ? "YES" : "NO"}`,
+      `byCat=${byCatStr || "none"}`,
+    ];
     if (config.auditIncludeProofHashes) {
-      line += ` h_in=${proofHashIn} h_out=${proofHashOut}`;
+      parts.push(`proof_in=${proofHashIn} proof_out=${proofHashOut}`);
     }
     if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
-      line += ` fakes=${stats.fakesSample.join("|")}`;
+      parts.push(`fakes=[${stats.fakesSample.join("|")}]`);
     }
-    logger?.info(line);
+    logger?.info(parts.join(" | "));
   }
 }
 
@@ -296,12 +301,13 @@ function emitDeobfuscationAuditLog(
         event: "shroud.audit.deobfuscation",
         req: requestId,
         ts: new Date().toISOString(),
+        modified: replacementCount > 0,
         deobfuscations: replacementCount,
       }),
     );
   } else {
     logger?.info(
-      `[shroud][audit] req=${requestId} deobfuscations=${replacementCount}`,
+      `[shroud][audit] DEOBFUSCATE req=${requestId} | replacements=${replacementCount} | modified=${replacementCount > 0 ? "YES" : "NO"}`,
     );
   }
 }
