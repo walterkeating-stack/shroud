@@ -1,6 +1,6 @@
 {
   "name": "openclaw-shroud",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Native privacy obfuscation plugin for OpenClaw — deterministic fake values with deobfuscation",
   "type": "module",
   "main": "dist/index.js",
