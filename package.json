@@ -1,0 +1,30 @@
+{
+  "name": "shroud",
+  "version": "1.0.0",
+  "description": "Native privacy obfuscation plugin for OpenClaw — deterministic fake values with deobfuscation",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist/", "openclaw.plugin.json"],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit"
+  },
+  "keywords": ["openclaw", "openclaw-plugin", "privacy", "pii", "obfuscation"],
+  "author": "Shroud Maintainers",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.4",
+    "vitest": "^2.0",
+    "@types/node": "^20"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"]
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/walterkeating-stack/shroud.git"
+  }
+}
