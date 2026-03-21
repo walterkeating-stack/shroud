@@ -325,7 +325,7 @@ describe("hooks - audit logging", () => {
     expect(auditLines[0]).toContain("byCat=");
   });
 
-  test("human format: emits line starting with [shroud][audit] req=", async () => {
+  test("human format: emits line with OBFUSCATE, modified, char delta", async () => {
     const obf = new Obfuscator(auditConfig);
     const { api, handlers, logLines } = createMockApi();
     registerHooks(api, obf);
@@ -335,14 +335,14 @@ describe("hooks - audit logging", () => {
     ];
     await handlers["before_llm_send"]({ messages });
 
-    const auditLines = logLines.filter((l) => l.includes("[shroud][audit] req="));
+    const auditLines = logLines.filter((l) => l.includes("[shroud][audit] OBFUSCATE"));
     expect(auditLines.length).toBe(1);
     expect(auditLines[0]).toMatch(/req=[0-9a-f]+/);
     expect(auditLines[0]).toContain("entities=");
     expect(auditLines[0]).toContain("touched=");
     expect(auditLines[0]).toContain("blocks=");
-    expect(auditLines[0]).toContain("chars=");
-    expect(auditLines[0]).toContain("proof=off");
+    expect(auditLines[0]).toContain("delta=");
+    expect(auditLines[0]).toContain("modified=YES");
   });
 
   test("JSON format: emits valid JSON with expected fields", async () => {
@@ -367,10 +367,11 @@ describe("hooks - audit logging", () => {
     expect(typeof parsed.totalEntities).toBe("number");
     expect(parsed.totalEntities).toBeGreaterThan(0);
     expect(typeof parsed.byCategory).toBe("object");
-    expect(parsed.proof.enabled).toBe(false);
+    expect(parsed.modified).toBe(true);
+    expect(typeof parsed.charDelta).toBe("number");
   });
 
-  test("proof hashes: off → proof=off, on → h_in/h_out with correct truncation", async () => {
+  test("proof hashes: off → no proof_, on → proof_in/proof_out with correct truncation", async () => {
     // Proof OFF
     const obf1 = new Obfuscator(auditConfig);
     const { api: api1, handlers: h1, logLines: log1 } = createMockApi();
@@ -378,9 +379,8 @@ describe("hooks - audit logging", () => {
     await h1["before_llm_send"]({
       messages: [{ role: "user", content: "test@example.com" }],
     });
-    const auditOff = log1.filter((l) => l.includes("[shroud][audit] req="));
-    expect(auditOff[0]).toContain("proof=off");
-    expect(auditOff[0]).not.toContain("h_in=");
+    const auditOff = log1.filter((l) => l.includes("[shroud][audit] OBFUSCATE"));
+    expect(auditOff[0]).not.toContain("proof_in=");
 
     // Proof ON with custom truncation
     const obf2 = new Obfuscator({
@@ -394,10 +394,9 @@ describe("hooks - audit logging", () => {
     await h2["before_llm_send"]({
       messages: [{ role: "user", content: "test@example.com" }],
     });
-    const auditOn = log2.filter((l) => l.includes("[shroud][audit] req="));
-    expect(auditOn[0]).toContain("proof=on");
-    // h_in and h_out should be exactly 8 hex chars
-    const hashMatch = auditOn[0].match(/h_in=([0-9a-f]+) h_out=([0-9a-f]+)/);
+    const auditOn = log2.filter((l) => l.includes("[shroud][audit] OBFUSCATE"));
+    // proof_in and proof_out should be exactly 8 hex chars
+    const hashMatch = auditOn[0].match(/proof_in=([0-9a-f]+) proof_out=([0-9a-f]+)/);
     expect(hashMatch).not.toBeNull();
     expect(hashMatch![1].length).toBe(8);
     expect(hashMatch![2].length).toBe(8);
@@ -437,7 +436,7 @@ describe("hooks - audit logging", () => {
       messages: [{ role: "user", content: "test@example.com" }],
     });
 
-    const auditLines = logLines.filter((l) => l.includes("[shroud][audit] req="));
+    const auditLines = logLines.filter((l) => l.includes("[shroud][audit] OBFUSCATE"));
     expect(auditLines.length).toBe(1);
   });
 
@@ -484,8 +483,9 @@ describe("hooks - audit logging", () => {
     // Simulate LLM response with fake value
     result.transformResponse(`The email is ${fakeEmail}`);
 
-    const deobLines = logLines.filter((l) => l.includes("deobfuscations="));
+    const deobLines = logLines.filter((l) => l.includes("DEOBFUSCATE"));
     expect(deobLines.length).toBe(1);
-    expect(deobLines[0]).toContain("deobfuscations=1");
+    expect(deobLines[0]).toContain("replacements=1");
+    expect(deobLines[0]).toContain("modified=YES");
   });
 });
