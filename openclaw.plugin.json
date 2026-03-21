@@ -1,0 +1,42 @@
+{
+  "id": "shroud",
+  "name": "Shroud",
+  "version": "1.0.0",
+  "description": "Privacy obfuscation with deterministic fake values and deobfuscation — PII never reaches the LLM, tool calls still work",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "secretKey": { "type": "string", "description": "HMAC secret for deterministic mapping. Auto-generated if empty." },
+      "persistentSalt": { "type": "string", "description": "Fixed salt for cross-session consistency. Empty = random per session." },
+      "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0, "description": "Minimum detector confidence to obfuscate" },
+      "allowlist": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Values to never obfuscate" },
+      "denylist": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Values to always obfuscate" },
+      "canaryEnabled": { "type": "boolean", "default": false, "description": "Inject tracking tokens to detect data leakage" },
+      "canaryPrefix": { "type": "string", "default": "SHROUD-CANARY", "description": "Prefix for canary tokens" },
+      "auditEnabled": { "type": "boolean", "default": false, "description": "Track obfuscation events with tamper-evident chain hashing" },
+      "logMappings": { "type": "boolean", "default": false, "description": "Log mapping table (debug only)" },
+      "customPatterns": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "pattern": { "type": "string" },
+            "category": { "type": "string" }
+          },
+          "required": ["name", "pattern"]
+        },
+        "default": [],
+        "description": "User-defined regex patterns for custom PII detection"
+      }
+    }
+  },
+  "uiHints": {
+    "secretKey": { "label": "Secret Key", "help": "HMAC secret for deterministic mapping. Auto-generated if empty.", "sensitive": true },
+    "persistentSalt": { "label": "Persistent Salt", "help": "Fixed salt for cross-session mapping consistency." },
+    "minConfidence": { "label": "Min Confidence", "help": "Detection confidence threshold (0.0-1.0)" },
+    "canaryEnabled": { "label": "Enable Canary Tokens", "help": "Inject tracking tokens to detect PII leakage" },
+    "auditEnabled": { "label": "Enable Audit Log", "help": "Tamper-evident obfuscation event tracking" }
+  }
+}
