@@ -9,7 +9,9 @@
  * 5. message_sending     (async) -- deobfuscate outbound message content (fallback)
  */
 
+import { createHash, randomBytes } from "node:crypto";
 import { Obfuscator } from "./obfuscator.js";
+import { ShroudConfig, ObfuscationResult } from "./types.js";
 
 // Generic types for the OpenClaw API (we don't have the SDK as a dependency)
 export interface PluginApi {
@@ -27,6 +29,40 @@ export interface PluginApi {
     error(...args: any[]): void;
   };
 }
+
+// ---------------------------------------------------------------------------
+// Hashing utilities (audit proof hashes)
+// ---------------------------------------------------------------------------
+
+function sha256Hex(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+function safeHash(text: string, salt: string): string {
+  return sha256Hex(salt + text);
+}
+
+function truncateHash(hash: string, n: number): string {
+  return hash.slice(0, n);
+}
+
+// ---------------------------------------------------------------------------
+// Audit stats types
+// ---------------------------------------------------------------------------
+
+interface ObfuscationStats {
+  totalEntities: number;
+  byCategory: Record<string, number>;
+  messagesTouched: number;
+  blocksTouched: number;
+  inputChars: number;
+  outputChars: number;
+  fakesSample: string[];
+}
+
+// ---------------------------------------------------------------------------
+// String walking helper
+// ---------------------------------------------------------------------------
 
 /**
  * Deep-walk an unknown message structure and obfuscate/deobfuscate all
@@ -60,6 +96,10 @@ function walkStrings(
   return value;
 }
 
+// ---------------------------------------------------------------------------
+// obfuscateMessages (original, no stats)
+// ---------------------------------------------------------------------------
+
 /**
  * Walk LLM messages array and obfuscate all string content.
  * Messages follow the Anthropic/OpenAI format: array of {role, content} where
@@ -91,7 +131,189 @@ function obfuscateMessages(
   });
 }
 
+// ---------------------------------------------------------------------------
+// obfuscateMessagesWithStats (audit-aware)
+// ---------------------------------------------------------------------------
+
+function obfuscateMessagesWithStats(
+  messages: unknown[],
+  obfuscator: Obfuscator,
+  config: ShroudConfig,
+): { messages: unknown[]; stats: ObfuscationStats } {
+  const stats: ObfuscationStats = {
+    totalEntities: 0,
+    byCategory: {},
+    messagesTouched: 0,
+    blocksTouched: 0,
+    inputChars: 0,
+    outputChars: 0,
+    fakesSample: [],
+  };
+
+  const maxFakes = config.auditMaxFakesSample;
+
+  const obfuscatedMessages = messages.map((msg: any) => {
+    if (!msg || typeof msg !== "object") return msg;
+
+    if (typeof msg.content === "string") {
+      const result = obfuscator.obfuscate(msg.content);
+      stats.inputChars += msg.content.length;
+      stats.outputChars += result.obfuscated.length;
+      if (result.entities.length > 0) {
+        stats.messagesTouched++;
+        stats.blocksTouched++;
+        accumulateStats(stats, result, maxFakes);
+      }
+      if (result.entities.length === 0) return msg;
+      return { ...msg, content: result.obfuscated };
+    }
+
+    if (Array.isArray(msg.content)) {
+      let msgTouched = false;
+      const newContent = msg.content.map((block: any) => {
+        if (block && typeof block === "object" && typeof block.text === "string") {
+          const result = obfuscator.obfuscate(block.text);
+          stats.inputChars += block.text.length;
+          stats.outputChars += result.obfuscated.length;
+          if (result.entities.length > 0) {
+            msgTouched = true;
+            stats.blocksTouched++;
+            accumulateStats(stats, result, maxFakes);
+          }
+          if (result.entities.length === 0) return block;
+          return { ...block, text: result.obfuscated };
+        }
+        return block;
+      });
+      if (msgTouched) stats.messagesTouched++;
+      return { ...msg, content: newContent };
+    }
+
+    return msg;
+  });
+
+  return { messages: obfuscatedMessages, stats };
+}
+
+function accumulateStats(
+  stats: ObfuscationStats,
+  result: ObfuscationResult,
+  maxFakes: number,
+): void {
+  for (const entity of result.entities) {
+    stats.totalEntities++;
+    stats.byCategory[entity.category] = (stats.byCategory[entity.category] || 0) + 1;
+  }
+  // Collect fake values only (never real values)
+  if (maxFakes > 0 && stats.fakesSample.length < maxFakes) {
+    for (const fake of Object.values(result.mappingsUsed)) {
+      if (stats.fakesSample.length >= maxFakes) break;
+      stats.fakesSample.push(fake);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Audit log emitters
+// ---------------------------------------------------------------------------
+
+function emitAuditLog(
+  logger: PluginApi["logger"],
+  config: ShroudConfig,
+  requestId: string,
+  stats: ObfuscationStats,
+  totalMessages: number,
+  concatenatedOriginal: string,
+  concatenatedObfuscated: string,
+): void {
+  const byCatStr = Object.entries(stats.byCategory)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(",");
+
+  let proofHashIn = "";
+  let proofHashOut = "";
+  if (config.auditIncludeProofHashes) {
+    proofHashIn = truncateHash(
+      safeHash(concatenatedOriginal, config.auditHashSalt),
+      config.auditHashTruncate,
+    );
+    proofHashOut = truncateHash(
+      safeHash(concatenatedObfuscated, config.auditHashSalt),
+      config.auditHashTruncate,
+    );
+  }
+
+  if (config.auditLogFormat === "json") {
+    const obj: Record<string, unknown> = {
+      event: "shroud.audit.before_llm_send",
+      req: requestId,
+      ts: new Date().toISOString(),
+      totalEntities: stats.totalEntities,
+      messagesTouched: stats.messagesTouched,
+      blocksTouched: stats.blocksTouched,
+      inputChars: stats.inputChars,
+      outputChars: stats.outputChars,
+      byCategory: stats.byCategory,
+      proof: {
+        enabled: config.auditIncludeProofHashes,
+        ...(config.auditIncludeProofHashes
+          ? { hashIn: proofHashIn, hashOut: proofHashOut }
+          : {}),
+      },
+    };
+    if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
+      obj.fakesSample = stats.fakesSample;
+    }
+    logger?.info(JSON.stringify(obj));
+  } else {
+    let line =
+      `[shroud][audit] req=${requestId}` +
+      ` entities=${stats.totalEntities}` +
+      ` touched=${stats.messagesTouched}/${totalMessages}` +
+      ` blocks=${stats.blocksTouched}` +
+      ` chars=${stats.inputChars}/${stats.outputChars}` +
+      ` byCat=${byCatStr || "none"}` +
+      ` proof=${config.auditIncludeProofHashes ? "on" : "off"}`;
+    if (config.auditIncludeProofHashes) {
+      line += ` h_in=${proofHashIn} h_out=${proofHashOut}`;
+    }
+    if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
+      line += ` fakes=${stats.fakesSample.join("|")}`;
+    }
+    logger?.info(line);
+  }
+}
+
+function emitDeobfuscationAuditLog(
+  logger: PluginApi["logger"],
+  config: ShroudConfig,
+  requestId: string,
+  replacementCount: number,
+): void {
+  if (config.auditLogFormat === "json") {
+    logger?.info(
+      JSON.stringify({
+        event: "shroud.audit.deobfuscation",
+        req: requestId,
+        ts: new Date().toISOString(),
+        deobfuscations: replacementCount,
+      }),
+    );
+  } else {
+    logger?.info(
+      `[shroud][audit] req=${requestId} deobfuscations=${replacementCount}`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hook registration
+// ---------------------------------------------------------------------------
+
 export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
+  const config = obfuscator.config;
+  const auditActive = config.auditEnabled || config.verboseLogging;
+
   // -----------------------------------------------------------------------
   // 1. before_agent_start (async): obfuscate user prompt
   //    Event: { prompt: string, ... }
@@ -132,13 +354,89 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("before_llm_send", async (event: any) => {
     if (!Array.isArray(event?.messages)) return;
 
-    const obfuscatedMessages = obfuscateMessages(event.messages, obfuscator);
+    const totalMessages = event.messages.length;
+    let obfuscatedMessages: unknown[];
+    let requestId = "";
+
+    if (auditActive) {
+      requestId = randomBytes(8).toString("hex");
+
+      const { messages: msgs, stats } = obfuscateMessagesWithStats(
+        event.messages,
+        obfuscator,
+        config,
+      );
+      obfuscatedMessages = msgs;
+
+      // Build concatenated texts for proof hashes in local-only variables
+      let concatenatedOriginal = "";
+      let concatenatedObfuscated = "";
+      if (config.auditIncludeProofHashes) {
+        for (let i = 0; i < event.messages.length; i++) {
+          const orig = event.messages[i];
+          const obf = obfuscatedMessages[i] as any;
+          if (typeof orig?.content === "string") {
+            concatenatedOriginal += orig.content;
+            concatenatedObfuscated += (obf?.content ?? "");
+          } else if (Array.isArray(orig?.content)) {
+            for (let j = 0; j < orig.content.length; j++) {
+              const origBlock = orig.content[j];
+              const obfBlock = obf?.content?.[j];
+              if (typeof origBlock?.text === "string") {
+                concatenatedOriginal += origBlock.text;
+                concatenatedObfuscated += (obfBlock?.text ?? "");
+              }
+            }
+          }
+        }
+      }
+
+      try {
+        emitAuditLog(
+          api.logger,
+          config,
+          requestId,
+          stats,
+          totalMessages,
+          concatenatedOriginal,
+          concatenatedObfuscated,
+        );
+      } catch {
+        // Logging is best-effort — never break obfuscation
+      }
+    } else {
+      obfuscatedMessages = obfuscateMessages(event.messages, obfuscator);
+    }
 
     api.logger?.info("[shroud] before_llm_send: obfuscated messages + installed transformResponse");
+
+    // Capture requestId in closure for response audit
+    const capturedReqId = requestId;
 
     return {
       messages: obfuscatedMessages,
       transformResponse: (text: string): string => {
+        if (auditActive) {
+          try {
+            const { text: deobfuscated, replacementCount } =
+              obfuscator.deobfuscateWithStats(text);
+            if (replacementCount > 0) {
+              try {
+                emitDeobfuscationAuditLog(
+                  api.logger,
+                  config,
+                  capturedReqId,
+                  replacementCount,
+                );
+              } catch {
+                // best-effort
+              }
+            }
+            return deobfuscated;
+          } catch {
+            return obfuscator.deobfuscate(text);
+          }
+        }
         return obfuscator.deobfuscate(text);
       },
     };

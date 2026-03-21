@@ -70,6 +70,23 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     customPatterns: Array.isArray(raw.customPatterns)
       ? (raw.customPatterns as ShroudConfig["customPatterns"])
       : [],
+    // Verbose audit logging
+    verboseLogging:
+      typeof raw.verboseLogging === "boolean" ? raw.verboseLogging : false,
+    auditLogFormat:
+      raw.auditLogFormat === "json" ? "json" : "human",
+    auditIncludeProofHashes:
+      typeof raw.auditIncludeProofHashes === "boolean"
+        ? raw.auditIncludeProofHashes
+        : false,
+    auditHashSalt:
+      typeof raw.auditHashSalt === "string" ? raw.auditHashSalt : "",
+    auditHashTruncate:
+      typeof raw.auditHashTruncate === "number" ? raw.auditHashTruncate : 12,
+    auditMaxFakesSample:
+      typeof raw.auditMaxFakesSample === "number"
+        ? raw.auditMaxFakesSample
+        : 0,
   };
 
   return config;
