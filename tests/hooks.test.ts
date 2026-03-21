@@ -72,8 +72,67 @@ describe("hooks - before_agent_start", () => {
   });
 });
 
+describe("hooks - before_llm_send", () => {
+  test("obfuscates messages and returns transformResponse", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const messages = [
+      { role: "user", content: "Look up john@acme.com" },
+    ];
+    const result = await handlers["before_llm_send"]({ messages });
+    expect(result).toBeDefined();
+    expect(result.messages).toBeDefined();
+    expect(result.messages[0].content).not.toContain("john@acme.com");
+    expect(typeof result.transformResponse).toBe("function");
+  });
+
+  test("transformResponse deobfuscates LLM output", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate to populate the store and get fake email
+    const obResult = obf.obfuscate("john@acme.com");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+
+    const messages = [{ role: "user", content: "test" }];
+    const result = await handlers["before_llm_send"]({ messages });
+
+    // Simulate LLM responding with fake value
+    const deobfuscated = result.transformResponse(`The email is ${fakeEmail}`);
+    expect(deobfuscated).toContain("john@acme.com");
+    expect(deobfuscated).not.toContain(fakeEmail);
+  });
+
+  test("obfuscates content block arrays", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const messages = [
+      {
+        role: "user",
+        content: [{ type: "text", text: "Contact alice@secret.org" }],
+      },
+    ];
+    const result = await handlers["before_llm_send"]({ messages });
+    expect(result.messages[0].content[0].text).not.toContain("alice@secret.org");
+  });
+
+  test("returns void when no messages", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const result = await handlers["before_llm_send"]({});
+    expect(result).toBeUndefined();
+  });
+});
+
 describe("hooks - before_tool_call", () => {
-  test("deobfuscates tool arguments (string)", async () => {
+  test("deobfuscates tool params (object)", async () => {
     const obf = new Obfuscator(testConfig);
     const { api, handlers } = createMockApi();
     registerHooks(api, obf);
@@ -82,13 +141,14 @@ describe("hooks - before_tool_call", () => {
     const obResult = obf.obfuscate("john@acme.com");
     const fakeEmail = obResult.mappingsUsed["john@acme.com"];
 
-    const event = { arguments: `query for ${fakeEmail}` };
+    const event = { toolName: "some_tool", params: { query: `search for ${fakeEmail}` } };
     const result = await handlers["before_tool_call"](event);
-    expect(result.arguments).toContain("john@acme.com");
-    expect(result.arguments).not.toContain(fakeEmail);
+    expect(result).toBeDefined();
+    expect(result.params.query).toContain("john@acme.com");
+    expect(result.params.query).not.toContain(fakeEmail);
   });
 
-  test("deobfuscates tool arguments (object)", async () => {
+  test("deobfuscates tool params with nested values", async () => {
     const obf = new Obfuscator(testConfig);
     const { api, handlers } = createMockApi();
     registerHooks(api, obf);
@@ -96,9 +156,19 @@ describe("hooks - before_tool_call", () => {
     const obResult = obf.obfuscate("10.20.30.40");
     const fakeIp = obResult.mappingsUsed["10.20.30.40"];
 
-    const event = { arguments: { host: fakeIp } };
+    const event = { toolName: "ssh", params: { host: fakeIp } };
     const result = await handlers["before_tool_call"](event);
-    expect(result.arguments.host).toBe("10.20.30.40");
+    expect(result).toBeDefined();
+    expect(result.params.host).toBe("10.20.30.40");
+  });
+
+  test("returns void when no params to deobfuscate", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const result = await handlers["before_tool_call"]({ toolName: "read", params: { path: "/tmp/foo" } });
+    expect(result).toBeUndefined();
   });
 });
 
@@ -164,8 +234,8 @@ describe("hooks - message_sending", () => {
   });
 });
 
-describe("hooks - full flow", () => {
-  test("prompt obfuscated -> tool call deobfuscated -> tool result re-obfuscated -> reply deobfuscated", async () => {
+describe("hooks - full flow with before_llm_send", () => {
+  test("prompt obfuscated -> LLM sees fakes -> transformResponse deobfuscates output", async () => {
     const obf = new Obfuscator(testConfig);
     const { api, handlers } = createMockApi();
     registerHooks(api, obf);
@@ -179,23 +249,32 @@ describe("hooks - full flow", () => {
     // Get the fake email from the mapping
     const fakeEmail = obf.obfuscate("john@acme.com").mappingsUsed["john@acme.com"];
 
-    // Step 2: Agent makes tool call with fake email
-    const step2 = await handlers["before_tool_call"]({
-      arguments: { email: fakeEmail },
+    // Step 2: before_llm_send obfuscates messages and provides transformResponse
+    const step2 = await handlers["before_llm_send"]({
+      messages: [
+        { role: "user", content: `Look up ${fakeEmail}` },
+      ],
     });
-    expect(step2.arguments.email).toBe("john@acme.com"); // deobfuscated for API
+    expect(step2.messages[0].content).not.toContain("john@acme.com");
+    expect(typeof step2.transformResponse).toBe("function");
 
-    // Step 3: Tool returns result with real PII
-    const step3 = handlers["tool_result_persist"]({
+    // Step 3: Tool call gets deobfuscated params
+    const step3 = await handlers["before_tool_call"]({
+      toolName: "message",
+      params: { email: fakeEmail },
+    });
+    expect(step3.params.email).toBe("john@acme.com");
+
+    // Step 4: Tool result re-obfuscated
+    const step4 = handlers["tool_result_persist"]({
       message: "User john@acme.com has account #1234",
     });
-    expect(step3.message).not.toContain("john@acme.com"); // re-obfuscated
+    expect(step4.message).not.toContain("john@acme.com");
 
-    // Step 4: Agent reply contains fake value, deobfuscated for user
-    const step4 = await handlers["message_sending"]({
-      content: `Found account for ${fakeEmail}`,
-    });
-    expect(step4.content).toContain("john@acme.com");
-    expect(step4.content).not.toContain(fakeEmail);
+    // Step 5: LLM output deobfuscated via transformResponse (auto-reply path)
+    const llmOutput = `Found account for ${fakeEmail}`;
+    const deobfuscated = step2.transformResponse(llmOutput);
+    expect(deobfuscated).toContain("john@acme.com");
+    expect(deobfuscated).not.toContain(fakeEmail);
   });
 });
