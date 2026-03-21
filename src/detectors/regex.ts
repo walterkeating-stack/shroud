@@ -71,7 +71,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "phone_intl",
-    pattern: /\b\+\d{1,3}[\s\-]?\d{4,14}\b/g,
+    pattern: /(?<!\w)\+\d{1,3}[\s\-]?\d{4,14}\b/g,
     category: Category.PHONE,
     confidence: 0.75,
   },
