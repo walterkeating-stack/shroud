@@ -124,12 +124,14 @@ export class Obfuscator {
     allEntities.sort((a, b) => a.start - b.start || b.confidence - a.confidence);
     const entities = resolveOverlaps(allEntities);
 
-    // 5. Filter by confidence threshold and allowlist
+    // 5. Filter by confidence threshold, allowlist, and already-obfuscated values
     const allowSet = new Set(this.config.allowlist);
     const filtered = entities.filter(
       (e) =>
         e.confidence >= this.config.minConfidence &&
-        !allowSet.has(e.value),
+        !allowSet.has(e.value) &&
+        // Prevent double-obfuscation: skip values that are already known fakes
+        this._store.getReal(e.value) === undefined,
     );
 
     // 6. Map and replace (process right-to-left to preserve positions)
