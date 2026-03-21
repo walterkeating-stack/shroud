@@ -127,7 +127,8 @@ describe("API key generation", () => {
       Category.API_KEY,
     );
     expect(fake.startsWith("sk-")).toBe(true);
-    expect(fake).toContain("shroud");
+    // Prefix "sk-real-" is preserved from the original
+    expect(fake.startsWith("sk-real-")).toBe(true);
   });
 });
 

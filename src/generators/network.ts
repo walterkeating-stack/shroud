@@ -225,6 +225,29 @@ export class SubnetMapper {
 // NetworkGenerator
 // ---------------------------------------------------------------------------
 
+export const VLAN_NAMES = [
+  "MGMT", "USERS", "SERVERS", "PRINTERS", "VOIP", "GUEST",
+  "DMZ", "BACKUP", "IOT", "SECURITY", "WIRELESS", "STORAGE",
+];
+
+export const INTERFACE_DESCS = [
+  "Uplink to Core", "Server Farm Link", "WAN Circuit", "Management VLAN",
+  "User Access Port", "Trunk to Distribution", "Backup Link", "DMZ Segment",
+  "VoIP VLAN", "Guest Network", "Storage Network", "Monitoring Port",
+];
+
+export const ROUTE_MAP_NAMES = [
+  "RM-PEER-IN", "RM-PEER-OUT", "RM-TRANSIT", "RM-LOCAL",
+  "RM-DEFAULT", "RM-EXPORT", "RM-IMPORT", "RM-BACKUP",
+  "RM-PRIMARY", "RM-SECONDARY", "RM-FILTER", "RM-REDISTRIBUTE",
+];
+
+export const ACL_NAMES = [
+  "ACL-MGMT", "ACL-USERS", "ACL-VPN", "ACL-OUTSIDE",
+  "ACL-INSIDE", "ACL-DMZ", "ACL-SERVERS", "ACL-MONITOR",
+  "ACL-DENY-ALL", "ACL-PERMIT-RFC1918", "ACL-EDGE", "ACL-CORE",
+];
+
 export class NetworkGenerator implements BaseGenerator {
   readonly categories = [
     Category.IP_ADDRESS,
@@ -235,6 +258,11 @@ export class NetworkGenerator implements BaseGenerator {
     Category.SNMP_COMMUNITY,
     Category.NETWORK_CREDENTIAL,
     Category.HOSTNAME,
+    Category.VLAN_ID,
+    Category.INTERFACE_DESC,
+    Category.ROUTE_MAP,
+    Category.OSPF_ID,
+    Category.ACL_NAME,
   ];
 
   private readonly subnetMapper: SubnetMapper;
@@ -260,6 +288,16 @@ export class NetworkGenerator implements BaseGenerator {
       return this._fakeNetworkCredential(seed, original);
     } else if (category === Category.HOSTNAME) {
       return this._fakeHostname(seed);
+    } else if (category === Category.VLAN_ID) {
+      return this._fakeVlanId(seed, original);
+    } else if (category === Category.INTERFACE_DESC) {
+      return this._fakeInterfaceDesc(seed, original);
+    } else if (category === Category.ROUTE_MAP) {
+      return this._fakeRouteMap(seed, original);
+    } else if (category === Category.OSPF_ID) {
+      return this._fakeOspfId(seed, original);
+    } else if (category === Category.ACL_NAME) {
+      return this._fakeAclName(seed, original);
     }
     return `net-${String(seed % 10000).padStart(4, "0")}`;
   }
@@ -426,21 +464,25 @@ export class NetworkGenerator implements BaseGenerator {
     return SNMP_COMMUNITIES[seed % SNMP_COMMUNITIES.length];
   }
 
-  /** Replace network credentials (hashes, secrets, key-strings) with redacted markers. */
+  /** Replace network credentials with seed-derived unique fake values. */
   _fakeNetworkCredential(seed: number, original: string): string {
-    // For hash-like values, preserve the structure hint
-    if (original.startsWith("$1$")) {
-      return "$1$***REDACTED***";
-    }
-    if (original.startsWith("$9$")) {
-      return "$9$***REDACTED***";
-    }
-    // Generic credential
     const buf = Buffer.alloc(8);
     buf.writeUInt32BE(seed >>> 0, 0);
     buf.writeUInt32BE(((seed >>> 16) ^ 0xdeadbeef) >>> 0, 4);
-    const h = createHash("sha256").update(buf).digest("hex").slice(0, 16);
-    return `REDACTED_${h}`;
+    const h = createHash("sha256").update(buf).digest("hex");
+
+    // Preserve hash type prefix for structure hints
+    const hashPrefixMatch = original.match(/^(\$\d\$)/);
+    if (hashPrefixMatch) {
+      // e.g. $1$salt$hash → $1$fakesalt$fakehash
+      return `${hashPrefixMatch[1]}${h.slice(0, 8)}$${h.slice(8, 30)}`;
+    }
+    // Cisco type 7 hex strings
+    if (/^[0-9A-Fa-f]{4,}$/.test(original)) {
+      return h.slice(0, original.length).toUpperCase();
+    }
+    // Generic credential
+    return `REDACTED_${h.slice(0, 16)}`;
   }
 
   /** Generate a fake hostname preserving structure. */
@@ -452,5 +494,54 @@ export class NetworkGenerator implements BaseGenerator {
       ];
     const num = (seed % 99) + 1;
     return `${site}-${role}-${String(num).padStart(2, "0")}`;
+  }
+
+  /** Fake VLAN ID/name. Preserves the keyword structure. */
+  _fakeVlanId(seed: number, original: string): string {
+    // If the original is a "vlan <id>" or just a number in a vlan context,
+    // the detector captures the full match. Preserve surrounding keywords.
+    const nameMatch = original.match(/name\s+(.+)/i);
+    if (nameMatch) {
+      const fakeName = VLAN_NAMES[seed % VLAN_NAMES.length];
+      return `name ${fakeName}`;
+    }
+    // VLAN range like "100-200" or "100,200,300"
+    if (original.includes("-") || original.includes(",")) {
+      const fakeBase = 100 + (seed % 900);
+      if (original.includes("-")) {
+        return `${fakeBase}-${fakeBase + 99}`;
+      }
+      const parts = original.split(",");
+      return parts.map((_, i) => fakeBase + i * 10).join(",");
+    }
+    // Single VLAN number
+    return String(100 + (seed % 3900));
+  }
+
+  /** Fake interface description. */
+  _fakeInterfaceDesc(seed: number, _original: string): string {
+    return INTERFACE_DESCS[seed % INTERFACE_DESCS.length];
+  }
+
+  /** Fake route-map or prefix-list name. */
+  _fakeRouteMap(seed: number, _original: string): string {
+    return ROUTE_MAP_NAMES[seed % ROUTE_MAP_NAMES.length];
+  }
+
+  /** Fake OSPF identifiers (router-id or area). */
+  _fakeOspfId(seed: number, original: string): string {
+    // OSPF area can be a number or dotted-quad
+    const areaNumMatch = original.match(/area\s+(\d+)/i);
+    if (areaNumMatch) {
+      return `area ${seed % 100}`;
+    }
+    // Router-id is typically an IP-like dotted quad
+    const fakeId = `10.${(seed % 256)}.${(Math.floor(seed / 256) % 256)}.${(Math.floor(seed / 65536) % 256)}`;
+    return fakeId;
+  }
+
+  /** Fake ACL name. */
+  _fakeAclName(seed: number, _original: string): string {
+    return ACL_NAMES[seed % ACL_NAMES.length];
   }
 }
