@@ -7,23 +7,30 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist/",
-    "openclaw.plugin.json"
+    "openclaw.plugin.json",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run lint && npm test && npm run build"
   },
   "keywords": [
     "openclaw",
     "openclaw-plugin",
     "privacy",
     "pii",
-    "obfuscation"
+    "obfuscation",
+    "llm",
+    "redaction"
   ],
-  "author": "Walter Keating",
+  "author": "walterkeating-stack",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "devDependencies": {
     "typescript": "^5.4",
     "vitest": "^2.0",
@@ -36,6 +43,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/walterkeating-stack/shroud.git"
+    "url": "git+https://github.com/walterkeating-stack/shroud.git"
+  },
+  "homepage": "https://github.com/walterkeating-stack/shroud#readme",
+  "bugs": {
+    "url": "https://github.com/walterkeating-stack/shroud/issues"
   }
 }
