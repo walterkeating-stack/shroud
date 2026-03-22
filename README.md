@@ -6,7 +6,7 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 
 ## What it does
 
-1. **Detects** emails, IPs, phones, API keys, hostnames, SNMP communities, BGP ASNs, credit cards, SSNs, file paths, URLs, person/org/location names, VLANs, route-maps, ACLs, OSPF IDs, and custom regex patterns.
+1. **Detects** 100+ entity types: emails, IPs, phones, API keys, hostnames, SNMP communities, BGP ASNs, credit cards, SSNs, file paths, URLs, person/org/location names, VLANs, route-maps, ACLs, OSPF IDs, IBANs, JWTs, PEM certs, GPS coordinates, ICS/SCADA identifiers, Palo Alto/Check Point/Juniper/Fortinet/F5 config secrets, and custom regex patterns.
 2. **Replaces** each value with a deterministic fake (same input + key = same fake every time). Fakes are format-preserving: IPs stay in CGNAT range, emails keep `@domain` structure, credit cards pass Luhn, etc.
 3. **Deobfuscates** LLM responses and tool parameters so the user sees real values and tools receive real arguments.
 4. **Audit logs** every obfuscation/deobfuscation event with counts, categories, char deltas, and optional proof hashes — never logging raw sensitive values.
@@ -18,7 +18,7 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 | `before_prompt_build` | User → LLM | Obfuscate user prompt, prepend privacy context |
 | `before_llm_send` | User → LLM | Obfuscate all messages + install `transformResponse` |
 | `transformResponse` | LLM → User | Deobfuscate LLM output (auto-reply, WhatsApp, etc.) |
-| `before_tool_call` | LLM → Tool | Deobfuscate tool parameters |
+| `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
 | `message_sending` | Agent → User | Deobfuscate outbound messages (fallback path) |
 
@@ -80,6 +80,7 @@ Out of the box, Shroud:
 - Detects all entity categories at confidence >= 0.0
 - Logs audit lines (counts + categories) but **not** proof hashes or fake samples
 - Never logs raw values, real→fake mappings, or original text
+- All enterprise features are opt-in and disabled by default
 
 To enable proof hashes and fake samples for deeper audit:
 
@@ -93,6 +94,8 @@ To enable proof hashes and fake samples for deeper audit:
 ```
 
 ## Config reference
+
+### Core settings
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
@@ -113,7 +116,11 @@ To enable proof hashes and fake samples for deeper audit:
 | `logMappings` | boolean | `false` | Log mapping table (debug only) |
 | `customPatterns` | array | `[]` | User-defined regex detection patterns |
 | `detectorOverrides` | object | `{}` | Override built-in rules: disable or change confidence per rule name |
-| **Enterprise** | | | |
+
+### Enterprise settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
 | `tenantId` | string | `""` | Multi-tenant isolation: tenant ID for HMAC keying |
 | `lockedCategories` | string[] | `[]` | Compliance mode: categories that MUST be detected |
 | `maxToolDepth` | number | `10` | Max nested tool call depth before warning |
@@ -153,6 +160,118 @@ Shroud tracks per-rule match counts for the lifetime of the process. Counters ap
 
 Counters reset on `reset()` or gateway restart.
 
+## Enterprise features
+
+### Multi-tenant isolation
+
+When running agents for multiple customers/teams through the same gateway, set `tenantId` per request to ensure mappings never leak across boundaries. Each tenant gets its own HMAC salt and mapping store.
+
+```jsonc
+"tenantId": "customer-abc"
+// Or set SHROUD_TENANT_ID env var
+```
+
+### Compliance-mode entity locking
+
+In regulated environments, specify categories that MUST be detected. If detection fails for a locked category, Shroud emits a compliance warning in audit logs and includes a `complianceReport` in the obfuscation result.
+
+```jsonc
+"lockedCategories": ["email", "credit_card", "ssn"]
+```
+
+### Rate-of-exposure tracking
+
+Monitor for anomalous PII exposure rates that might indicate a jailbreak or prompt injection. Configure per-category thresholds — when exceeded, warnings are logged.
+
+```jsonc
+"exposureWindow": 60000,
+"exposureThresholds": { "hostname": 20, "email": 10 },
+"exposureGlobalThreshold": 50
+```
+
+### Session handoff
+
+Enable encrypted export/import of mapping tables for cross-session continuity. When `sessionHandoff` is true, two tools are registered: `shroud-session-export` and `shroud-session-import`.
+
+```jsonc
+"sessionHandoff": true
+```
+
+### Redaction levels
+
+Three output modes for different audiences:
+
+- **`full`** (default): Replace with realistic fake values. Best for LLM interaction.
+- **`masked`**: Partial masking (`j***@***.com`, `***-**-1234`). Best for human review.
+- **`stats`**: Category placeholders (`[EMAIL-1]`, `[HOSTNAME-3]`). Best for dashboards.
+
+```jsonc
+"redactionLevel": "masked"
+```
+
+### Cross-agent shared store
+
+Multiple Shroud instances (e.g., planner + specialist agents) share mappings via a common file so the same real value always maps to the same fake.
+
+```jsonc
+"sharedStorePath": "/tmp/shroud-shared-store.json"
+// Or set SHROUD_SHARED_STORE env var
+```
+
+### Policy-as-code
+
+Load allowlist/denylist from external JSON files with support for literal strings, glob patterns, and regular expressions.
+
+```json
+{
+  "allowlist": [
+    "192.168.1.1",
+    { "pattern": "10.0.0.*", "type": "glob" },
+    { "pattern": "\\bTEST-.*", "type": "regex" }
+  ],
+  "denylist": [
+    { "pattern": "CLASSIFIED|SECRET", "type": "regex", "category": "custom" }
+  ]
+}
+```
+
+```jsonc
+"policyFile": "/path/to/policy.json"
+```
+
+### Provenance tagging
+
+Embed invisible origin markers in obfuscated output for downstream audit trail. Markers follow the format `«shroud:category:hash»` and are automatically stripped during deobfuscation.
+
+```jsonc
+"provenanceTagging": true
+```
+
+### Corpus pre-scanning
+
+For RAG pipelines, obfuscate documents at index time using the `preScanCorpus()` API:
+
+```typescript
+const result = obfuscator.preScanCorpus([
+  { id: "doc1", text: "Contact john@acme.com..." },
+  { id: "doc2", text: "Server 10.0.0.1 is..." },
+]);
+// result.documents: obfuscated docs for indexing
+// result.mappingRef: encrypted mapping reference for later deobfuscation
+```
+
+## Detection intelligence
+
+Shroud includes a `ContextDetector` that wraps the regex engine with post-detection intelligence:
+
+- **Context-aware boosting**: Text blocks containing config keywords (`interface`, `router ospf`, `hostname`) get +10% confidence for detected entities.
+- **Proximity clustering**: When a name, email, and phone appear within 200 characters, each gets a confidence boost.
+- **Hostname propagation**: `hostname FCNETR1` in one place → bare `FCNETR1` detected everywhere in the text.
+- **Learned entities**: Hostnames and infra identifiers seen in previous messages are remembered and detected in future messages without requiring config-line context.
+- **Documentation filtering**: RFC 5737 TEST-NET IPs (192.0.2.x, 198.51.100.x, 203.0.113.x), `example.com` emails, and well-known placeholders are automatically skipped.
+- **Common word decay**: Words like `permit`, `deny`, `default` that happen to match patterns get 50% confidence reduction.
+- **Recursive deobfuscation**: Up to 3 passes for nested structures (fakes inside JSON-encoded strings).
+
 ## Verify it works
 
 After restarting OpenClaw, send a message containing PII (e.g. an email or IP). Then check the logs:
@@ -176,6 +295,12 @@ With proof hashes enabled:
 [shroud][audit] OBFUSCATE req=a3f1bc9e02d4e7f1 | entities=4 | touched=2/5 | blocks=2 | chars=1200->1218 (delta=+18) | modified=YES | byCat=email:1,ip_address:2,hostname:1 | proof_in=8a3c1f0e2b4d proof_out=f7d2a1c9e084 | fakes=[jsmith@corp.net|100.64.0.12|SW-LAB-01]
 ```
 
+With compliance locking:
+
+```
+[shroud][audit] OBFUSCATE req=... | ... | COMPLIANCE_WARN=missing:[credit_card]
+```
+
 ### Audit field reference
 
 | Field | Meaning |
@@ -188,9 +313,11 @@ With proof hashes enabled:
 | `delta` | Character count change (fakes may be longer/shorter) |
 | `modified` | `YES` if text was changed, `NO` if pass-through |
 | `byCat` | Entity counts by category |
+| `byRule` | Entity counts by detector rule |
 | `proof_in` | Truncated salted SHA-256 of input text |
 | `proof_out` | Truncated salted SHA-256 of output text |
 | `fakes` | Sample of fake replacement values (never real values) |
+| `COMPLIANCE_WARN` | Missing locked categories (if compliance mode enabled) |
 
 ### Note on log duplication
 
