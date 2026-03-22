@@ -293,6 +293,36 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.85,
   },
 
+  // --- Network device hostnames ---
+  {
+    // Cisco/IOS "hostname <name>" config line
+    name: "cisco_hostname",
+    pattern: /(?:^|\n)\s*hostname\s+(\S+)/g,
+    category: Category.HOSTNAME,
+    confidence: 0.95,
+  },
+  {
+    // Dotted hierarchical device names: 24.rou.acn.atccv.care, 1a.sw.atm.atvie.ops
+    name: "device_name_dotted",
+    pattern: /\b(\w{1,4}\.(?:rou|sw|rtr|fw)\.(?:[a-z]{2,8}\.){1,3}(?:care|ops|mgmt|cnet|prod|lab|dev))\b/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.90,
+  },
+  {
+    // Short device codes: FCNETR1, WCNETR2, LCNETR3 — uppercase letter(s) + "CNET" or role + digit(s)
+    name: "device_name_short",
+    pattern: /\b([A-Z]{1,4}(?:CNET|ONET|MNET|ANET)[A-Z]?\d{1,2})\b/g,
+    category: Category.HOSTNAME,
+    confidence: 0.85,
+  },
+  {
+    // Hyphenated device names with site/zone/role pattern: f-o-w-cnetr1, l-care-acn-rou24
+    name: "device_name_hyphenated",
+    pattern: /\b([a-z]{1,6}(?:-[a-z]{1,8}){2,5}[a-z]?\d{1,3})\b/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.70,
+  },
+
   // ==========================================================================
   // Wave 1: Enterprise / Regulated / Critical Infrastructure
   // ==========================================================================
