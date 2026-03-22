@@ -423,3 +423,69 @@ describe("Feature 10: Provenance tagging", () => {
     expect(result.obfuscated).not.toContain("\u00abshroud:");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Subnet-aware deobfuscation (LLM-derived network addresses)
+// ---------------------------------------------------------------------------
+
+describe("Subnet-aware deobfuscation", () => {
+  test("deobfuscates LLM-derived network address from host IP + mask", () => {
+    const obf = makeObfuscator();
+
+    // Obfuscate a config block with IP + mask so SubnetMapper learns the subnet
+    const configText = "ip address 10.1.2.1 255.255.255.0";
+    const result = obf.obfuscate(configText);
+
+    // Extract the fake IP (should be 100.64.X.1)
+    const fakeMatch = result.obfuscated.match(/(\d+\.\d+\.\d+)\.1/);
+    expect(fakeMatch).toBeTruthy();
+    const fakePrefix = fakeMatch![1]; // e.g. "100.64.0"
+
+    // Simulate the LLM computing the network address from the fake
+    const llmText = `Subnet: ${fakePrefix}.0/24 (gateway: ${fakePrefix}.1)`;
+    const deobfuscated = obf.deobfuscate(llmText);
+
+    // The gateway .1 should be deobfuscated via normal store lookup
+    expect(deobfuscated).toContain("10.1.2.1");
+    // The network .0 should be deobfuscated via subnet-aware reverse mapping
+    expect(deobfuscated).toContain("10.1.2.0");
+    // No CGNAT IPs should remain
+    expect(deobfuscated).not.toMatch(/100\.6[4-9]\.|100\.[7-9]\d\.|100\.1[01]\d\.|100\.12[0-7]\./);
+  });
+
+  test("deobfuscates broadcast address derived by LLM", () => {
+    const obf = makeObfuscator();
+
+    const configText = "ip address 172.16.5.1 255.255.255.128";
+    const result = obf.obfuscate(configText);
+
+    // Extract the fake host IP
+    const fakeMatch = result.obfuscated.match(/(100\.\d+\.\d+)\.1/);
+    expect(fakeMatch).toBeTruthy();
+    const fakePrefix = fakeMatch![1];
+
+    // LLM computes network (.0) and broadcast (.127) from /25
+    const llmText = `Network: ${fakePrefix}.0/25, Broadcast: ${fakePrefix}.127`;
+    const deobfuscated = obf.deobfuscate(llmText);
+
+    expect(deobfuscated).toContain("172.16.5.0");
+    expect(deobfuscated).toContain("172.16.5.127");
+  });
+
+  test("deobfuscateWithStats includes subnet-aware replacements in count", () => {
+    const obf = makeObfuscator();
+
+    const configText = "ip address 10.99.1.1 255.255.255.0";
+    const result = obf.obfuscate(configText);
+
+    const fakeMatch = result.obfuscated.match(/(\d+\.\d+\.\d+)\.1/);
+    expect(fakeMatch).toBeTruthy();
+    const fakePrefix = fakeMatch![1];
+
+    const llmText = `Network: ${fakePrefix}.0/24`;
+    const { text, replacementCount } = obf.deobfuscateWithStats(llmText);
+
+    expect(text).toContain("10.99.1.0");
+    expect(replacementCount).toBeGreaterThan(0);
+  });
+});
