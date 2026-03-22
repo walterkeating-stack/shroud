@@ -48,6 +48,18 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Detector `detector` field now includes rule name (e.g. `regex:email` instead of `regex`) for finer-grained audit and hit tracking.
 
+- **Quick wins** (10 operational improvements):
+  1. **Wildcard allowlist** — allowlist entries support `*` and `?` globs (e.g. `*@acme.com`, `10.0.0.*`)
+  2. **Per-category stats** — `detectionsByCategory` and `replacementsByCategory` in `getStats()`
+  3. **URL credential scrubbing** — detect passwords/tokens in query params and connection strings
+  4. **Network infra generators** — format-preserving fakes for VLAN IDs, OSPF IDs, ACL names, route-maps, interface descriptions
+  5. **`shroud-stats --json`** — machine-readable stats export for monitoring
+  6. **Dry-run mode** — `dryRun: true` detects entities without replacing text
+  7. **Config validation** — `validateConfig()` returns typed issues (error/warning/info) with actionable messages
+  8. **Filter stats** — `filterStats` in every `ObfuscationResult`: totalDetected, replaced, belowThreshold, allowlisted, alreadyObfuscated
+  9. **Base64 secret detection** — catches `SECRET=<base64>` and `base64:<value>` patterns
+  10. **LRU store eviction** — `maxStoreMappings` caps store size with FIFO eviction (0 = unlimited)
+
 ### Fixed
 - **Subnet-aware deobfuscation** — LLM-derived network addresses (e.g., computing `.0` network or `.255` broadcast from a fake host IP + mask) are now reverse-mapped via the SubnetMapper to recover the correct real IP.
 - **IPv6 detection** — improved regex handles full 8-group, compressed `::`, link-local `fe80::`, and ULA `fd00::` forms.
