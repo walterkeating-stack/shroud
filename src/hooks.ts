@@ -10,9 +10,24 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
 import { ShroudConfig, ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
+
+const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
+
+function dumpStatsFile(obfuscator: Obfuscator): void {
+  try {
+    const stats = obfuscator.getStats() as Record<string, unknown>;
+    stats.updatedAt = new Date().toISOString();
+    stats.source = "openclaw";
+    stats.pid = process.pid;
+    writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + "\n");
+  } catch {
+    // best-effort
+  }
+}
 
 // Generic types for the OpenClaw API (we don't have the SDK as a dependency)
 export interface PluginApi {
@@ -341,6 +356,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     const result = obfuscator.obfuscate(prompt);
     if (result.entities.length === 0) return; // nothing to obfuscate
 
+    dumpStatsFile(obfuscator);
     api.logger?.info(
       `[shroud] before_prompt_build: obfuscated ${result.entities.length} entities`,
     );
@@ -423,6 +439,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       obfuscatedMessages = obfuscateMessages(event.messages, obfuscator);
     }
 
+    dumpStatsFile(obfuscator);
     api.logger?.info("[shroud] before_llm_send: obfuscated messages + installed transformResponse");
 
     // Capture requestId in closure for response audit
@@ -494,6 +511,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       return result.obfuscated;
     });
 
+    dumpStatsFile(obfuscator);
     return { message: obfuscated };
   });
 
