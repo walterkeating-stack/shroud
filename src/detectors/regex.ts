@@ -186,6 +186,19 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     category: Category.API_KEY,
     confidence: 0.9,
   },
+  // --- URL/connection-string embedded credentials (before URL pattern to claim spans first) ---
+  {
+    name: "url_query_password",
+    pattern: /[?&](?:password|passwd|secret|token|api_key|apikey|auth_token|access_token)=([^&\s]{3,})/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+  {
+    name: "connection_string_password",
+    pattern: /(?:postgres|mysql|mongodb|redis|amqp|mssql|mariadb|oracle):\/\/[^:]+:([^@]{3,})@/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
   // --- URLs and paths ---
   {
     name: "url",
@@ -833,6 +846,21 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     category: Category.ICS_IDENTIFIER,
     confidence: 0.85,
   },
+
+  // --- Base64-encoded secrets ---
+  {
+    name: "base64_secret_assignment",
+    pattern: /(?:SECRET|PRIVATE_KEY|PASSWORD|TOKEN|API_KEY|APIKEY|AUTH)[\s]*[=:]\s*[A-Za-z0-9+/]{20,}={0,2}/gi,
+    category: Category.API_KEY,
+    confidence: 0.90,
+  },
+  {
+    name: "base64_prefixed",
+    pattern: /\bbase64:[A-Za-z0-9+/]{8,}={0,2}/g,
+    category: Category.API_KEY,
+    confidence: 0.85,
+  },
+
 ];
 
 /** Check if two spans overlap. */
