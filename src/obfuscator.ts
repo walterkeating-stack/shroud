@@ -18,7 +18,7 @@ import { MemoryStore, MappingStore, SerializedStore } from "./store.js";
 import { FileBackedStore } from "./shared-store.js";
 import { TenantStoreManager } from "./tenant.js";
 import { MappingEngine } from "./mapping.js";
-import { SubnetMapper } from "./generators/network.js";
+import { SubnetMapper, CGNAT_BASE, CGNAT_MASK_10, ipToInt, intToIp } from "./generators/network.js";
 import { CanaryInjector } from "./canary.js";
 import { AuditLogger } from "./audit.js";
 import { BaseDetector } from "./detectors/base.js";
@@ -34,6 +34,9 @@ import { RedactionFormatter, RedactionLevel } from "./redaction.js";
 const PROV_OPEN = "\u00ab";
 const PROV_CLOSE = "\u00bb";
 const PROV_RE = /\u00abshroud:[^\u00bb]+\u00bb/g;
+
+/** Regex to find CGNAT IPs (100.64.0.0/10) in text. */
+const CGNAT_IP_RE = /\b(100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})\b/g;
 
 export class Obfuscator {
   readonly config: ShroudConfig;
@@ -415,6 +418,9 @@ export class Obfuscator {
     let totalReplacements = 0;
     const MAX_PASSES = 3;
 
+    // Collect known fakes that were NOT replaced (for residual pass)
+    const knownFakeSet = new Set(fakes);
+
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       let passReplacements = 0;
       for (const fake of fakes) {
@@ -423,10 +429,19 @@ export class Obfuscator {
         if (parts.length > 1) {
           passReplacements += parts.length - 1;
           result = parts.join(real);
+          knownFakeSet.delete(fake); // successfully replaced
         }
       }
       totalReplacements += passReplacements;
       if (passReplacements === 0) break; // No more replacements possible
+    }
+
+    // Subnet-aware deobfuscation: reverse-map CGNAT IPs the LLM derived
+    // (e.g. network addresses computed from fake host IPs + masks)
+    const residual = this._deobfuscateResidualCgnat(result, knownFakeSet);
+    if (residual.count > 0) {
+      result = residual.text;
+      totalReplacements += residual.count;
     }
 
     // Audit log
@@ -477,6 +492,7 @@ export class Obfuscator {
     let result = text;
     let replacementCount = 0;
     const MAX_PASSES = 3;
+    const knownFakeSet = new Set(fakes);
 
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       let passReplacements = 0;
@@ -486,10 +502,18 @@ export class Obfuscator {
         if (parts.length > 1) {
           passReplacements += parts.length - 1;
           result = parts.join(real);
+          knownFakeSet.delete(fake);
         }
       }
       replacementCount += passReplacements;
       if (passReplacements === 0) break;
+    }
+
+    // Subnet-aware deobfuscation for LLM-derived CGNAT IPs
+    const residual = this._deobfuscateResidualCgnat(result, knownFakeSet);
+    if (residual.count > 0) {
+      result = residual.text;
+      replacementCount += residual.count;
     }
 
     if (this._audit && replacementCount > 0) {
@@ -562,6 +586,55 @@ export class Obfuscator {
     const mappingRef = this.exportSession();
 
     return { documents: results, mappingRef };
+  }
+
+  /**
+   * Subnet-aware reverse mapping for CGNAT IPs not in the store.
+   *
+   * When the LLM computes derived addresses (e.g. network address from
+   * a host IP + mask), those derived fakes won't be in the mapping store.
+   * This method uses SubnetMapper's reverse map to find the real subnet
+   * and compute the correct real IP.
+   *
+   * Returns the number of additional replacements made.
+   */
+  private _deobfuscateResidualCgnat(text: string, knownFakes: Set<string>): { text: string; count: number } {
+    const mapper = this._subnetMapper;
+    if (mapper.subnetRev.size === 0) return { text, count: 0 };
+
+    let count = 0;
+    const result = text.replace(CGNAT_IP_RE, (match) => {
+      // Skip if this IP was already deobfuscated via the store
+      if (knownFakes.has(match)) return match;
+
+      try {
+        const fakeInt = ipToInt(match);
+
+        // Check if this IP is in CGNAT range
+        if ((fakeInt & CGNAT_MASK_10) !== CGNAT_BASE) return match;
+
+        // Try each known fake subnet to find which one this IP belongs to
+        for (const [fakeNetInt, key] of mapper.subnetRev) {
+          const [realNetStr, prefixLenStr] = key.split(",");
+          const prefixLen = parseInt(prefixLenStr, 10);
+          const mask = prefixLen === 0 ? 0 : ((0xffffffff << (32 - prefixLen)) >>> 0);
+
+          // Check if this fake IP is in this fake subnet
+          if (((fakeInt & mask) >>> 0) === fakeNetInt) {
+            const hostBits = (fakeInt & (~mask >>> 0)) >>> 0;
+            const realNetInt = parseInt(realNetStr, 10);
+            const realIp = intToIp((realNetInt | hostBits) >>> 0);
+            count++;
+            return realIp;
+          }
+        }
+      } catch {
+        // skip invalid
+      }
+      return match;
+    });
+
+    return { text: result, count };
   }
 
   /** Clear all mappings and start fresh. */
