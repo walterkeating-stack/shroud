@@ -55,3 +55,54 @@ describe("MemoryStore", () => {
     expect(store.getReal("100.64.0.1")).toBe("10.0.0.1");
   });
 });
+
+// ---------------------------------------------------------------------------
+// QW10: LRU store eviction
+// ---------------------------------------------------------------------------
+
+describe("LRU eviction (QW10)", () => {
+  test("evicts oldest entry when maxSize exceeded", () => {
+    const store = new MemoryStore(2);
+    store.put("a", "x", Category.EMAIL);
+    store.put("b", "y", Category.IP_ADDRESS);
+    expect(store.size()).toBe(2);
+    // Adding third should evict "a"
+    store.put("c", "z", Category.PHONE);
+    expect(store.size()).toBe(2);
+    expect(store.getFake("a")).toBeUndefined();
+    expect(store.getReal("x")).toBeUndefined();
+    expect(store.getFake("b")).toBe("y");
+    expect(store.getFake("c")).toBe("z");
+  });
+
+  test("updating existing entry does not trigger eviction", () => {
+    const store = new MemoryStore(2);
+    store.put("a", "x", Category.EMAIL);
+    store.put("b", "y", Category.IP_ADDRESS);
+    // Update "a" with new fake — should NOT evict
+    store.put("a", "x2", Category.EMAIL);
+    expect(store.size()).toBe(2);
+    expect(store.getFake("a")).toBe("x2");
+    expect(store.getFake("b")).toBe("y");
+  });
+
+  test("maxSize=0 means unlimited", () => {
+    const store = new MemoryStore(0);
+    for (let i = 0; i < 100; i++) {
+      store.put(`r${i}`, `f${i}`, Category.EMAIL);
+    }
+    expect(store.size()).toBe(100);
+  });
+
+  test("clear resets LRU tracking", () => {
+    const store = new MemoryStore(2);
+    store.put("a", "x", Category.EMAIL);
+    store.put("b", "y", Category.IP_ADDRESS);
+    store.clear();
+    expect(store.size()).toBe(0);
+    // Can add again without hitting limit from old entries
+    store.put("c", "z", Category.PHONE);
+    store.put("d", "w", Category.SSN);
+    expect(store.size()).toBe(2);
+  });
+});

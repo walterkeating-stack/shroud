@@ -25,11 +25,39 @@ export class MemoryStore implements MappingStore {
   private _realToFake: Map<string, string> = new Map();
   private _fakeToReal: Map<string, string> = new Map();
   private _categories: Map<string, Category> = new Map();
+  /** Insertion-order list for LRU eviction (oldest first). */
+  private _insertionOrder: string[] = [];
+  /** Max store size (0 = unlimited). QW10. */
+  private _maxSize: number;
+
+  constructor(maxSize = 0) {
+    this._maxSize = maxSize;
+  }
 
   put(real: string, fake: string, category: Category): void {
+    // If already present, update in place (no eviction needed)
+    if (this._realToFake.has(real)) {
+      this._realToFake.set(real, fake);
+      this._fakeToReal.set(fake, real);
+      this._categories.set(real, category);
+      return;
+    }
+
+    // QW10: Evict oldest entries if at capacity
+    if (this._maxSize > 0) {
+      while (this._insertionOrder.length >= this._maxSize) {
+        const oldest = this._insertionOrder.shift()!;
+        const oldFake = this._realToFake.get(oldest);
+        this._realToFake.delete(oldest);
+        if (oldFake !== undefined) this._fakeToReal.delete(oldFake);
+        this._categories.delete(oldest);
+      }
+    }
+
     this._realToFake.set(real, fake);
     this._fakeToReal.set(fake, real);
     this._categories.set(real, category);
+    this._insertionOrder.push(real);
   }
 
   getFake(real: string): string | undefined {
@@ -56,6 +84,7 @@ export class MemoryStore implements MappingStore {
     this._realToFake.clear();
     this._fakeToReal.clear();
     this._categories.clear();
+    this._insertionOrder = [];
   }
 
   /** Export all mappings for session handoff. */

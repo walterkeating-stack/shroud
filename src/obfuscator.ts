@@ -105,6 +105,26 @@ function compressIPv6(addr: string): string {
   return groups.join(":");
 }
 
+/**
+ * Convert a simple wildcard pattern (* and ?) to a RegExp.
+ * Caches compiled patterns for reuse.
+ */
+const _wildcardCache = new Map<string, RegExp>();
+function wildcardMatch(value: string, pattern: string): boolean {
+  // Fast path: no wildcards = exact match
+  if (!pattern.includes("*") && !pattern.includes("?")) {
+    return value === pattern;
+  }
+  let re = _wildcardCache.get(pattern);
+  if (!re) {
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+    const reStr = "^" + escaped.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+    re = new RegExp(reStr, "i");
+    _wildcardCache.set(pattern, re);
+  }
+  return re.test(value);
+}
+
 export class Obfuscator {
   readonly config: ShroudConfig;
 
@@ -140,7 +160,7 @@ export class Obfuscator {
       this._tenantManager = new TenantStoreManager();
       this._store = this._tenantManager.getStore(config.tenantId);
     } else {
-      this._store = new MemoryStore();
+      this._store = new MemoryStore(config.maxStoreMappings);
     }
 
     this._subnetMapper = new SubnetMapper();
@@ -324,14 +344,22 @@ export class Obfuscator {
 
     // 5. Filter by confidence threshold, allowlist, and already-obfuscated values
     //    Track filter reasons for FilterStats (QW8)
-    const allowSet = new Set(this.config.allowlist);
+    //    QW1: Split allowlist into exact matches (fast set) and wildcard patterns
+    const allowExact = new Set<string>();
+    const allowWild: string[] = [];
+    for (const a of this.config.allowlist) {
+      if (a.includes("*") || a.includes("?")) allowWild.push(a);
+      else allowExact.add(a);
+    }
     let belowThreshold = 0;
     let allowlisted = 0;
     let alreadyObfuscated = 0;
     const filtered = entities.filter((e) => {
       if (e.confidence < this.config.minConfidence) { belowThreshold++; return false; }
-      // Simple allowlist
-      if (allowSet.has(e.value)) { allowlisted++; return false; }
+      // QW1: Exact allowlist + wildcard patterns
+      if (allowExact.has(e.value) || allowWild.some((p) => wildcardMatch(e.value, p))) {
+        allowlisted++; return false;
+      }
       // Feature 7: Policy allowlist
       if (
         this._policyRules &&

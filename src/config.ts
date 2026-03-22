@@ -170,3 +170,90 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
 
   return config;
 }
+
+/** Validation issue severity. */
+export type ConfigSeverity = "error" | "warning" | "info";
+
+/** A single config validation issue. */
+export interface ConfigIssue {
+  severity: ConfigSeverity;
+  field: string;
+  message: string;
+}
+
+/**
+ * Validate a resolved ShroudConfig and return actionable issues.
+ *
+ * Does NOT throw — callers decide how to handle warnings vs errors.
+ */
+export function validateConfig(config: ShroudConfig): ConfigIssue[] {
+  const issues: ConfigIssue[] = [];
+
+  // Secret key checks
+  if (config.secretKey.length < 16) {
+    issues.push({ severity: "error", field: "secretKey", message: "secretKey is shorter than 16 chars — mappings are weak. Set SHROUD_SECRET_KEY." });
+  } else if (config.secretKey.length < 32) {
+    issues.push({ severity: "warning", field: "secretKey", message: "secretKey is shorter than 32 chars — consider a longer key for production." });
+  }
+
+  // minConfidence range
+  if (config.minConfidence < 0 || config.minConfidence > 1) {
+    issues.push({ severity: "error", field: "minConfidence", message: `minConfidence=${config.minConfidence} is outside [0,1]. Set to a value between 0 and 1.` });
+  }
+
+  // maxStoreMappings negative
+  if (config.maxStoreMappings < 0) {
+    issues.push({ severity: "error", field: "maxStoreMappings", message: "maxStoreMappings must be >= 0 (0 = unlimited)." });
+  }
+
+  // exposureWindow sanity
+  if (config.exposureWindow < 1000 && Object.keys(config.exposureThresholds).length > 0) {
+    issues.push({ severity: "warning", field: "exposureWindow", message: `exposureWindow=${config.exposureWindow}ms is very short — exposure alerts may fire constantly.` });
+  }
+
+  // lockedCategories with invalid values already stripped, but warn if input had unknowns
+  const categoryValues = new Set(Object.values(Category));
+  for (const cat of config.lockedCategories) {
+    if (!categoryValues.has(cat)) {
+      issues.push({ severity: "warning", field: "lockedCategories", message: `Unknown locked category "${cat}" — ignored. Valid: ${[...categoryValues].join(", ")}` });
+    }
+  }
+
+  // Policy file check (only warn — may not be accessible at validation time)
+  if (config.policyFile) {
+    try {
+      const { existsSync } = require("node:fs");
+      if (!existsSync(config.policyFile)) {
+        issues.push({ severity: "warning", field: "policyFile", message: `Policy file "${config.policyFile}" not found.` });
+      }
+    } catch {
+      // skip if fs not available
+    }
+  }
+
+  // sharedStorePath + tenantId conflict
+  if (config.sharedStorePath && config.tenantId) {
+    issues.push({ severity: "warning", field: "sharedStorePath", message: "Both sharedStorePath and tenantId are set — sharedStorePath takes precedence, tenantId is ignored." });
+  }
+
+  // dryRun informational
+  if (config.dryRun) {
+    issues.push({ severity: "info", field: "dryRun", message: "Dry-run mode is active — entities are detected but text is NOT obfuscated." });
+  }
+
+  // Custom patterns with invalid regex
+  for (const cp of config.customPatterns) {
+    try {
+      new RegExp(cp.pattern);
+    } catch {
+      issues.push({ severity: "error", field: "customPatterns", message: `Custom pattern "${cp.name}" has invalid regex: ${cp.pattern}` });
+    }
+  }
+
+  // Detector overrides referencing unknown rules (info-level since we can't check at config time)
+  if (Object.keys(config.detectorOverrides).length > 0) {
+    issues.push({ severity: "info", field: "detectorOverrides", message: `${Object.keys(config.detectorOverrides).length} detector override(s) configured.` });
+  }
+
+  return issues;
+}
