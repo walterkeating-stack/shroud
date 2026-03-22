@@ -7,7 +7,7 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 ## What it does
 
 1. **Detects** 100+ entity types: emails, IPs, phones, API keys, hostnames, SNMP communities, BGP ASNs, credit cards, SSNs, file paths, URLs, person/org/location names, VLANs, route-maps, ACLs, OSPF IDs, IBANs, JWTs, PEM certs, GPS coordinates, ICS/SCADA identifiers, Palo Alto/Check Point/Juniper/Fortinet/F5 config secrets, and custom regex patterns.
-2. **Replaces** each value with a deterministic fake (same input + key = same fake every time). Fakes are format-preserving: IPs stay in CGNAT range, emails keep `@domain` structure, credit cards pass Luhn, etc.
+2. **Replaces** each value with a deterministic fake (same input + key = same fake every time). Fakes are format-preserving: IPv4 stays in CGNAT range (`100.64.0.0/10`), IPv6 uses ULA range (`fd00::/8`), emails keep `@domain` structure, credit cards pass Luhn, etc.
 3. **Deobfuscates** LLM responses and tool parameters so the user sees real values and tools receive real arguments.
 4. **Audit logs** every obfuscation/deobfuscation event with counts, categories, char deltas, and optional proof hashes — never logging raw sensitive values.
 
@@ -268,9 +268,10 @@ Shroud includes a `ContextDetector` that wraps the regex engine with post-detect
 - **Proximity clustering**: When a name, email, and phone appear within 200 characters, each gets a confidence boost.
 - **Hostname propagation**: `hostname FCNETR1` in one place → bare `FCNETR1` detected everywhere in the text.
 - **Learned entities**: Hostnames and infra identifiers seen in previous messages are remembered and detected in future messages without requiring config-line context.
-- **Documentation filtering**: RFC 5737 TEST-NET IPs (192.0.2.x, 198.51.100.x, 203.0.113.x), `example.com` emails, and well-known placeholders are automatically skipped.
+- **Documentation filtering**: RFC 5737 TEST-NET IPs (192.0.2.x, 198.51.100.x, 203.0.113.x), RFC 3849 IPv6 doc prefix (`2001:db8::/32`), IPv6 loopback (`::1`), `example.com` emails, and well-known placeholders are automatically skipped.
 - **Common word decay**: Words like `permit`, `deny`, `default` that happen to match patterns get 50% confidence reduction.
 - **Recursive deobfuscation**: Up to 3 passes for nested structures (fakes inside JSON-encoded strings).
+- **Subnet-aware deobfuscation**: When an LLM derives network/broadcast addresses from fake host IPs (e.g., computing `.0` or `.255`), Shroud reverse-maps them via the SubnetMapper. Works for both CGNAT (IPv4) and ULA (IPv6) fake ranges, including LLM-compressed IPv6 forms.
 
 ## Verify it works
 
@@ -327,7 +328,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (183 tests)
+npm test          # run vitest (203 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```
