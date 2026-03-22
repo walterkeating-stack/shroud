@@ -11,6 +11,7 @@ import {
   Category,
   ComplianceReport,
   DetectedEntity,
+  FilterStats,
   ObfuscationResult,
   ShroudConfig,
 } from "./types.js";
@@ -117,6 +118,8 @@ export class Obfuscator {
   private _canary: CanaryInjector | null;
   private _audit: AuditLogger | null;
   private _ruleHits: Map<string, number> = new Map();
+  private _detectionsByCategory: Map<string, number> = new Map();
+  private _replacementsByCategory: Map<string, number> = new Map();
 
   // Enterprise features
   private _exposureTracker: ExposureTracker | null = null;
@@ -320,22 +323,33 @@ export class Obfuscator {
     const entities = resolveOverlaps(allEntities);
 
     // 5. Filter by confidence threshold, allowlist, and already-obfuscated values
+    //    Track filter reasons for FilterStats (QW8)
     const allowSet = new Set(this.config.allowlist);
+    let belowThreshold = 0;
+    let allowlisted = 0;
+    let alreadyObfuscated = 0;
     const filtered = entities.filter((e) => {
-      if (e.confidence < this.config.minConfidence) return false;
+      if (e.confidence < this.config.minConfidence) { belowThreshold++; return false; }
       // Simple allowlist
-      if (allowSet.has(e.value)) return false;
+      if (allowSet.has(e.value)) { allowlisted++; return false; }
       // Feature 7: Policy allowlist
       if (
         this._policyRules &&
         PolicyLoader.isAllowed(e.value, this._policyRules.allowlist)
       ) {
+        allowlisted++;
         return false;
       }
       // Prevent double-obfuscation: skip values that are already known fakes
-      if (this._store.getReal(e.value) !== undefined) return false;
+      if (this._store.getReal(e.value) !== undefined) { alreadyObfuscated++; return false; }
       return true;
     });
+
+    // QW2: Accumulate per-category detection counts (all entities before filter)
+    for (const entity of entities) {
+      const cat = entity.category;
+      this._detectionsByCategory.set(cat, (this._detectionsByCategory.get(cat) ?? 0) + 1);
+    }
 
     // 5b. Accumulate per-rule hit counts
     for (const entity of filtered) {
@@ -359,40 +373,49 @@ export class Obfuscator {
     this._redactionFormatter.resetCounters();
 
     // 6. Map and replace (process right-to-left to preserve positions)
+    //    QW6: In dry-run mode, compute mappings but skip text replacement.
     let resultText = text;
     const mappingsUsed: Record<string, string> = {};
 
-    for (let i = filtered.length - 1; i >= 0; i--) {
-      const entity = filtered[i];
+    if (!this.config.dryRun) {
+      for (let i = filtered.length - 1; i >= 0; i--) {
+        const entity = filtered[i];
 
-      // Check if we already have a mapping for this exact value
-      let fake = this._store.getFake(entity.value);
-      if (fake === undefined) {
-        fake = this._mapping.mapValue(entity.value, entity.category);
-        this._store.put(entity.value, fake, entity.category);
+        // Check if we already have a mapping for this exact value
+        let fake = this._store.getFake(entity.value);
+        if (fake === undefined) {
+          fake = this._mapping.mapValue(entity.value, entity.category);
+          this._store.put(entity.value, fake, entity.category);
+        }
+
+        // Feature 8: Apply redaction level
+        const replacement = this._redactionFormatter.format(
+          entity.value,
+          fake,
+          entity.category,
+          level,
+        );
+
+        // Feature 10: Provenance tagging
+        let finalReplacement = replacement;
+        if (this.config.provenanceTagging) {
+          const seed = this._mapping.computeSeed(entity.value);
+          const hash4 = (seed & 0xffff).toString(16).padStart(4, "0");
+          finalReplacement = `${replacement}${PROV_OPEN}shroud:${entity.category}:${hash4}${PROV_CLOSE}`;
+        }
+
+        mappingsUsed[entity.value] = fake;
+        resultText =
+          resultText.slice(0, entity.start) +
+          finalReplacement +
+          resultText.slice(entity.end);
+
+        // QW2: per-category replacement count
+        this._replacementsByCategory.set(
+          entity.category,
+          (this._replacementsByCategory.get(entity.category) ?? 0) + 1,
+        );
       }
-
-      // Feature 8: Apply redaction level
-      const replacement = this._redactionFormatter.format(
-        entity.value,
-        fake,
-        entity.category,
-        level,
-      );
-
-      // Feature 10: Provenance tagging
-      let finalReplacement = replacement;
-      if (this.config.provenanceTagging) {
-        const seed = this._mapping.computeSeed(entity.value);
-        const hash4 = (seed & 0xffff).toString(16).padStart(4, "0");
-        finalReplacement = `${replacement}${PROV_OPEN}shroud:${entity.category}:${hash4}${PROV_CLOSE}`;
-      }
-
-      mappingsUsed[entity.value] = fake;
-      resultText =
-        resultText.slice(0, entity.start) +
-        finalReplacement +
-        resultText.slice(entity.end);
     }
 
     // 7. Inject canary token if enabled
@@ -431,12 +454,23 @@ export class Obfuscator {
       );
     }
 
+    // QW8: Build filter stats
+    const filterStats: FilterStats = {
+      totalDetected: entities.length,
+      replaced: filtered.length,
+      belowThreshold,
+      allowlisted,
+      docExamples: 0, // doc examples are filtered inside detectors before reaching here
+      alreadyObfuscated,
+    };
+
     return {
       original: text,
       obfuscated: resultText,
       entities: filtered,
       mappingsUsed,
       complianceReport,
+      filterStats,
     };
   }
 
@@ -793,6 +827,8 @@ export class Obfuscator {
     this._store.clear();
     this._subnetMapper.reset();
     this._ruleHits.clear();
+    this._detectionsByCategory.clear();
+    this._replacementsByCategory.clear();
     this._toolDepth = 0;
     if (this._exposureTracker) this._exposureTracker.reset();
     if (this._contextDetector) this._contextDetector.reset();
@@ -819,6 +855,8 @@ export class Obfuscator {
       canarySessionId: this._canary?.sessionId ?? null,
       audit: auditStats,
       ruleHits: Object.fromEntries(this._ruleHits),
+      detectionsByCategory: Object.fromEntries(this._detectionsByCategory),
+      replacementsByCategory: Object.fromEntries(this._replacementsByCategory),
       // Enterprise
       tenantId: this.config.tenantId || null,
       toolDepth: this._toolDepth,

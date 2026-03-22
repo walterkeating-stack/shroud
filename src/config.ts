@@ -158,6 +158,14 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     // Feature 2: Session handoff
     sessionHandoff:
       typeof raw.sessionHandoff === "boolean" ? raw.sessionHandoff : false,
+
+    // Dry-run mode
+    dryRun:
+      typeof raw.dryRun === "boolean" ? raw.dryRun : false,
+
+    // LRU store eviction (0 = unlimited)
+    maxStoreMappings:
+      typeof raw.maxStoreMappings === "number" ? raw.maxStoreMappings : 0,
   };
 
   return config;
