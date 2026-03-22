@@ -54,6 +54,24 @@ export interface ObfuscationResult {
   mappingsUsed: Record<string, string>;
   /** Compliance report — present when lockedCategories is configured. */
   complianceReport?: ComplianceReport;
+  /** Filtering stats — how many entities were skipped and why. */
+  filterStats?: FilterStats;
+}
+
+/** Breakdown of skipped/filtered entities during obfuscation. */
+export interface FilterStats {
+  /** Total entities detected before filtering. */
+  totalDetected: number;
+  /** Entities that passed filtering and were replaced (or would be in dryRun). */
+  replaced: number;
+  /** Entities skipped because confidence < minConfidence. */
+  belowThreshold: number;
+  /** Entities skipped by allowlist or policy allowlist. */
+  allowlisted: number;
+  /** Entities skipped because they are doc/example values. */
+  docExamples: number;
+  /** Entities skipped because they are already-known fakes. */
+  alreadyObfuscated: number;
 }
 
 /** Compliance check result for locked categories. */
@@ -118,4 +136,10 @@ export interface ShroudConfig {
 
   /** Feature 2: Session handoff — enable export/import of mapping tables. */
   sessionHandoff: boolean;
+
+  /** Dry-run mode: detect entities but don't replace them. */
+  dryRun: boolean;
+
+  /** Max mapping store size; oldest entries evicted when exceeded. 0 = unlimited. */
+  maxStoreMappings: number;
 }

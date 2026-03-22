@@ -33,6 +33,8 @@ const testConfig: ShroudConfig = {
   sharedStoreTtlMs: 5000,
   provenanceTagging: false,
   sessionHandoff: false,
+  dryRun: false,
+  maxStoreMappings: 0,
 };
 
 function makeObfuscator(overrides?: Partial<ShroudConfig>): Obfuscator {
@@ -487,5 +489,125 @@ describe("Subnet-aware deobfuscation", () => {
 
     expect(text).toContain("10.99.1.0");
     expect(replacementCount).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QW6: Dry-run mode
+// ---------------------------------------------------------------------------
+
+describe("Dry-run mode (QW6)", () => {
+  test("dryRun returns original text unchanged", () => {
+    const obf = makeObfuscator({ dryRun: true });
+    const result = obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    expect(result.obfuscated).toBe(result.original);
+    expect(result.obfuscated).toContain("john@acme.com");
+    expect(result.obfuscated).toContain("10.0.0.1");
+  });
+
+  test("dryRun still detects entities", () => {
+    const obf = makeObfuscator({ dryRun: true });
+    const result = obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    expect(result.entities.length).toBeGreaterThan(0);
+    const categories = result.entities.map((e) => e.category);
+    expect(categories).toContain(Category.EMAIL);
+    expect(categories).toContain(Category.IP_ADDRESS);
+  });
+
+  test("dryRun does not populate store mappings", () => {
+    const obf = makeObfuscator({ dryRun: true });
+    obf.obfuscate("Contact john@acme.com");
+    expect(Object.keys(obf.obfuscate("x").mappingsUsed)).toHaveLength(0);
+  });
+
+  test("dryRun returns empty mappingsUsed", () => {
+    const obf = makeObfuscator({ dryRun: true });
+    const result = obf.obfuscate("Contact john@acme.com");
+    expect(Object.keys(result.mappingsUsed)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QW2: Per-category stats
+// ---------------------------------------------------------------------------
+
+describe("Per-category stats (QW2)", () => {
+  test("getStats includes detectionsByCategory", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    const stats = obf.getStats() as any;
+    expect(stats.detectionsByCategory).toBeDefined();
+    expect(stats.detectionsByCategory[Category.EMAIL]).toBeGreaterThanOrEqual(1);
+    expect(stats.detectionsByCategory[Category.IP_ADDRESS]).toBeGreaterThanOrEqual(1);
+  });
+
+  test("getStats includes replacementsByCategory", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    const stats = obf.getStats() as any;
+    expect(stats.replacementsByCategory).toBeDefined();
+    expect(stats.replacementsByCategory[Category.EMAIL]).toBeGreaterThanOrEqual(1);
+    expect(stats.replacementsByCategory[Category.IP_ADDRESS]).toBeGreaterThanOrEqual(1);
+  });
+
+  test("category stats accumulate across calls", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("a@b.com");
+    obf.obfuscate("c@d.com");
+    const stats = obf.getStats() as any;
+    expect(stats.detectionsByCategory[Category.EMAIL]).toBeGreaterThanOrEqual(2);
+  });
+
+  test("reset clears category stats", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("a@b.com");
+    obf.reset();
+    const stats = obf.getStats() as any;
+    expect(stats.detectionsByCategory[Category.EMAIL]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QW8: Filter stats
+// ---------------------------------------------------------------------------
+
+describe("Filter stats (QW8)", () => {
+  test("filterStats present in result", () => {
+    const obf = makeObfuscator();
+    const result = obf.obfuscate("Contact john@acme.com");
+    expect(result.filterStats).toBeDefined();
+    expect(result.filterStats!.totalDetected).toBeGreaterThan(0);
+    expect(result.filterStats!.replaced).toBeGreaterThan(0);
+  });
+
+  test("belowThreshold counted when minConfidence filters", () => {
+    const obf = makeObfuscator({ minConfidence: 0.99 });
+    const result = obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    expect(result.filterStats!.belowThreshold).toBeGreaterThan(0);
+  });
+
+  test("allowlisted counted when allowlist matches", () => {
+    const obf = makeObfuscator({ allowlist: ["john@acme.com"] });
+    const result = obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    expect(result.filterStats!.allowlisted).toBeGreaterThanOrEqual(1);
+  });
+
+  test("alreadyObfuscated counted for known fakes", () => {
+    const obf = makeObfuscator();
+    // First call: creates mapping john@acme.com -> fake
+    const r1 = obf.obfuscate("Contact john@acme.com");
+    const fake = Object.values(r1.mappingsUsed)[0];
+    // Second call: the fake email is detected but should be skipped
+    const r2 = obf.obfuscate(`Contact ${fake}`);
+    expect(r2.filterStats!.alreadyObfuscated).toBeGreaterThanOrEqual(1);
+  });
+
+  test("totalDetected >= replaced + belowThreshold + allowlisted + alreadyObfuscated", () => {
+    const obf = makeObfuscator({ allowlist: ["john@acme.com"], minConfidence: 0.5 });
+    const result = obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    const fs = result.filterStats!;
+    expect(fs.totalDetected).toBeGreaterThanOrEqual(
+      fs.replaced + fs.belowThreshold + fs.allowlisted + fs.alreadyObfuscated
+    );
   });
 });

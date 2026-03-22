@@ -36,6 +36,8 @@ const testConfig: ShroudConfig = {
   sharedStoreTtlMs: 5000,
   provenanceTagging: false,
   sessionHandoff: false,
+  dryRun: false,
+  maxStoreMappings: 0,
 };
 
 function makeObfuscator(overrides?: Partial<ShroudConfig>): Obfuscator {
