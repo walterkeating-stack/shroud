@@ -8,6 +8,19 @@ All notable changes to this project will be documented in this file.
 - **Detector overrides** — disable or change confidence for individual built-in rules via `detectorOverrides` config. Overrides apply to both direct regex and code-aware detection.
 - **Rule hit counters** — per-rule match counts tracked for the process lifetime, surfaced in `getStats().ruleHits` and audit log lines (`byRule=...`).
 - **`shroud-stats` tool** — registered via OpenClaw `registerTool()`, queryable from conversation. Shows all rules with status, confidence, hit counts, store size, and audit status.
+- **Wave 1 enterprise detection rules** (~60 new patterns):
+  - EU/regulated: IBAN, Austrian SVNr, German Personalausweis, EU VAT number, GPS coordinates
+  - Auth tokens: JWT, OAuth refresh tokens, AWS/GCP/Azure/Slack/GitHub/GitLab/Stripe/SendGrid keys
+  - Database: connection strings, JDBC URLs
+  - Certificates: PEM private keys and certificates
+  - Directory services: LDAP bind DN/password, AD domain logins, Windows SIDs
+  - Network vendors: Juniper (secrets, PSK, root-auth, community, description), Palo Alto (API key, password hash, master key, address objects, zones, rules), Check Point (password hash, SIC key, API key, objects, rules, VPN communities), Arista, F5, Fortinet
+  - VPN/IPSec: pre-shared keys, transform sets
+  - ICS/SCADA: OPC-UA endpoints, Modbus addresses, SCADA credentials, IEC 61850 IED names, DNP3 addresses, BACnet device IDs, historian tags
+  - Aviation: ATC sector IDs, NAV frequencies, ICAO designators
+  - Telecom: IMSI, IMEI, CLLI codes
+- **New entity categories**: `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`
+- **Format-preserving generators** for IBAN (preserves country code), national IDs (preserves length), JWT (valid structure), GPS coordinates, ICS identifiers, certificates
 
 ### Changed
 - Detector `detector` field now includes rule name (e.g. `regex:email` instead of `regex`) for finer-grained audit and hit tracking.

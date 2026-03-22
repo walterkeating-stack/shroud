@@ -292,6 +292,408 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     category: Category.ACL_NAME,
     confidence: 0.85,
   },
+
+  // ==========================================================================
+  // Wave 1: Enterprise / Regulated / Critical Infrastructure
+  // ==========================================================================
+
+  // --- Austrian / EU identifiers ---
+  {
+    name: "iban",
+    pattern: /\b[A-Z]{2}\d{2}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{4}[\s]?\d{0,4}\b/g,
+    category: Category.IBAN,
+    confidence: 0.90,
+  },
+  {
+    name: "austrian_svnr",
+    pattern: /\b\d{4}[0-3]\d[01]\d\d{2}\b/g,
+    category: Category.NATIONAL_ID,
+    confidence: 0.80,
+  },
+  {
+    name: "german_personalausweis",
+    pattern: /\b[LMNTPRV][A-Z0-9]{8}\d\b/g,
+    category: Category.NATIONAL_ID,
+    confidence: 0.85,
+  },
+  {
+    name: "eu_vat_number",
+    pattern: /\b(?:AT|DE|FR|IT|NL|ES|BE|PL|CZ|SE|DK|FI|IE|PT|GR|HU|RO|BG|HR|SI|SK|LT|LV|EE|LU|MT|CY)U?\d{8,12}\b/g,
+    category: Category.NATIONAL_ID,
+    confidence: 0.85,
+  },
+  {
+    name: "gps_coordinate",
+    pattern: /(?<!\w)-?\d{1,3}\.\d{4,8}[,\s]+-?\d{1,3}\.\d{4,8}(?!\w)/g,
+    category: Category.GPS_COORDINATE,
+    confidence: 0.85,
+  },
+
+  // --- JWT and OAuth ---
+  {
+    name: "jwt_token",
+    pattern: /\beyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\b/g,
+    category: Category.JWT,
+    confidence: 0.95,
+  },
+  {
+    name: "oauth_refresh_token",
+    pattern: /(?:refresh_token["':\s]+)([A-Za-z0-9\-_]{20,})/g,
+    category: Category.API_KEY,
+    confidence: 0.90,
+  },
+
+  // --- Cloud provider tokens ---
+  {
+    name: "aws_secret_key",
+    pattern: /(?:SecretAccessKey|aws_secret_access_key)["':\s=]+([A-Za-z0-9/+=]{40})/gi,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "gcp_api_key",
+    pattern: /\bAIza[0-9A-Za-z\-_]{35}\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "azure_connection_string",
+    pattern: /DefaultEndpointsProtocol=[^;\s]+;AccountName=[^;\s]+;AccountKey=[^;\s]+/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "slack_token",
+    pattern: /\bxox[bpsar]-[A-Za-z0-9\-]{10,}/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "github_pat",
+    pattern: /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "gitlab_token",
+    pattern: /\bglpat-[A-Za-z0-9\-]{20,}\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "stripe_key",
+    pattern: /\b[sr]k_(?:live|test)_[A-Za-z0-9]{24,}\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "sendgrid_key",
+    pattern: /\bSG\.[A-Za-z0-9\-_]{22}\.[A-Za-z0-9\-_]{43}\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "hashicorp_vault_token",
+    pattern: /\b(?:hvs\.[A-Za-z0-9]{24,}|s\.[A-Za-z0-9]{24})\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+
+  // --- Database connection strings ---
+  {
+    name: "db_connection_string",
+    pattern: /(?:postgres|mysql|mongodb|mongodb\+srv|redis|amqp)s?:\/\/[^\s<>"']+/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "jdbc_url",
+    pattern: /jdbc:(?:oracle|sqlserver|mysql|postgresql|mariadb):[^\s<>"']+/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+
+  // --- Certificates and keys ---
+  {
+    name: "pem_private_key",
+    pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g,
+    category: Category.CERTIFICATE,
+    confidence: 1.00,
+  },
+  {
+    name: "pem_certificate",
+    pattern: /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g,
+    category: Category.CERTIFICATE,
+    confidence: 0.85,
+  },
+
+  // --- LDAP / Active Directory ---
+  {
+    name: "ldap_bind_dn",
+    pattern: /\bCN=[^,]+(?:,(?:OU|DC|O|C)=[^,]+){2,}/gi,
+    category: Category.PERSON_NAME,
+    confidence: 0.90,
+  },
+  {
+    name: "ldap_bind_password",
+    pattern: /(?:bindPassword|LDAP_BIND_PW|ldap_password)["':\s=]+(\S+)/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "ad_domain_login",
+    pattern: /\b[A-Z][A-Z0-9]{1,15}\\[a-zA-Z][a-zA-Z0-9._\-]{0,30}\b/g,
+    category: Category.PERSON_NAME,
+    confidence: 0.85,
+  },
+  {
+    name: "windows_sid",
+    pattern: /\bS-1-5-21-\d+-\d+-\d+(?:-\d+)?\b/g,
+    category: Category.NATIONAL_ID,
+    confidence: 0.90,
+  },
+
+  // --- Juniper ---
+  {
+    name: "junos_secret",
+    pattern: /"\$9\$[A-Za-z0-9./]+"/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "junos_preshared_key",
+    pattern: /(?:pre-shared-key\s+(?:ascii-text|hexadecimal)\s+)"([^"]+)"/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "junos_root_auth",
+    pattern: /(?:encrypted-password\s+)"([^"]+)"/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "junos_community",
+    pattern: /(?:community\s+)(\S+)(?:\s+(?:authorization|clients))/g,
+    category: Category.SNMP_COMMUNITY,
+    confidence: 1.00,
+  },
+  {
+    name: "junos_description",
+    pattern: /(?:description\s+)"([^"]+)"/g,
+    category: Category.INTERFACE_DESC,
+    confidence: 0.90,
+  },
+
+  // --- Palo Alto ---
+  {
+    name: "panos_api_key",
+    pattern: /\bLUFRPT[A-Za-z0-9=+/]{20,}\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "panos_password_hash",
+    pattern: /(?:phash\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "panos_master_key",
+    pattern: /(?:master-key\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "panos_address_object",
+    pattern: /(?:set\s+address\s+)(\S+)(?:\s+ip-netmask)/g,
+    category: Category.HOSTNAME,
+    confidence: 0.80,
+  },
+  {
+    name: "panos_zone_name",
+    pattern: /(?:set\s+zone\s+)(\S+)(?:\s+network)/g,
+    category: Category.ACL_NAME,
+    confidence: 0.80,
+  },
+  {
+    name: "panos_rule_name",
+    pattern: /(?:set\s+rulebase\s+security\s+rules\s+)"?([^"\s]+)"?/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
+  },
+
+  // --- Check Point ---
+  {
+    name: "checkpoint_password_hash",
+    pattern: /(?:set\s+password-hash\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "checkpoint_sic_key",
+    pattern: /(?:sic\s+(?:init|key)\s+)(\S+)/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "checkpoint_api_key",
+    pattern: /(?:api-key\s+)"?([A-Za-z0-9+/=]{20,})"?/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
+    name: "checkpoint_object_name",
+    pattern: /(?:add\s+(?:host|network|group|service-tcp|service-udp)\s+name\s+)"?([^"\s]+)"?/g,
+    category: Category.HOSTNAME,
+    confidence: 0.80,
+  },
+  {
+    name: "checkpoint_rule_name",
+    pattern: /(?:add\s+access-rule\s+.*name\s+)"?([^"\s]+)"?/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
+  },
+  {
+    name: "checkpoint_vpn_community",
+    pattern: /(?:set\s+vpn-community\s+)"?([^"\s]+)"?/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
+  },
+
+  // --- Arista ---
+  {
+    name: "arista_secret",
+    pattern: /(?:secret\s+sha512\s+)(\$6\$[A-Za-z0-9./]+\$[A-Za-z0-9./+]+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+
+  // --- F5 BIG-IP ---
+  {
+    name: "f5_password",
+    pattern: /(?:auth\s+password\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "f5_ssl_passphrase",
+    pattern: /(?:passphrase\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.90,
+  },
+
+  // --- Fortinet ---
+  {
+    name: "fortinet_password",
+    pattern: /(?:set\s+password\s+ENC\s+)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "fortinet_private_key",
+    pattern: /(?:set\s+private-key\s+)"(-----BEGIN[\s\S]*?-----END[^"]+)"/g,
+    category: Category.CERTIFICATE,
+    confidence: 1.00,
+  },
+
+  // --- VPN / IPSec / RADIUS ---
+  {
+    name: "vpn_preshared_key",
+    pattern: /(?:pre-shared-key|preshared-key|crypto\s+isakmp\s+key)\s+(?:\d+\s+)?(\S+)/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "ipsec_transform_set",
+    pattern: /(?:crypto\s+ipsec\s+transform-set\s+)(\S+)/g,
+    category: Category.ACL_NAME,
+    confidence: 0.80,
+  },
+
+  // --- ICS / SCADA ---
+  {
+    name: "opc_ua_endpoint",
+    pattern: /opc\.tcp:\/\/[^\s<>"']+/g,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.90,
+  },
+  {
+    name: "modbus_address",
+    pattern: /(?:modbus|slave|unit[\-_]?id)[\s:=]+(\d{1,3})/gi,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.80,
+  },
+  {
+    name: "scada_credential",
+    pattern: /(?:scada|hmi|plc|rtu|ied)[\-_\s]?(?:password|pass|pwd|credential|auth)[\s:="']+(\S+)/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.00,
+  },
+  {
+    name: "iec61850_ied_name",
+    pattern: /(?:iedName\s*=\s*)"([^"]+)"/g,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.90,
+  },
+  {
+    name: "dnp3_address",
+    pattern: /(?:dnp3|outstation|master)[\-_\s]?(?:address|addr)[\s:=]+(\d{1,5})/gi,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.85,
+  },
+  {
+    name: "bacnet_device_id",
+    pattern: /(?:bacnet|device[\-_]?instance)[\s:=]+(\d{1,7})/gi,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.80,
+  },
+  {
+    name: "historian_tag",
+    pattern: /\\\\[A-Za-z0-9\-_.]+\\[A-Za-z0-9\-_.]+(?:\\[A-Za-z0-9\-_.]+)*/g,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.85,
+  },
+
+  // --- Aviation / ATC ---
+  {
+    name: "atc_sector_id",
+    pattern: /\b(?:TWR|APP|ACC|CTR|GND|DEL|ATIS)[\-_][A-Z0-9]{2,10}\b/g,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.90,
+  },
+  {
+    name: "nav_frequency",
+    pattern: /\b1[01]\d\.\d{1,3}\s?MHz\b/g,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.85,
+  },
+  {
+    name: "icao_designator",
+    pattern: /\b[A-Z]{4}\b(?=[\s\-](?:TWR|APP|GND|CTR|ATIS|RWY|SID|STAR))/g,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.85,
+  },
+
+  // --- Telecom ---
+  {
+    name: "imsi",
+    pattern: /(?:IMSI|imsi)[\s:=]+(\d{15})/g,
+    category: Category.NATIONAL_ID,
+    confidence: 0.95,
+  },
+  {
+    name: "imei",
+    pattern: /(?:IMEI|imei)[\s:=]+(\d{15})/g,
+    category: Category.NATIONAL_ID,
+    confidence: 0.90,
+  },
+  {
+    name: "clli_code",
+    pattern: /\b[A-Z]{6}\d{2}[A-Z0-9]{3}\b/g,
+    category: Category.ICS_IDENTIFIER,
+    confidence: 0.85,
+  },
 ];
 
 /** Check if two spans overlap. */
