@@ -44,14 +44,14 @@ function createMockApi() {
   return { api, handlers, logLines };
 }
 
-describe("hooks - before_agent_start", () => {
+describe("hooks - before_prompt_build", () => {
   test("obfuscates user prompt and returns prependContext", async () => {
     const obf = new Obfuscator(testConfig);
     const { api, handlers } = createMockApi();
     registerHooks(api, obf);
 
     const event = { prompt: "Contact john@acme.com please" };
-    const result = await handlers["before_agent_start"](event);
+    const result = await handlers["before_prompt_build"](event);
     expect(result).toBeDefined();
     expect(result.prependContext).toBeDefined();
     expect(result.prependContext).not.toContain("john@acme.com");
@@ -65,7 +65,7 @@ describe("hooks - before_agent_start", () => {
     registerHooks(api, obf);
 
     const event = { prompt: "Hello world" };
-    const result = await handlers["before_agent_start"](event);
+    const result = await handlers["before_prompt_build"](event);
     expect(result).toBeUndefined();
   });
 
@@ -74,7 +74,7 @@ describe("hooks - before_agent_start", () => {
     const { api, handlers } = createMockApi();
     registerHooks(api, obf);
 
-    const result = await handlers["before_agent_start"]({ prompt: "" });
+    const result = await handlers["before_prompt_build"]({ prompt: "" });
     expect(result).toBeUndefined();
   });
 });
@@ -248,7 +248,7 @@ describe("hooks - full flow with before_llm_send", () => {
     registerHooks(api, obf);
 
     // Step 1: User sends prompt with PII
-    const step1 = await handlers["before_agent_start"]({
+    const step1 = await handlers["before_prompt_build"]({
       prompt: "Look up john@acme.com",
     });
     expect(step1.prependContext).not.toContain("john@acme.com");

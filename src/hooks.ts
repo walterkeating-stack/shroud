@@ -2,7 +2,7 @@
  * OpenClaw lifecycle hooks for the Shroud privacy plugin.
  *
  * Registers 5 hooks:
- * 1. before_agent_start  (async) -- obfuscate user prompt via prependContext
+ * 1. before_prompt_build  (async) -- obfuscate user prompt via prependContext
  * 2. before_llm_send     (async) -- obfuscate LLM input messages + return transformResponse for deobfuscation
  * 3. before_tool_call    (async) -- deobfuscate tool params
  * 4. tool_result_persist  (SYNC) -- obfuscate tool result message
@@ -321,11 +321,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const auditActive = config.auditEnabled || config.verboseLogging;
 
   // -----------------------------------------------------------------------
-  // 1. before_agent_start (async): obfuscate user prompt
-  //    Event: { prompt: string, ... }
+  // 1. before_prompt_build (async): obfuscate user prompt
+  //    Event: { prompt: string, messages?: unknown[], ... }
   //    Return: { prependContext?: string } | void
   // -----------------------------------------------------------------------
-  api.on("before_agent_start", async (event: any) => {
+  api.on("before_prompt_build", async (event: any) => {
     const prompt = event?.prompt;
     if (typeof prompt !== "string" || !prompt) return;
 
@@ -333,7 +333,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (result.entities.length === 0) return; // nothing to obfuscate
 
     api.logger?.info(
-      `[shroud] before_agent_start: obfuscated ${result.entities.length} entities`,
+      `[shroud] before_prompt_build: obfuscated ${result.entities.length} entities`,
     );
 
     return {
