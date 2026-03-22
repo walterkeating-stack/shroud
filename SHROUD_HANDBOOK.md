@@ -8,7 +8,8 @@
 
 1. [What Shroud Does](#1-what-shroud-does)
 2. [Installation & Deployment](#2-installation--deployment)
-3. [Configuration Reference](#3-configuration-reference)
+3. [Where Config Lives](#where-config-lives)
+4. [Configuration Reference](#3-configuration-reference)
 4. [Environment Variables](#4-environment-variables)
 5. [Entity Categories](#5-entity-categories)
 6. [Detection Pipeline](#6-detection-pipeline)
@@ -65,21 +66,9 @@ The LLM never sees real sensitive data. All operations are synchronous and deter
 # Install
 cd shroud && npm run build
 cp -r dist/ ~/.openclaw/extensions/openclaw-shroud/dist/
-
-# Configure in ~/.openclaw/openclaw.json
-{
-  "plugins": {
-    "entries": {
-      "openclaw-shroud": {
-        "enabled": true,
-        "config": {
-          "secretKey": "your-secret-key-32chars-minimum"
-        }
-      }
-    }
-  }
-}
 ```
+
+Then enable Shroud in OpenClaw's config file (see [Where Config Lives](#where-config-lives) below).
 
 ### Private Agent (NCG / Custom)
 
@@ -99,6 +88,42 @@ sendToLLM(result.obfuscated);
 // Deobfuscate LLM response
 const real = obf.deobfuscate(llmResponse);
 ```
+
+---
+
+## Where Config Lives
+
+All Shroud configuration lives in **one file**: `~/.openclaw/openclaw.json`. Shroud's settings go inside the `plugins.entries."openclaw-shroud".config` object:
+
+```jsonc
+// ~/.openclaw/openclaw.json
+{
+  "plugins": {
+    "entries": {
+      "openclaw-shroud": {
+        "enabled": true,
+        "config": {
+          // ← All Shroud config goes here.
+          // Every JSON snippet in this handbook is shorthand
+          // for a key inside this "config" block.
+          "secretKey": "your-secret-key-32chars-minimum",
+          "auditEnabled": true
+        }
+      }
+    }
+  }
+}
+```
+
+**For NCG / custom agents**, there is no config file — you pass the same keys as a plain object to `resolveConfig({ ... })`.
+
+**Environment variables** (e.g. `SHROUD_SECRET_KEY`) override config file values regardless of deployment. See [Environment Variables](#4-environment-variables).
+
+> **Reading the rest of this handbook:** Every JSON snippet shown below is shorthand for keys inside the `"config"` block above. For example, when you see:
+> ```json
+> { "auditEnabled": true, "auditLogFormat": "json" }
+> ```
+> it means add those keys to `~/.openclaw/openclaw.json` → `plugins.entries."openclaw-shroud".config`.
 
 ---
 
@@ -229,7 +254,10 @@ Text flows through four detector layers:
 
 ### Custom Patterns
 
-```json
+In `~/.openclaw/openclaw.json` (inside `plugins.entries."openclaw-shroud".config`):
+
+```jsonc
+// ~/.openclaw/openclaw.json → plugins.entries."openclaw-shroud".config
 {
   "customPatterns": [
     { "name": "employee_id", "pattern": "EMP-\\d{6}", "category": "custom" },
@@ -237,6 +265,8 @@ Text flows through four detector layers:
   ]
 }
 ```
+
+> From here on, all JSON snippets are shorthand for keys inside this same config block.
 
 ---
 
