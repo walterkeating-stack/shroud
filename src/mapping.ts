@@ -1,10 +1,13 @@
 /**
  * Deterministic mapping engine using HMAC + salt for irreversible obfuscation.
  *
- * Uses HMAC-SHA256(secretKey, salt + value) to produce a seed, then indexes
- * into the appropriate generator's fake value pool. The salt adds randomness
- * so that the same real value produces different fake values across sessions
- * (unless the same salt is reused), preventing inference attacks.
+ * Uses HMAC-SHA256(secretKey, salt + tenantId + value) to produce a seed, then
+ * indexes into the appropriate generator's fake value pool. The salt adds
+ * randomness so that the same real value produces different fake values across
+ * sessions (unless the same salt is reused), preventing inference attacks.
+ *
+ * When tenantId is set, it's incorporated into the HMAC message, ensuring the
+ * same value produces different fakes for different tenants.
  */
 
 import { createHmac, randomBytes } from "node:crypto";
@@ -18,11 +21,18 @@ import { CodeGenerator } from "./generators/codes.js";
 export class MappingEngine {
   private readonly _secretKey: Buffer;
   private readonly _salt: Buffer;
+  private readonly _tenantId: string;
   private readonly _generators: Map<Category, BaseGenerator> = new Map();
 
-  constructor(secretKey: string, salt?: string, subnetMapper?: SubnetMapper) {
+  constructor(
+    secretKey: string,
+    salt?: string,
+    subnetMapper?: SubnetMapper,
+    tenantId?: string,
+  ) {
     this._secretKey = Buffer.from(secretKey, "utf-8");
     this._salt = Buffer.from(salt ?? randomBytes(16).toString("hex"), "utf-8");
+    this._tenantId = tenantId ?? "";
     this._registerDefaults(subnetMapper);
   }
 
@@ -50,11 +60,16 @@ export class MappingEngine {
   }
 
   /**
-   * Compute a deterministic seed from a real value using HMAC + salt.
+   * Compute a deterministic seed from a real value using HMAC + salt + tenantId.
    * Reads first 6 bytes as unsigned int (stays in safe integer range).
    */
   computeSeed(value: string): number {
-    const msg = Buffer.concat([this._salt, Buffer.from(value, "utf-8")]);
+    const parts = [this._salt];
+    if (this._tenantId) {
+      parts.push(Buffer.from(this._tenantId, "utf-8"));
+    }
+    parts.push(Buffer.from(value, "utf-8"));
+    const msg = Buffer.concat(parts);
     const digest = createHmac("sha256", this._secretKey).update(msg).digest();
     return digest.readUIntBE(0, 6);
   }

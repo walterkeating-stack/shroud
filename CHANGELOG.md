@@ -21,6 +21,18 @@ All notable changes to this project will be documented in this file.
   - Telecom: IMSI, IMEI, CLLI codes
 - **New entity categories**: `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`
 - **Format-preserving generators** for IBAN (preserves country code), national IDs (preserves length), JWT (valid structure), GPS coordinates, ICS identifiers, certificates
+- **Network device hostname detection** — 4 new patterns: `cisco_hostname`, `device_name_dotted`, `device_name_short`, `device_name_hyphenated`
+- **Enterprise agent features** (10 capabilities):
+  1. **Multi-tenant isolation** — per-tenant HMAC keying and separate mapping stores (`tenantId` config, `SHROUD_TENANT_ID` env)
+  2. **Session handoff** — AES-256-GCM encrypted export/import of mapping tables for cross-session continuity (`sessionHandoff` config, `shroud-session-export`/`shroud-session-import` tools)
+  3. **Tool chain depth awareness** — tracks nested tool calls, warns when depth exceeds `maxToolDepth`
+  4. **Compliance-mode entity locking** — `lockedCategories` config enforces that specified categories MUST be detected; compliance report in `ObfuscationResult` and audit logs
+  5. **Rate-of-exposure tracking** — sliding window counter per category with configurable thresholds; alerts on exposure spikes (`exposureWindow`, `exposureThresholds`, `exposureGlobalThreshold`)
+  6. **Corpus pre-scanning** — `preScanCorpus()` batch API for index-time obfuscation of RAG document collections
+  7. **Policy-as-code** — load allowlist/denylist from external JSON files with glob and regex pattern support (`policyFile` config)
+  8. **Redaction levels** — three output modes: `full` (fake values), `masked` (partial masking), `stats` (category placeholders like `[HOSTNAME-1]`) (`redactionLevel` config)
+  9. **Cross-agent entity consistency** — file-backed shared mapping store for multiple Shroud instances (`sharedStorePath` config, `SHROUD_SHARED_STORE` env)
+  10. **Provenance tagging** — optional `«shroud:category:hash»` markers in output for downstream audit trail (`provenanceTagging` config)
 
 ### Changed
 - Detector `detector` field now includes rule name (e.g. `regex:email` instead of `regex`) for finer-grained audit and hit tracking.
