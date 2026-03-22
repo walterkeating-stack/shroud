@@ -308,16 +308,33 @@ function spansOverlap(
   return false;
 }
 
+/** Override config for individual rules: disable or change confidence. */
+export type DetectorOverrides = Record<string, { enabled?: boolean; confidence?: number }>;
+
 /** Detects sensitive entities using regex patterns. */
 export class RegexDetector implements BaseDetector {
   readonly name = "regex";
   private patterns: PatternDef[];
 
-  constructor(extraPatterns?: PatternDef[]) {
-    this.patterns = [...BUILTIN_PATTERNS];
+  constructor(extraPatterns?: PatternDef[], overrides?: DetectorOverrides) {
+    let patterns = [...BUILTIN_PATTERNS];
     if (extraPatterns) {
-      this.patterns.push(...extraPatterns);
+      patterns.push(...extraPatterns);
     }
+    if (overrides) {
+      patterns = patterns.filter((p) => {
+        const ov = overrides[p.name];
+        return ov?.enabled !== false;
+      });
+      patterns = patterns.map((p) => {
+        const ov = overrides[p.name];
+        if (ov?.confidence !== undefined) {
+          return { ...p, confidence: ov.confidence };
+        }
+        return p;
+      });
+    }
+    this.patterns = patterns;
   }
 
   detect(text: string): DetectedEntity[] {
@@ -363,7 +380,7 @@ export class RegexDetector implements BaseDetector {
               end: grpEnd,
               category: pdef.category,
               confidence: pdef.confidence,
-              detector: this.name,
+              detector: `${this.name}:${pdef.name}`,
             });
           }
         } else {
@@ -386,7 +403,7 @@ export class RegexDetector implements BaseDetector {
             end: span[1],
             category: pdef.category,
             confidence: pdef.confidence,
-            detector: this.name,
+            detector: `${this.name}:${pdef.name}`,
           });
         }
       }

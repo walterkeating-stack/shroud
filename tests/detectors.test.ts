@@ -228,3 +228,33 @@ describe("CustomPatternDetector", () => {
     expect(entities.length).toBe(2);
   });
 });
+
+describe("RegexDetector - overrides", () => {
+  test("disabled rule produces no matches", () => {
+    const detector = new RegexDetector(undefined, { email: { enabled: false } });
+    const entities = detector.detect("Contact john@acme.com");
+    expect(entities.some((e) => e.category === Category.EMAIL)).toBe(false);
+  });
+
+  test("confidence override changes entity confidence", () => {
+    const detector = new RegexDetector(undefined, { ipv4: { confidence: 0.5 } });
+    const entities = detector.detect("Server is at 192.168.1.100");
+    const ip = entities.find((e) => e.category === Category.IP_ADDRESS);
+    expect(ip).toBeDefined();
+    expect(ip!.confidence).toBe(0.5);
+  });
+
+  test("unknown override name is ignored", () => {
+    const detector = new RegexDetector(undefined, { nonexistent_rule: { enabled: false } });
+    const entities = detector.detect("Contact john@acme.com from 10.0.0.1");
+    expect(entities.length).toBeGreaterThan(0);
+  });
+
+  test("detector field includes rule name", () => {
+    const detector = new RegexDetector();
+    const entities = detector.detect("Contact john@acme.com");
+    const email = entities.find((e) => e.category === Category.EMAIL);
+    expect(email).toBeDefined();
+    expect(email!.detector).toBe("regex:email");
+  });
+});

@@ -64,4 +64,5 @@ export interface ShroudConfig {
   auditHashSalt: string;
   auditHashTruncate: number;
   auditMaxFakesSample: number;
+  detectorOverrides: Record<string, { enabled?: boolean; confidence?: number }>;
 }

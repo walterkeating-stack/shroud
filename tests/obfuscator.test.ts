@@ -14,6 +14,13 @@ const testConfig: ShroudConfig = {
   auditEnabled: false,
   logMappings: false,
   customPatterns: [],
+  verboseLogging: false,
+  auditLogFormat: "human" as const,
+  auditIncludeProofHashes: false,
+  auditHashSalt: "",
+  auditHashTruncate: 12,
+  auditMaxFakesSample: 0,
+  detectorOverrides: {},
 };
 
 function makeObfuscator(overrides?: Partial<ShroudConfig>): Obfuscator {
@@ -183,5 +190,39 @@ describe("resolveOverlaps", () => {
 
   test("empty input returns empty", () => {
     expect(resolveOverlaps([])).toEqual([]);
+  });
+});
+
+describe("Obfuscator - rule hit counters", () => {
+  test("getStats includes ruleHits after obfuscation", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    const stats = obf.getStats() as any;
+    expect(stats.ruleHits).toBeDefined();
+    expect(stats.ruleHits["regex:email"]).toBe(1);
+    expect(stats.ruleHits["regex:ipv4"]).toBe(1);
+  });
+
+  test("ruleHits accumulate across calls", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("Email john@acme.com");
+    obf.obfuscate("Email bob@test.com");
+    const stats = obf.getStats() as any;
+    expect(stats.ruleHits["regex:email"]).toBe(2);
+  });
+
+  test("reset clears ruleHits", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("Email john@acme.com");
+    obf.reset();
+    const stats = obf.getStats() as any;
+    expect(Object.keys(stats.ruleHits).length).toBe(0);
+  });
+
+  test("detectorOverrides disables rule in obfuscation", () => {
+    const obf = makeObfuscator({ detectorOverrides: { email: { enabled: false } } });
+    const result = obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    expect(result.obfuscated).toContain("john@acme.com");
+    expect(result.obfuscated).not.toContain("10.0.0.1");
   });
 });
