@@ -12,6 +12,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Obfuscator } from "./obfuscator.js";
 import { ShroudConfig, ObfuscationResult } from "./types.js";
+import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 
 // Generic types for the OpenClaw API (we don't have the SDK as a dependency)
 export interface PluginApi {
@@ -511,5 +512,55 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
 
     return { content: deobfuscated };
+  });
+
+  // -----------------------------------------------------------------------
+  // Tool: shroud-stats — rulebase view with hit counters
+  // -----------------------------------------------------------------------
+  api.registerTool({
+    name: "shroud-stats",
+    description: "Show Shroud privacy plugin status: active rules, per-rule hit counts, store size, and config summary.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    handler: async () => {
+      const stats = obfuscator.config;
+      const overrides = stats.detectorOverrides;
+      const { ruleHits, storeMappings, audit } = obfuscator.getStats() as any;
+
+      // Build rule table: all built-in rules with status + hits
+      const rules = BUILTIN_PATTERNS.map((p) => {
+        const ov = overrides[p.name];
+        const enabled = ov?.enabled !== false;
+        const confidence = ov?.confidence ?? p.confidence;
+        const hits = ruleHits[`regex:${p.name}`] ?? 0;
+        return { name: p.name, category: p.category, enabled, confidence, hits };
+      });
+
+      // Sort by hits descending
+      rules.sort((a, b) => b.hits - a.hits);
+
+      // Format as text table
+      const maxName = Math.max(...rules.map((r) => r.name.length), 4);
+      const maxCat = Math.max(...rules.map((r) => r.category.length), 8);
+      const header = `${"Rule".padEnd(maxName)}  ${"Category".padEnd(maxCat)}  Status    Conf   Hits`;
+      const sep = "─".repeat(header.length);
+      const rows = rules.map((r) => {
+        const status = r.enabled ? "active" : "DISABLED";
+        const bar = r.hits > 0 ? " " + "█".repeat(Math.min(Math.ceil(Math.log2(r.hits + 1)), 16)) : "";
+        return `${r.name.padEnd(maxName)}  ${r.category.padEnd(maxCat)}  ${status.padEnd(8)}  ${r.confidence.toFixed(2).padStart(4)}  ${String(r.hits).padStart(5)}${bar}`;
+      });
+
+      const lines = [
+        `Shroud Rule Hits (since gateway start)`,
+        sep,
+        header,
+        sep,
+        ...rows,
+        sep,
+        `Store: ${storeMappings} active mappings`,
+        `Audit: ${stats.auditEnabled || stats.verboseLogging ? "enabled" : "disabled"}`,
+      ];
+
+      return { content: [{ type: "text", text: lines.join("\n") }] };
+    },
   });
 }

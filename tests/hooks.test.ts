@@ -30,19 +30,22 @@ const testConfig: ShroudConfig = {
  */
 function createMockApi() {
   const handlers: Record<string, Function> = {};
+  const tools: Record<string, { description: string; handler: Function }> = {};
   const logLines: string[] = [];
   const api = {
     on(event: string, handler: Function) {
       handlers[event] = handler;
     },
-    registerTool() {},
+    registerTool(tool: { name: string; description: string; handler: Function }) {
+      tools[tool.name] = { description: tool.description, handler: tool.handler };
+    },
     logger: {
       info(...args: any[]) { logLines.push(args.map(String).join(" ")); },
       warn(...args: any[]) { logLines.push(args.map(String).join(" ")); },
       error(...args: any[]) { logLines.push(args.map(String).join(" ")); },
     },
   };
-  return { api, handlers, logLines };
+  return { api, handlers, tools, logLines };
 }
 
 describe("hooks - before_prompt_build", () => {
@@ -490,5 +493,45 @@ describe("hooks - audit logging", () => {
     expect(deobLines.length).toBe(1);
     expect(deobLines[0]).toContain("replacements=1");
     expect(deobLines[0]).toContain("modified=YES");
+  });
+});
+
+// =========================================================================
+// shroud-stats tool tests
+// =========================================================================
+
+describe("hooks - shroud-stats tool", () => {
+  test("registers shroud-stats tool and returns rule table", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, tools } = createMockApi();
+    registerHooks(api, obf);
+
+    expect(tools["shroud-stats"]).toBeDefined();
+
+    // Generate some hits
+    obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+
+    const result = await tools["shroud-stats"].handler({});
+    const text = result.content[0].text;
+
+    expect(text).toContain("Shroud Rule Hits");
+    expect(text).toContain("email");
+    expect(text).toContain("ipv4");
+    expect(text).toContain("active");
+    expect(text).toContain("Store:");
+  });
+
+  test("shows disabled rules from detectorOverrides", async () => {
+    const obf = new Obfuscator({
+      ...testConfig,
+      detectorOverrides: { phone_intl: { enabled: false } },
+    });
+    const { api, tools } = createMockApi();
+    registerHooks(api, obf);
+
+    const result = await tools["shroud-stats"].handler({});
+    const text = result.content[0].text;
+
+    expect(text).toContain("DISABLED");
   });
 });
