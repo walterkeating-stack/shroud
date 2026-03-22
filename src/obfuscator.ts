@@ -25,6 +25,7 @@ import { BaseDetector } from "./detectors/base.js";
 import { RegexDetector } from "./detectors/regex.js";
 import { CustomPatternDetector } from "./detectors/patterns.js";
 import { CodeDetector } from "./detectors/code.js";
+import { ContextDetector } from "./detectors/context.js";
 import { ExposureTracker, ExposureAlert } from "./exposure.js";
 import { PolicyLoader, PolicyRules } from "./policy.js";
 import { RedactionFormatter, RedactionLevel } from "./redaction.js";
@@ -52,6 +53,7 @@ export class Obfuscator {
   private _exposureTracker: ExposureTracker | null = null;
   private _policyRules: PolicyRules | null = null;
   private _redactionFormatter: RedactionFormatter;
+  private _contextDetector: ContextDetector | null = null;
   private _toolDepth: number = 0;
 
   constructor(config: ShroudConfig) {
@@ -130,7 +132,11 @@ export class Obfuscator {
 
     // Always enable the regex detector (with optional overrides)
     const regexDetector = new RegexDetector(undefined, overrides);
-    this._detectors.push(regexDetector);
+
+    // Wrap with ContextDetector for confidence boosting, proximity,
+    // hostname propagation, learned entities, and frequency decay
+    this._contextDetector = new ContextDetector(regexDetector);
+    this._detectors.push(this._contextDetector);
 
     // Custom patterns if configured
     if (this.config.customPatterns.length > 0) {
@@ -370,6 +376,7 @@ export class Obfuscator {
    *
    * Uses longest-match-first replacement to avoid partial substitutions.
    * Also strips canary tokens and provenance tags.
+   * Runs multiple passes (#8 recursive deobfuscation) for nested structures.
    */
   deobfuscate(text: string): string {
     const startTime = Date.now();
@@ -401,22 +408,31 @@ export class Obfuscator {
       reverse.set(fake, real);
     }
 
-    let result = text;
     const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
-    let replacementCount = 0;
-    for (const fake of fakes) {
-      const real = reverse.get(fake)!;
-      const parts = result.split(fake);
-      if (parts.length > 1) {
-        replacementCount += parts.length - 1;
-        result = parts.join(real);
+
+    // #8: Recursive deobfuscation — multiple passes for nested structures
+    let result = text;
+    let totalReplacements = 0;
+    const MAX_PASSES = 3;
+
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      let passReplacements = 0;
+      for (const fake of fakes) {
+        const real = reverse.get(fake)!;
+        const parts = result.split(fake);
+        if (parts.length > 1) {
+          passReplacements += parts.length - 1;
+          result = parts.join(real);
+        }
       }
+      totalReplacements += passReplacements;
+      if (passReplacements === 0) break; // No more replacements possible
     }
 
     // Audit log
-    if (this._audit && replacementCount > 0) {
+    if (this._audit && totalReplacements > 0) {
       const elapsed = Date.now() - startTime;
-      this._audit.logDeobfuscation(replacementCount, undefined, elapsed);
+      this._audit.logDeobfuscation(totalReplacements, undefined, elapsed);
     }
 
     return result;
@@ -455,16 +471,25 @@ export class Obfuscator {
       reverse.set(fake, real);
     }
 
-    let result = text;
     const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
+
+    // #8: Recursive deobfuscation
+    let result = text;
     let replacementCount = 0;
-    for (const fake of fakes) {
-      const real = reverse.get(fake)!;
-      const parts = result.split(fake);
-      if (parts.length > 1) {
-        replacementCount += parts.length - 1;
-        result = parts.join(real);
+    const MAX_PASSES = 3;
+
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      let passReplacements = 0;
+      for (const fake of fakes) {
+        const real = reverse.get(fake)!;
+        const parts = result.split(fake);
+        if (parts.length > 1) {
+          passReplacements += parts.length - 1;
+          result = parts.join(real);
+        }
       }
+      replacementCount += passReplacements;
+      if (passReplacements === 0) break;
     }
 
     if (this._audit && replacementCount > 0) {
@@ -546,6 +571,7 @@ export class Obfuscator {
     this._ruleHits.clear();
     this._toolDepth = 0;
     if (this._exposureTracker) this._exposureTracker.reset();
+    if (this._contextDetector) this._contextDetector.reset();
     // New salt for new session
     this._mapping = new MappingEngine(
       this.config.secretKey,
@@ -576,6 +602,7 @@ export class Obfuscator {
       provenanceTagging: this.config.provenanceTagging,
       sharedStore: !!this.config.sharedStorePath,
       sessionHandoff: this.config.sessionHandoff,
+      learnedEntities: this._contextDetector?.learnedCount ?? 0,
     };
 
     if (this.config.lockedCategories.length > 0) {
