@@ -28,6 +28,7 @@ Please do **not** open a public issue for security vulnerabilities.
 
 | Version | Supported |
 |---------|-----------|
+| 1.4.x   | Yes       |
 | 1.3.x   | Yes       |
 | < 1.3   | No        |
 
@@ -40,3 +41,8 @@ For production use:
 3. **Enable `auditEnabled`** to verify Shroud is active.
 4. **Leave `logMappings: false`** in production — it exists for debugging only.
 5. **Leave `auditMaxFakesSample: 0`** unless you need to verify fake quality. Fake samples are safe (they are synthetic values, not real data), but minimizing log surface is good practice.
+6. **Rotate keys regularly** using `keys` config or `rotateKey()`. Set `expiresAt` on keys to enforce rotation schedules. Old keys remain for deobfuscation; only the active key is used for new obfuscations.
+7. **Enable SIEM push** (`siemWebhooks`) to stream events to your SOC. Use HTTPS endpoints only. Configure `eventTypes` per endpoint to route high-severity alerts separately.
+8. **Enable active monitoring** (`monitorEnabled`) for anomaly detection — rate spikes, canary leaks, and exposure breaches generate alerts.
+9. **Use per-session isolation** (`sessionIsolation`) in multi-user environments to prevent mapping leakage across conversations.
+10. **Enable hot-reload** (`hotReload`) in production so you can update detection rules without restarting the gateway.

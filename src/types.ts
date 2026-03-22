@@ -142,4 +142,63 @@ export interface ShroudConfig {
 
   /** Max mapping store size; oldest entries evicted when exceeded. 0 = unlimited. */
   maxStoreMappings: number;
+
+  // --- Key rotation ---
+
+  /** Array of versioned keys for key rotation. When set, secretKey is used as fallback only. */
+  keys: Array<{
+    version: number;
+    key: string;
+    createdAt?: string;
+    expiresAt?: string;
+    retired?: boolean;
+  }>;
+
+  /** Which key version to use for new obfuscations. Defaults to highest non-expired. */
+  activeKeyVersion: number;
+
+  // --- SIEM integration ---
+
+  /** SIEM webhook endpoints for real-time event streaming. */
+  siemWebhooks: Array<{
+    url: string;
+    authHeader?: string;
+    headers?: Record<string, string>;
+    eventTypes?: string[];
+  }>;
+  /** Max events before auto-flush (default 100). */
+  siemBatchSize: number;
+  /** Flush interval in ms (default 30000). */
+  siemFlushIntervalMs: number;
+  /** Max retry attempts per flush (default 3). */
+  siemMaxRetries: number;
+  /** Initial retry backoff in ms, doubles each retry (default 1000). */
+  siemRetryBackoffMs: number;
+  /** Event format: 'json' or 'cef' (default 'json'). */
+  siemEventFormat: "json" | "cef";
+
+  // --- Hot-reload ---
+
+  /** Enable hot-reload of detection rules when config files change. */
+  hotReload: boolean;
+  /** Path to a custom patterns JSON file to watch for hot-reload. */
+  customPatternsFile: string;
+  /** Debounce interval for hot-reload in ms (default 1000). */
+  hotReloadDebounceMs: number;
+
+  // --- Per-session isolation ---
+
+  /** Enable per-session isolation (separate stores per session). */
+  sessionIsolation: boolean;
+
+  // --- Active monitoring ---
+
+  /** Enable active monitoring and alerting pipeline. */
+  monitorEnabled: boolean;
+  /** Rolling window for rate baseline in ms (default 60000). */
+  monitorRateWindowMs: number;
+  /** Rate spike multiplier threshold (default 3.0). */
+  monitorSpikeMultiplier: number;
+  /** Max alerts to keep in memory (default 500). */
+  monitorMaxAlerts: number;
 }

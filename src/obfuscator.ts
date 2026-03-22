@@ -30,6 +30,11 @@ import { ContextDetector } from "./detectors/context.js";
 import { ExposureTracker, ExposureAlert } from "./exposure.js";
 import { PolicyLoader, PolicyRules } from "./policy.js";
 import { RedactionFormatter, RedactionLevel } from "./redaction.js";
+import { KeyRing, VersionedKey } from "./keyring.js";
+import { WebhookSink, SiemEventBuilder, SiemEvent, SiemSinkConfig, SiemEventType } from "./siem.js";
+import { DetectorReloader } from "./hot-reload.js";
+import { SessionManager } from "./session.js";
+import { AlertPipeline, MonitorAlert } from "./monitor.js";
 
 /** Provenance tag delimiters. */
 const PROV_OPEN = "\u00ab";
@@ -148,6 +153,21 @@ export class Obfuscator {
   private _contextDetector: ContextDetector | null = null;
   private _toolDepth: number = 0;
 
+  // Key rotation
+  private _keyRing: KeyRing;
+
+  // SIEM
+  private _siemSink: WebhookSink | null = null;
+
+  // Hot-reload
+  private _reloader: DetectorReloader | null = null;
+
+  // Per-session isolation
+  private _sessionManager: SessionManager | null = null;
+
+  // Active monitoring
+  private _monitor: AlertPipeline | null = null;
+
   constructor(config: ShroudConfig) {
     this.config = config;
 
@@ -205,6 +225,88 @@ export class Obfuscator {
     this._redactionFormatter = new RedactionFormatter();
 
     this._initDetectors();
+
+    // --- Key rotation ---
+    if (config.keys && config.keys.length > 0) {
+      const vkeys: VersionedKey[] = config.keys.map((k) => ({
+        version: k.version,
+        key: k.key,
+        createdAt: k.createdAt ?? new Date().toISOString(),
+        expiresAt: k.expiresAt,
+        retired: k.retired,
+      }));
+      this._keyRing = new KeyRing(
+        vkeys,
+        config.activeKeyVersion > 0 ? config.activeKeyVersion : undefined,
+      );
+      // Re-create mapping engine with active key
+      const activeKey = this._keyRing.activeKey();
+      this._mapping = new MappingEngine(
+        activeKey.key,
+        salt,
+        this._subnetMapper,
+        config.tenantId || undefined,
+      );
+    } else {
+      this._keyRing = KeyRing.fromSingleKey(config.secretKey);
+    }
+
+    // --- SIEM sink ---
+    if (config.siemWebhooks && config.siemWebhooks.length > 0) {
+      this._siemSink = new WebhookSink({
+        endpoints: config.siemWebhooks.map((wh) => ({
+          ...wh,
+          eventTypes: wh.eventTypes as SiemEventType[] | undefined,
+        })),
+        batchSize: config.siemBatchSize,
+        flushIntervalMs: config.siemFlushIntervalMs,
+        maxRetries: config.siemMaxRetries,
+        retryBackoffMs: config.siemRetryBackoffMs,
+        eventFormat: config.siemEventFormat,
+      });
+    }
+
+    // --- Hot-reload ---
+    if (config.hotReload ?? false) {
+      this._reloader = new DetectorReloader(
+        {
+          policyFile: config.policyFile || undefined,
+          customPatternsFile: config.customPatternsFile || undefined,
+          debounceMs: config.hotReloadDebounceMs,
+        },
+        (what, data) => this._onHotReload(what, data),
+      );
+      this._reloader.start();
+    }
+
+    // --- Per-session isolation ---
+    if (config.sessionIsolation ?? false) {
+      this._sessionManager = new SessionManager({
+        secretKey: this._keyRing.activeKey().key,
+        canaryEnabled: config.canaryEnabled,
+        canaryPrefix: config.canaryPrefix,
+        maxStoreMappings: config.maxStoreMappings,
+        tenantId: config.tenantId,
+      });
+      // Create initial session
+      this._sessionManager.createSession();
+      const session = this._sessionManager.getActiveSession()!;
+      this._store = session.store;
+      this._mapping = session.mapping;
+      this._subnetMapper = session.subnetMapper;
+      if (session.canary) this._canary = session.canary;
+    }
+
+    // --- Active monitoring ---
+    if (config.monitorEnabled ?? false) {
+      this._monitor = new AlertPipeline({
+        enabled: true,
+        rateWindowMs: config.monitorRateWindowMs,
+        spikeMultiplier: config.monitorSpikeMultiplier,
+        maxAlerts: config.monitorMaxAlerts,
+        onAlert: (alert) => this._onMonitorAlert(alert),
+      });
+    }
   }
 
   private _loadPolicy(): void {
@@ -394,6 +496,20 @@ export class Obfuscator {
         this._exposureTracker.record(entity.category, 1);
       }
       exposureAlerts = this._exposureTracker.check();
+    }
+
+    // Active monitoring: feed detection data
+    if (this._monitor && filtered.length > 0) {
+      const cats = filtered.map((e) => e.category);
+      this._monitor.recordDetection(filtered.length, cats);
+      // Forward exposure breaches to monitor
+      for (const alert of exposureAlerts) {
+        this._monitor.recordExposureBreach(
+          alert.category ?? "global",
+          alert.count ?? 0,
+          alert.threshold ?? 0,
+        );
+      }
     }
 
     // Determine redaction level (context-specific or global)
@@ -692,7 +808,8 @@ export class Obfuscator {
   }
 
   private _encrypt(plaintext: string): string {
-    const key = scryptSync(this.config.secretKey, "shroud-session", 32);
+    const activeKey = this._keyRing.activeKey().key;
+    const key = scryptSync(activeKey, "shroud-session", 32);
     const iv = randomBytes(12);
     const cipher = createCipheriv("aes-256-gcm", key, iv);
     const enc = Buffer.concat([cipher.update(plaintext, "utf-8"), cipher.final()]);
@@ -701,14 +818,31 @@ export class Obfuscator {
   }
 
   private _decrypt(blob: string): string {
-    const key = scryptSync(this.config.secretKey, "shroud-session", 32);
     const buf = Buffer.from(blob, "base64");
     const iv = buf.subarray(0, 12);
     const tag = buf.subarray(12, 28);
     const enc = buf.subarray(28);
-    const decipher = createDecipheriv("aes-256-gcm", key, iv);
-    decipher.setAuthTag(tag);
-    return decipher.update(enc) + decipher.final("utf-8");
+
+    // Try all keys in the ring (active first, then others)
+    const keysToTry = this._keyRing.allKeys();
+    // Put active key first
+    const activeVersion = this._keyRing.activeVersion;
+    keysToTry.sort((a, b) =>
+      a.version === activeVersion ? -1 : b.version === activeVersion ? 1 : 0,
+    );
+
+    for (const vk of keysToTry) {
+      try {
+        const key = scryptSync(vk.key, "shroud-session", 32);
+        const decipher = createDecipheriv("aes-256-gcm", key, iv);
+        decipher.setAuthTag(tag);
+        return decipher.update(enc) + decipher.final("utf-8");
+      } catch {
+        // Wrong key — try next
+        continue;
+      }
+    }
+    throw new Error("Failed to decrypt session blob — no matching key found");
   }
 
   // -------------------------------------------------------------------------
@@ -850,6 +984,184 @@ export class Obfuscator {
     return { text: result, count };
   }
 
+  // -------------------------------------------------------------------------
+  // Key rotation
+  // -------------------------------------------------------------------------
+
+  /** Rotate to a new key. Existing mappings remain valid in the store. */
+  rotateKey(newKey: string, expiresAt?: string): VersionedKey {
+    const oldVersion = this._keyRing.activeVersion;
+    const vk = this._keyRing.addKey(newKey, expiresAt);
+
+    // New mapping engine for new obfuscations
+    this._mapping = new MappingEngine(
+      vk.key,
+      this.config.persistentSalt || undefined,
+      this._subnetMapper,
+      this.config.tenantId || undefined,
+    );
+
+    // SIEM event
+    if (this._siemSink) {
+      this._siemSink.emit(SiemEventBuilder.keyRotation(
+        this.config.tenantId || "default",
+        this._audit?.["_sessionId"] ?? "",
+        { oldVersion, newVersion: vk.version, totalKeys: this._keyRing.size },
+      ));
+    }
+
+    return vk;
+  }
+
+  /** Get key ring info for status reporting. */
+  getKeyInfo(): { active: number; versions: number[]; expired: number[]; retired: number[] } {
+    const allRaw = this._keyRing.allKeysRaw();
+    const active = this._keyRing.activeVersion;
+    const versions = allRaw.map((k) => k.version);
+    const expired = allRaw
+      .filter((k) => k.expiresAt && new Date(k.expiresAt).getTime() <= Date.now())
+      .map((k) => k.version);
+    const retired = allRaw.filter((k) => k.retired).map((k) => k.version);
+    return { active, versions, expired, retired };
+  }
+
+  /** Access the key ring directly. */
+  get keyRing(): KeyRing {
+    return this._keyRing;
+  }
+
+  // -------------------------------------------------------------------------
+  // SIEM sink
+  // -------------------------------------------------------------------------
+
+  /** Access the SIEM sink for emitting events from hooks. */
+  get siemSink(): WebhookSink | null {
+    return this._siemSink;
+  }
+
+  /** Emit a SIEM event (convenience method). */
+  emitSiemEvent(event: SiemEvent): void {
+    this._siemSink?.emit(event);
+  }
+
+  /** Shutdown: flush SIEM sink and stop hot-reload watcher. */
+  async shutdown(): Promise<void> {
+    if (this._siemSink) await this._siemSink.destroy();
+    if (this._reloader) this._reloader.stop();
+  }
+
+  // -------------------------------------------------------------------------
+  // Hot-reload
+  // -------------------------------------------------------------------------
+
+  /** Access the hot-reload controller. */
+  get reloader(): DetectorReloader | null {
+    return this._reloader;
+  }
+
+  /** Handle hot-reload callback. */
+  private _onHotReload(what: "policy" | "customPatterns" | "detectorOverrides", data?: unknown): void {
+    if (what === "policy" && data) {
+      try {
+        this._policyRules = data as PolicyRules;
+      } catch {
+        console.warn("[shroud][hot-reload] Failed to apply new policy rules");
+      }
+    } else if (what === "customPatterns" && data) {
+      try {
+        const patterns = data as Array<{ name: string; pattern: string; category?: string }>;
+        // Remove old custom pattern detector and add new one
+        this._detectors = this._detectors.filter((d) => !(d instanceof CustomPatternDetector));
+        if (patterns.length > 0) {
+          this._detectors.push(new CustomPatternDetector(patterns));
+        }
+      } catch {
+        console.warn("[shroud][hot-reload] Failed to apply new custom patterns");
+      }
+    } else if (what === "detectorOverrides" && data) {
+      try {
+        const overrides = data as Record<string, { enabled?: boolean; confidence?: number }>;
+        // Re-initialize detectors with new overrides
+        this._detectors = [];
+        const regexDetector = new RegexDetector(undefined, overrides);
+        this._contextDetector = new ContextDetector(regexDetector);
+        this._detectors.push(this._contextDetector);
+        if (this.config.customPatterns.length > 0) {
+          this._detectors.push(new CustomPatternDetector(this.config.customPatterns));
+        }
+        this._detectors.push(new CodeDetector(regexDetector));
+      } catch {
+        console.warn("[shroud][hot-reload] Failed to apply detector overrides");
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Per-session isolation
+  // -------------------------------------------------------------------------
+
+  /** Access the session manager (null if session isolation is disabled). */
+  get sessionManager(): SessionManager | null {
+    return this._sessionManager;
+  }
+
+  /** Create a new isolated session and switch to it. */
+  createSession(sessionId?: string): string {
+    if (!this._sessionManager) {
+      throw new Error("Session isolation is not enabled. Set sessionIsolation: true in config.");
+    }
+    const id = this._sessionManager.createSession(sessionId);
+    const session = this._sessionManager.getActiveSession()!;
+    this._store = session.store;
+    this._mapping = session.mapping;
+    this._subnetMapper = session.subnetMapper;
+    if (session.canary) this._canary = session.canary;
+    return id;
+  }
+
+  /** Switch to an existing session. */
+  switchSession(sessionId: string): void {
+    if (!this._sessionManager) {
+      throw new Error("Session isolation is not enabled.");
+    }
+    this._sessionManager.switchSession(sessionId);
+    const session = this._sessionManager.getActiveSession()!;
+    this._store = session.store;
+    this._mapping = session.mapping;
+    this._subnetMapper = session.subnetMapper;
+    if (session.canary) this._canary = session.canary;
+  }
+
+  /** Destroy a session and its data. */
+  destroySession(sessionId: string): void {
+    if (!this._sessionManager) return;
+    this._sessionManager.destroySession(sessionId);
+  }
+
+  // -------------------------------------------------------------------------
+  // Active monitoring
+  // -------------------------------------------------------------------------
+
+  /** Access the monitor pipeline (null if monitoring is disabled). */
+  get monitor(): AlertPipeline | null {
+    return this._monitor;
+  }
+
+  /** Handle monitor alert callback — forward to SIEM sink. */
+  private _onMonitorAlert(alert: MonitorAlert): void {
+    if (this._siemSink) {
+      this._siemSink.emit(SiemEventBuilder.monitorAlert(
+        this.config.tenantId || "default",
+        this._audit?.["_sessionId"] ?? "",
+        {
+          alertType: alert.alertType,
+          message: alert.message,
+          details: alert.details,
+        },
+      ));
+    }
+  }
+
   /** Clear all mappings and start fresh. */
   reset(): void {
     this._store.clear();
@@ -906,6 +1218,36 @@ export class Obfuscator {
     if (this._tenantManager) {
       stats.tenants = this._tenantManager.tenantIds();
       stats.totalTenantMappings = this._tenantManager.totalSize();
+    }
+
+    // Key rotation info
+    stats.keyRotation = this.getKeyInfo();
+
+    // SIEM sink stats
+    if (this._siemSink) {
+      stats.siem = this._siemSink.getStats();
+    }
+
+    // Hot-reload info
+    if (this._reloader) {
+      stats.hotReload = {
+        watching: this._reloader.isWatching,
+        reloadCount: this._reloader.reloadCount,
+      };
+    }
+
+    // Session isolation info
+    if (this._sessionManager) {
+      stats.sessions = {
+        active: this._sessionManager.activeSessionId,
+        count: this._sessionManager.sessionCount,
+        list: this._sessionManager.listSessions(),
+      };
+    }
+
+    // Active monitoring stats
+    if (this._monitor) {
+      stats.monitor = this._monitor.getStats();
     }
 
     return stats;
