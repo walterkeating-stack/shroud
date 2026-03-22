@@ -1,7 +1,7 @@
 {
   "id": "openclaw-shroud",
   "name": "Shroud",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Privacy obfuscation with deterministic fake values and deobfuscation — PII never reaches the LLM, tool calls still work",
   "configSchema": {
     "type": "object",
