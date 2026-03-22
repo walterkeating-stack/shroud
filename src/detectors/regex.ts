@@ -5,7 +5,7 @@ import { BaseDetector } from "./base.js";
 
 /**
  * Subnet masks and wildcard masks should never be obfuscated.
- * Inspired by NCG sanitizer's mask detection heuristics.
+ * Common mask prefixes used to avoid false-positive IP obfuscation.
  */
 const MASK_PREFIXES: ReadonlySet<string> = new Set([
   "255.", "0.0.0.", "0.0.255.", "0.0.15.", "0.0.3.", "0.0.1.",
