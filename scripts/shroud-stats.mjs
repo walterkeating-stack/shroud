@@ -82,6 +82,23 @@ const rules = BUILTIN_PATTERNS.map((p) => {
 
 rules.sort((a, b) => b.hits - a.hits);
 
+// JSON output mode
+if (process.argv.includes("--json")) {
+  const output = {
+    source,
+    storeMappings,
+    auditEnabled: config.auditEnabled || config.verboseLogging || false,
+    overrideCount: Object.keys(overrides).length,
+    rules,
+  };
+  if (liveStats) {
+    output.pid = liveStats.pid;
+    output.updatedAt = liveStats.updatedAt;
+  }
+  process.stdout.write(JSON.stringify(output, null, 2) + "\n");
+  process.exit(0);
+}
+
 // Format table
 const maxName = Math.max(...rules.map((r) => r.name.length), 4);
 const maxCat = Math.max(...rules.map((r) => r.category.length), 8);

@@ -229,6 +229,51 @@ describe("CustomPatternDetector", () => {
   });
 });
 
+describe("RegexDetector - base64 secrets", () => {
+  const detector = new RegexDetector();
+
+  test("detect SECRET= base64 value", () => {
+    const entities = detector.detect("SECRET=dGhpc2lzYXZlcnlsb25nc2VjcmV0a2V5");
+    expect(entities.some((e) => e.category === Category.API_KEY)).toBe(true);
+  });
+
+  test("detect base64: prefixed value", () => {
+    const entities = detector.detect("password is base64:c2VjcmV0cGFzcw==");
+    expect(entities.some((e) => e.category === Category.API_KEY)).toBe(true);
+  });
+
+  test("ignore short base64", () => {
+    const entities = detector.detect("base64:abc");
+    expect(entities.some((e) => e.detector === "regex:base64_prefixed")).toBe(false);
+  });
+});
+
+describe("RegexDetector - URL/connection-string credentials", () => {
+  const detector = new RegexDetector();
+
+  test("detect password in query param", () => {
+    const entities = detector.detect("https://app.corp.internal/api?password=SHROUD_TEST_PASSWORD=admin");
+    expect(entities.some((e) => e.category === Category.NETWORK_CREDENTIAL
+      && e.value === "s3cr3tValue")).toBe(true);
+  });
+
+  test("detect token in query param", () => {
+    const entities = detector.detect("url: https://api.corp.internal/v1?api_key=abcdef123456xyz");
+    expect(entities.some((e) => e.category === Category.NETWORK_CREDENTIAL
+      && e.value === "abcdef123456xyz")).toBe(true);
+  });
+
+  test("detect postgres connection string", () => {
+    const entities = detector.detect("postgres://admin:MyP4ssw0rd@db.internal:5432/production");
+    expect(entities.some((e) => e.category === Category.NETWORK_CREDENTIAL)).toBe(true);
+  });
+
+  test("detect mongodb connection string", () => {
+    const entities = detector.detect("mongodb://root:hunter2@mongo.cluster:27017/app");
+    expect(entities.some((e) => e.category === Category.NETWORK_CREDENTIAL)).toBe(true);
+  });
+});
+
 describe("RegexDetector - overrides", () => {
   test("disabled rule produces no matches", () => {
     const detector = new RegexDetector(undefined, { email: { enabled: false } });
