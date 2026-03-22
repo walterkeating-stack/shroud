@@ -132,8 +132,9 @@ Rules not listed keep their defaults. Overrides apply to both direct regex detec
 
 ### Rule hit counters
 
-Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in two places:
+Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in three places:
 
+- **`shroud-stats` tool** — ask the LLM *"use the shroud-stats tool"* during any OpenClaw conversation. Returns a table of all rules with status, confidence, and hit counts (sorted by hits, log-scaled bar chart).
 - **Audit log lines** — `byRule=regex:email:3,regex:ipv4:2,...` alongside the existing `byCat` field.
 - **`getStats()`** — the `ruleHits` object in the stats response, useful for programmatic access.
 
