@@ -42,6 +42,12 @@ export class CodeGenerator implements BaseGenerator {
     Category.CREDIT_CARD,
     Category.SSN,
     Category.PHONE,
+    Category.IBAN,
+    Category.NATIONAL_ID,
+    Category.JWT,
+    Category.GPS_COORDINATE,
+    Category.ICS_IDENTIFIER,
+    Category.CERTIFICATE,
   ];
 
   generate(category: Category, seed: number, original = ""): string {
@@ -55,6 +61,18 @@ export class CodeGenerator implements BaseGenerator {
       return this._fakeSsn(seed);
     } else if (category === Category.PHONE) {
       return this._fakePhone(seed, original);
+    } else if (category === Category.IBAN) {
+      return this._fakeIban(seed, original);
+    } else if (category === Category.NATIONAL_ID) {
+      return this._fakeNationalId(seed, original);
+    } else if (category === Category.JWT) {
+      return this._fakeJwt(seed);
+    } else if (category === Category.GPS_COORDINATE) {
+      return this._fakeGps(seed);
+    } else if (category === Category.ICS_IDENTIFIER) {
+      return `ICS-${String(seed % 100000).padStart(5, "0")}`;
+    } else if (category === Category.CERTIFICATE) {
+      return `[REDACTED-CERT-${String(seed % 10000).padStart(4, "0")}]`;
     }
     return `code-${String(seed % 10000).padStart(4, "0")}`;
   }
@@ -192,5 +210,32 @@ export class CodeGenerator implements BaseGenerator {
     } else {
       return `${area}${sep}${mid}${sep}${lastStr}`;
     }
+  }
+
+  _fakeIban(seed: number, original: string): string {
+    // Preserve country code, generate fake digits
+    const cc = original.slice(0, 2).toUpperCase() || "DE";
+    const check = String(seed % 98).padStart(2, "0");
+    const body = String(seed).padStart(18, "0").slice(0, 18);
+    return `${cc}${check}${body}`;
+  }
+
+  _fakeNationalId(seed: number, original: string): string {
+    // Preserve length and format (digits/letters)
+    const len = original.length || 10;
+    const digits = String(seed).padStart(len, "0").slice(0, len);
+    return digits;
+  }
+
+  _fakeJwt(seed: number): string {
+    const h = createHash("sha256").update(String(seed)).digest("base64url");
+    return `eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.${h}`;
+  }
+
+  _fakeGps(seed: number): string {
+    // Generate coordinates near null island (0,0) — clearly fake
+    const lat = ((seed % 18000) / 100 - 90).toFixed(6);
+    const lon = (((seed >>> 8) % 36000) / 100 - 180).toFixed(6);
+    return `${lat}, ${lon}`;
   }
 }
