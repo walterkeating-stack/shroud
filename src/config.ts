@@ -87,6 +87,10 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       typeof raw.auditMaxFakesSample === "number"
         ? raw.auditMaxFakesSample
         : 0,
+    detectorOverrides:
+      raw.detectorOverrides != null && typeof raw.detectorOverrides === "object"
+        ? (raw.detectorOverrides as Record<string, { enabled?: boolean; confidence?: number }>)
+        : {},
   };
 
   return config;

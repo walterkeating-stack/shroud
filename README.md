@@ -112,8 +112,32 @@ To enable proof hashes and fake samples for deeper audit:
 | `auditMaxFakesSample` | number | `0` | Include up to N fake values in audit (0 = off) |
 | `logMappings` | boolean | `false` | Log mapping table (debug only) |
 | `customPatterns` | array | `[]` | User-defined regex detection patterns |
+| `detectorOverrides` | object | `{}` | Override built-in rules: disable or change confidence per rule name |
 
 > **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override `secretKey` and `persistentSalt` respectively (priority: env var > plugin config > default).
+
+### Detector overrides
+
+Disable or tune individual detection rules by name. Rule names match the built-in pattern names (e.g. `email`, `ipv4`, `phone_intl`, `cisco_enable_secret`). See `src/detectors/regex.ts` for the full list.
+
+```jsonc
+"detectorOverrides": {
+  "phone_intl": { "enabled": false },         // disable international phone detection
+  "file_path_unix": { "confidence": 0.5 },    // lower confidence (filtered by minConfidence)
+  "snmp_community": { "confidence": 1.0 }     // boost to always match
+}
+```
+
+Rules not listed keep their defaults. Overrides apply to both direct regex detection and code-aware detection.
+
+### Rule hit counters
+
+Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in two places:
+
+- **Audit log lines** — `byRule=regex:email:3,regex:ipv4:2,...` alongside the existing `byCat` field.
+- **`getStats()`** — the `ruleHits` object in the stats response, useful for programmatic access.
+
+Counters reset on `reset()` or gateway restart.
 
 ## Verify it works
 

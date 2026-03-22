@@ -53,6 +53,7 @@ function truncateHash(hash: string, n: number): string {
 interface ObfuscationStats {
   totalEntities: number;
   byCategory: Record<string, number>;
+  byRule: Record<string, number>;
   messagesTouched: number;
   blocksTouched: number;
   inputChars: number;
@@ -143,6 +144,7 @@ function obfuscateMessagesWithStats(
   const stats: ObfuscationStats = {
     totalEntities: 0,
     byCategory: {},
+    byRule: {},
     messagesTouched: 0,
     blocksTouched: 0,
     inputChars: 0,
@@ -203,6 +205,7 @@ function accumulateStats(
   for (const entity of result.entities) {
     stats.totalEntities++;
     stats.byCategory[entity.category] = (stats.byCategory[entity.category] || 0) + 1;
+    stats.byRule[entity.detector] = (stats.byRule[entity.detector] || 0) + 1;
   }
   // Collect fake values only (never real values)
   if (maxFakes > 0 && stats.fakesSample.length < maxFakes) {
@@ -227,6 +230,9 @@ function emitAuditLog(
   concatenatedObfuscated: string,
 ): void {
   const byCatStr = Object.entries(stats.byCategory)
+    .map(([k, v]) => `${k}:${v}`)
+    .join(",");
+  const byRuleStr = Object.entries(stats.byRule)
     .map(([k, v]) => `${k}:${v}`)
     .join(",");
 
@@ -260,6 +266,7 @@ function emitAuditLog(
       outputChars: stats.outputChars,
       charDelta,
       byCategory: stats.byCategory,
+      byRule: stats.byRule,
     };
     if (config.auditIncludeProofHashes) {
       obj.proofIn = proofHashIn;
@@ -278,6 +285,7 @@ function emitAuditLog(
       `chars=${stats.inputChars}->${stats.outputChars} (delta=${charDelta >= 0 ? "+" : ""}${charDelta})`,
       `modified=${modified ? "YES" : "NO"}`,
       `byCat=${byCatStr || "none"}`,
+      `byRule=${byRuleStr || "none"}`,
     ];
     if (config.auditIncludeProofHashes) {
       parts.push(`proof_in=${proofHashIn} proof_out=${proofHashOut}`);

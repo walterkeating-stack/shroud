@@ -21,6 +21,7 @@ const testConfig: ShroudConfig = {
   auditHashSalt: "",
   auditHashTruncate: 12,
   auditMaxFakesSample: 0,
+  detectorOverrides: {},
 };
 
 /**
@@ -343,6 +344,8 @@ describe("hooks - audit logging", () => {
     expect(auditLines[0]).toContain("blocks=");
     expect(auditLines[0]).toContain("delta=");
     expect(auditLines[0]).toContain("modified=YES");
+    expect(auditLines[0]).toContain("byRule=");
+    expect(auditLines[0]).toMatch(/regex:email:\d/);
   });
 
   test("JSON format: emits valid JSON with expected fields", async () => {

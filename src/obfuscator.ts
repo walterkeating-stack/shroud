@@ -29,6 +29,7 @@ export class Obfuscator {
   private _detectors: BaseDetector[];
   private _canary: CanaryInjector | null;
   private _audit: AuditLogger | null;
+  private _ruleHits: Map<string, number> = new Map();
 
   constructor(config: ShroudConfig) {
     this.config = config;
@@ -59,8 +60,11 @@ export class Obfuscator {
   }
 
   private _initDetectors(): void {
-    // Always enable the regex detector
-    this._detectors.push(new RegexDetector());
+    const overrides = this.config.detectorOverrides;
+
+    // Always enable the regex detector (with optional overrides)
+    const regexDetector = new RegexDetector(undefined, overrides);
+    this._detectors.push(regexDetector);
 
     // Custom patterns if configured
     if (this.config.customPatterns.length > 0) {
@@ -69,8 +73,8 @@ export class Obfuscator {
       );
     }
 
-    // Code-aware detector (always enabled)
-    this._detectors.push(new CodeDetector());
+    // Code-aware detector shares the same configured regex detector
+    this._detectors.push(new CodeDetector(regexDetector));
   }
 
   /** Add a custom detector at runtime. */
@@ -133,6 +137,11 @@ export class Obfuscator {
         // Prevent double-obfuscation: skip values that are already known fakes
         this._store.getReal(e.value) === undefined,
     );
+
+    // 5b. Accumulate per-rule hit counts
+    for (const entity of filtered) {
+      this._ruleHits.set(entity.detector, (this._ruleHits.get(entity.detector) ?? 0) + 1);
+    }
 
     // 6. Map and replace (process right-to-left to preserve positions)
     let resultText = text;
@@ -283,6 +292,7 @@ export class Obfuscator {
   reset(): void {
     this._store.clear();
     this._subnetMapper.reset();
+    this._ruleHits.clear();
     // New salt for new session
     this._mapping = new MappingEngine(
       this.config.secretKey,
@@ -304,6 +314,7 @@ export class Obfuscator {
       salt: this._mapping.salt,
       canarySessionId: this._canary?.sessionId ?? null,
       audit: auditStats,
+      ruleHits: Object.fromEntries(this._ruleHits),
     };
   }
 }

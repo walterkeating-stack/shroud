@@ -85,8 +85,8 @@ export class CodeDetector implements BaseDetector {
   readonly name = "code";
   private _inner: RegexDetector;
 
-  constructor() {
-    this._inner = new RegexDetector();
+  constructor(inner?: RegexDetector) {
+    this._inner = inner ?? new RegexDetector();
   }
 
   detect(text: string): DetectedEntity[] {
