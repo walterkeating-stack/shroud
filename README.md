@@ -113,8 +113,21 @@ To enable proof hashes and fake samples for deeper audit:
 | `logMappings` | boolean | `false` | Log mapping table (debug only) |
 | `customPatterns` | array | `[]` | User-defined regex detection patterns |
 | `detectorOverrides` | object | `{}` | Override built-in rules: disable or change confidence per rule name |
+| **Enterprise** | | | |
+| `tenantId` | string | `""` | Multi-tenant isolation: tenant ID for HMAC keying |
+| `lockedCategories` | string[] | `[]` | Compliance mode: categories that MUST be detected |
+| `maxToolDepth` | number | `10` | Max nested tool call depth before warning |
+| `exposureWindow` | number | `60000` | Sliding window (ms) for exposure rate tracking |
+| `exposureThresholds` | object | `{}` | Per-category max detections per window |
+| `exposureGlobalThreshold` | number | `100` | Global max detections per window |
+| `policyFile` | string | `""` | Path to external JSON policy file (allowlist/denylist with glob/regex) |
+| `redactionLevel` | `"full"` \| `"masked"` \| `"stats"` | `"full"` | Output mode: fake values, partial masking, or category placeholders |
+| `sharedStorePath` | string | `""` | File path for cross-agent shared mapping store |
+| `sharedStoreTtlMs` | number | `5000` | Cache TTL for shared store reads (ms) |
+| `provenanceTagging` | boolean | `false` | Embed `«shroud:category:hash»` markers in output |
+| `sessionHandoff` | boolean | `false` | Enable session export/import tools |
 
-> **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override `secretKey` and `persistentSalt` respectively (priority: env var > plugin config > default).
+> **Env var overrides:** `SHROUD_SECRET_KEY`, `SHROUD_PERSISTENT_SALT`, `SHROUD_TENANT_ID`, and `SHROUD_SHARED_STORE` override their respective config keys (priority: env var > plugin config > default).
 
 ### Detector overrides
 
@@ -187,7 +200,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (114 tests)
+npm test          # run vitest (163 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```

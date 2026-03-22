@@ -22,6 +22,18 @@ const testConfig: ShroudConfig = {
   auditHashTruncate: 12,
   auditMaxFakesSample: 0,
   detectorOverrides: {},
+  tenantId: "",
+  maxToolDepth: 10,
+  lockedCategories: [],
+  exposureWindow: 60000,
+  exposureThresholds: {},
+  exposureGlobalThreshold: 100,
+  policyFile: "",
+  redactionLevel: "full" as const,
+  sharedStorePath: "",
+  sharedStoreTtlMs: 5000,
+  provenanceTagging: false,
+  sessionHandoff: false,
 };
 
 /**

@@ -4,7 +4,7 @@
  * Registers 5 hooks:
  * 1. before_prompt_build  (async) -- obfuscate user prompt via prependContext
  * 2. before_llm_send     (async) -- obfuscate LLM input messages + return transformResponse for deobfuscation
- * 3. before_tool_call    (async) -- deobfuscate tool params
+ * 3. before_tool_call    (async) -- deobfuscate tool params (+ depth tracking)
  * 4. tool_result_persist  (SYNC) -- obfuscate tool result message
  * 5. message_sending     (async) -- deobfuscate outbound message content (fallback)
  */
@@ -12,7 +12,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
-import { ShroudConfig, ObfuscationResult } from "./types.js";
+import { ShroudConfig, ObfuscationResult, ComplianceReport } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 
 const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
@@ -117,11 +117,6 @@ function walkStrings(
 // obfuscateMessages (original, no stats)
 // ---------------------------------------------------------------------------
 
-/**
- * Walk LLM messages array and obfuscate all string content.
- * Messages follow the Anthropic/OpenAI format: array of {role, content} where
- * content can be a string or array of content blocks.
- */
 function obfuscateMessages(
   messages: unknown[],
   obfuscator: Obfuscator,
@@ -156,7 +151,7 @@ function obfuscateMessagesWithStats(
   messages: unknown[],
   obfuscator: Obfuscator,
   config: ShroudConfig,
-): { messages: unknown[]; stats: ObfuscationStats } {
+): { messages: unknown[]; stats: ObfuscationStats; complianceReport?: ComplianceReport } {
   const stats: ObfuscationStats = {
     totalEntities: 0,
     byCategory: {},
@@ -169,6 +164,7 @@ function obfuscateMessagesWithStats(
   };
 
   const maxFakes = config.auditMaxFakesSample;
+  let lastComplianceReport: ComplianceReport | undefined;
 
   const obfuscatedMessages = messages.map((msg: any) => {
     if (!msg || typeof msg !== "object") return msg;
@@ -177,6 +173,7 @@ function obfuscateMessagesWithStats(
       const result = obfuscator.obfuscate(msg.content);
       stats.inputChars += msg.content.length;
       stats.outputChars += result.obfuscated.length;
+      if (result.complianceReport) lastComplianceReport = result.complianceReport;
       if (result.entities.length > 0) {
         stats.messagesTouched++;
         stats.blocksTouched++;
@@ -193,6 +190,7 @@ function obfuscateMessagesWithStats(
           const result = obfuscator.obfuscate(block.text);
           stats.inputChars += block.text.length;
           stats.outputChars += result.obfuscated.length;
+          if (result.complianceReport) lastComplianceReport = result.complianceReport;
           if (result.entities.length > 0) {
             msgTouched = true;
             stats.blocksTouched++;
@@ -210,7 +208,7 @@ function obfuscateMessagesWithStats(
     return msg;
   });
 
-  return { messages: obfuscatedMessages, stats };
+  return { messages: obfuscatedMessages, stats, complianceReport: lastComplianceReport };
 }
 
 function accumulateStats(
@@ -244,6 +242,7 @@ function emitAuditLog(
   totalMessages: number,
   concatenatedOriginal: string,
   concatenatedObfuscated: string,
+  complianceReport?: ComplianceReport,
 ): void {
   const byCatStr = Object.entries(stats.byCategory)
     .map(([k, v]) => `${k}:${v}`)
@@ -291,6 +290,9 @@ function emitAuditLog(
     if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
       obj.fakesSample = stats.fakesSample;
     }
+    if (complianceReport) {
+      obj.compliance = complianceReport;
+    }
     logger?.info(JSON.stringify(obj));
   } else {
     const parts = [
@@ -308,6 +310,9 @@ function emitAuditLog(
     }
     if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
       parts.push(`fakes=[${stats.fakesSample.join("|")}]`);
+    }
+    if (complianceReport && !complianceReport.passed) {
+      parts.push(`COMPLIANCE_WARN=missing:[${complianceReport.missing.join(",")}]`);
     }
     logger?.info(parts.join(" | "));
   }
@@ -346,15 +351,26 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
-  //    Event: { prompt: string, messages?: unknown[], ... }
-  //    Return: { prependContext?: string } | void
   // -----------------------------------------------------------------------
   api.on("before_prompt_build", async (event: any) => {
     const prompt = event?.prompt;
     if (typeof prompt !== "string" || !prompt) return;
 
     const result = obfuscator.obfuscate(prompt);
-    if (result.entities.length === 0) return; // nothing to obfuscate
+    if (result.entities.length === 0) return;
+
+    // Feature 4: Compliance warnings
+    if (result.complianceReport && !result.complianceReport.passed) {
+      api.logger?.warn(
+        `[shroud][compliance] Missing locked categories: ${result.complianceReport.missing.join(", ")}`,
+      );
+    }
+
+    // Feature 5: Exposure alerts
+    const alerts = obfuscator.getExposureAlerts();
+    for (const alert of alerts) {
+      api.logger?.warn(`[shroud][exposure] ${alert.message}`);
+    }
 
     dumpStatsFile(obfuscator);
     api.logger?.info(
@@ -375,12 +391,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   // -----------------------------------------------------------------------
   // 2. before_llm_send (async): obfuscate LLM input + provide response deobfuscator
-  //    Event: { messages: unknown[], ... }
-  //    Return: { messages?: unknown[], transformResponse?: (text: string) => string } | void
-  //
-  //    This is the critical hook: transformResponse is stored globally by OpenClaw
-  //    and applied to ALL LLM output — including auto-reply text before WhatsApp
-  //    delivery (via normalizeReplyPayload → applyResponseTransform).
   // -----------------------------------------------------------------------
   api.on("before_llm_send", async (event: any) => {
     if (!Array.isArray(event?.messages)) return;
@@ -392,14 +402,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (auditActive) {
       requestId = randomBytes(8).toString("hex");
 
-      const { messages: msgs, stats } = obfuscateMessagesWithStats(
+      const { messages: msgs, stats, complianceReport } = obfuscateMessagesWithStats(
         event.messages,
         obfuscator,
         config,
       );
       obfuscatedMessages = msgs;
 
-      // Build concatenated texts for proof hashes in local-only variables
+      // Build concatenated texts for proof hashes
       let concatenatedOriginal = "";
       let concatenatedObfuscated = "";
       if (config.auditIncludeProofHashes) {
@@ -431,9 +441,23 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           totalMessages,
           concatenatedOriginal,
           concatenatedObfuscated,
+          complianceReport,
         );
       } catch {
-        // Logging is best-effort — never break obfuscation
+        // Logging is best-effort
+      }
+
+      // Feature 4: Compliance warnings
+      if (complianceReport && !complianceReport.passed) {
+        api.logger?.warn(
+          `[shroud][compliance] Missing locked categories: ${complianceReport.missing.join(", ")}`,
+        );
+      }
+
+      // Feature 5: Exposure alerts
+      const alerts = obfuscator.getExposureAlerts();
+      for (const alert of alerts) {
+        api.logger?.warn(`[shroud][exposure] ${alert.message}`);
       }
     } else {
       obfuscatedMessages = obfuscateMessages(event.messages, obfuscator);
@@ -442,7 +466,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     dumpStatsFile(obfuscator);
     api.logger?.info("[shroud] before_llm_send: obfuscated messages + installed transformResponse");
 
-    // Capture requestId in closure for response audit
     const capturedReqId = requestId;
 
     return {
@@ -475,17 +498,28 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 3. before_tool_call (async): deobfuscate tool params
-  //    Event: { toolName: string, params: Record<string, unknown>, ... }
-  //    Return: { params?: Record<string, unknown>, block?: boolean } | void
+  // 3. before_tool_call (async): deobfuscate tool params + track depth
   // -----------------------------------------------------------------------
   api.on("before_tool_call", async (event: any) => {
     if (!event?.params || typeof event.params !== "object") return;
 
+    // Feature 3: Tool chain depth tracking
+    const depth = obfuscator.enterToolCall();
+    if (depth > config.maxToolDepth) {
+      api.logger?.warn(
+        `[shroud][depth] Tool chain depth ${depth} exceeds max ${config.maxToolDepth} — possible infinite recursion`,
+      );
+    }
+    if (depth > 1) {
+      api.logger?.info(
+        `[shroud][depth] Nested tool call at depth ${depth}: ${event.toolName ?? "?"}`,
+      );
+    }
+
     const serialized = JSON.stringify(event.params);
     const deobfuscated = obfuscator.deobfuscate(serialized);
 
-    if (serialized === deobfuscated) return; // nothing to deobfuscate
+    if (serialized === deobfuscated) return;
 
     api.logger?.info(
       `[shroud] before_tool_call(${event.toolName ?? "?"}): deobfuscated params`,
@@ -499,12 +533,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 4. tool_result_persist (SYNC -- no async!): obfuscate tool result
-  //    Event: { toolName?, toolCallId?, message: AgentMessage, ... }
-  //    Return: { message?: AgentMessage } | void
+  // 4. tool_result_persist (SYNC): obfuscate tool result message
   // -----------------------------------------------------------------------
   api.on("tool_result_persist", (event: any) => {
     if (!event?.message) return;
+
+    // Feature 3: Exit tool depth
+    obfuscator.exitToolCall();
 
     const obfuscated = walkStrings(event.message, (s) => {
       const result = obfuscator.obfuscate(s);
@@ -517,15 +552,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   // -----------------------------------------------------------------------
   // 5. message_sending (async): deobfuscate outbound message content
-  //    Fallback for non-auto-reply paths (e.g. message tool, TUI delivery).
-  //    Event: { to: string, content: string, metadata?, ... }
-  //    Return: { content?: string } | void
   // -----------------------------------------------------------------------
   api.on("message_sending", async (event: any) => {
     if (typeof event?.content !== "string") return;
 
     const deobfuscated = obfuscator.deobfuscate(event.content);
-    if (deobfuscated === event.content) return; // nothing changed
+    if (deobfuscated === event.content) return;
 
     api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
 
@@ -542,21 +574,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     handler: async () => {
       const stats = obfuscator.config;
       const overrides = stats.detectorOverrides;
-      const { ruleHits, storeMappings, audit } = obfuscator.getStats() as any;
+      const obStats = obfuscator.getStats() as any;
 
-      // Build rule table: all built-in rules with status + hits
       const rules = BUILTIN_PATTERNS.map((p) => {
         const ov = overrides[p.name];
         const enabled = ov?.enabled !== false;
         const confidence = ov?.confidence ?? p.confidence;
-        const hits = ruleHits[`regex:${p.name}`] ?? 0;
+        const hits = obStats.ruleHits[`regex:${p.name}`] ?? 0;
         return { name: p.name, category: p.category, enabled, confidence, hits };
       });
 
-      // Sort by hits descending
       rules.sort((a, b) => b.hits - a.hits);
 
-      // Format as text table
       const maxName = Math.max(...rules.map((r) => r.name.length), 4);
       const maxCat = Math.max(...rules.map((r) => r.category.length), 8);
       const header = `${"Rule".padEnd(maxName)}  ${"Category".padEnd(maxCat)}  Status    Conf   Hits`;
@@ -574,11 +603,65 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         sep,
         ...rows,
         sep,
-        `Store: ${storeMappings} active mappings`,
+        `Store: ${obStats.storeMappings} active mappings`,
         `Audit: ${stats.auditEnabled || stats.verboseLogging ? "enabled" : "disabled"}`,
+        `Redaction: ${stats.redactionLevel}`,
+        `Provenance: ${stats.provenanceTagging ? "on" : "off"}`,
+        `Tenant: ${stats.tenantId || "none"}`,
+        `Shared store: ${stats.sharedStorePath ? "yes" : "no"}`,
       ];
+
+      if (stats.lockedCategories.length > 0) {
+        lines.push(`Locked categories: ${stats.lockedCategories.join(", ")}`);
+      }
 
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   });
+
+  // -----------------------------------------------------------------------
+  // Tool: shroud-session-export — export mapping table for handoff
+  // -----------------------------------------------------------------------
+  if (config.sessionHandoff) {
+    api.registerTool({
+      name: "shroud-session-export",
+      description: "Export Shroud mapping table as encrypted blob for session handoff.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      handler: async () => {
+        try {
+          const blob = obfuscator.exportSession();
+          return {
+            content: [{ type: "text", text: `Session exported (${blob.length} chars). Pass this to shroud-session-import in the new session:\n\n${blob}` }],
+          };
+        } catch (e: any) {
+          return {
+            content: [{ type: "text", text: `Export failed: ${e.message}` }],
+          };
+        }
+      },
+    });
+
+    api.registerTool({
+      name: "shroud-session-import",
+      description: "Import Shroud mapping table from encrypted blob for session continuity.",
+      inputSchema: {
+        type: "object",
+        properties: { blob: { type: "string", description: "Encrypted session blob" } },
+        required: ["blob"],
+        additionalProperties: false,
+      },
+      handler: async (input: { blob: string }) => {
+        try {
+          obfuscator.importSession(input.blob);
+          return {
+            content: [{ type: "text", text: "Session imported successfully. Deobfuscation will now work for values from the previous session." }],
+          };
+        } catch (e: any) {
+          return {
+            content: [{ type: "text", text: `Import failed: ${e.message}` }],
+          };
+        }
+      },
+    });
+  }
 }
