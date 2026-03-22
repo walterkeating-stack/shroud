@@ -48,6 +48,12 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Detector `detector` field now includes rule name (e.g. `regex:email` instead of `regex`) for finer-grained audit and hit tracking.
 
+### Fixed
+- **Subnet-aware deobfuscation** — LLM-derived network addresses (e.g., computing `.0` network or `.255` broadcast from a fake host IP + mask) are now reverse-mapped via the SubnetMapper to recover the correct real IP.
+- **IPv6 detection** — improved regex handles full 8-group, compressed `::`, link-local `fe80::`, and ULA `fd00::` forms.
+- **IPv6 documentation filtering** — RFC 3849 doc prefix (`2001:db8::/32`) and loopback (`::1`) are now correctly skipped.
+- **IPv6 residual ULA deobfuscation** — `fd00::/8` fakes that the LLM compresses or derives `/64` prefixes from are normalized back to full form for store lookup.
+
 ## [1.2.0] - 2026-03-22
 
 ### Added
