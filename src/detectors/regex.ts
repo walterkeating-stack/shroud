@@ -14,6 +14,60 @@ const MASK_PREFIXES: ReadonlySet<string> = new Set([
   "252.0.", "254.0.", "127.0.",
 ]);
 
+/**
+ * RFC 5737 documentation/example ranges and well-known placeholders.
+ * These should never be obfuscated — they're teaching/testing values.
+ */
+const DOC_IP_PREFIXES = [
+  "192.0.2.",     // TEST-NET-1 (RFC 5737)
+  "198.51.100.",  // TEST-NET-2 (RFC 5737)
+  "203.0.113.",   // TEST-NET-3 (RFC 5737)
+  "233.252.0.",   // MCAST-TEST-NET (RFC 6676)
+  "100.51.16.",   // Benchmarking (RFC 5180)
+];
+
+const DOC_DOMAINS = new Set([
+  "example.com", "example.net", "example.org",  // RFC 2606
+  "localhost", "invalid",
+]);
+
+const DOC_HOSTNAMES = new Set([
+  "localhost", "HOSTNAME", "EXAMPLE", "CHANGEME",
+  "YOUR_HOST", "YOURHOST", "hostname", "example",
+]);
+
+/** Check if a value is a well-known documentation/example/placeholder. */
+export function isDocExample(value: string, category: Category): boolean {
+  switch (category) {
+    case Category.IP_ADDRESS:
+      for (const pfx of DOC_IP_PREFIXES) {
+        if (value.startsWith(pfx)) return true;
+      }
+      return false;
+
+    case Category.EMAIL:
+    case Category.URL: {
+      const lower = value.toLowerCase();
+      for (const d of DOC_DOMAINS) {
+        if (lower.includes(`@${d}`) || lower.includes(`//${d}`) || lower.endsWith(`.${d}`)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    case Category.BGP_ASN:
+      // Private ASNs are real infra identifiers — don't skip them
+      return false;
+
+    case Category.HOSTNAME:
+      return DOC_HOSTNAMES.has(value) || DOC_HOSTNAMES.has(value.toUpperCase());
+
+    default:
+      return false;
+  }
+}
+
 /** Heuristic: return true for subnet masks and wildcard masks. */
 export function isMask(ip: string): boolean {
   for (const pfx of MASK_PREFIXES) {
@@ -321,6 +375,38 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     pattern: /\b([a-z]{1,6}(?:-[a-z]{1,8}){2,5}[a-z]?\d{1,3})\b/gi,
     category: Category.HOSTNAME,
     confidence: 0.70,
+  },
+
+  // --- Syslog / monitoring (#5) ---
+  {
+    // Cisco syslog facility: %SYS-5-CONFIG_I, %LINK-3-UPDOWN
+    name: "syslog_facility",
+    pattern: /%([A-Z][A-Z_]+-\d+-[A-Z_]+)/g,
+    category: Category.HOSTNAME,
+    confidence: 0.80,
+  },
+  {
+    // Source interface in logging/SNMP: trap-source Loopback0, logging source-interface Vlan1
+    name: "syslog_source_interface",
+    pattern: /(?:trap-source|source-interface|logging\s+source-interface)\s+(\S+)/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.85,
+  },
+
+  // --- Description field sub-entities (#6) ---
+  {
+    // Circuit ID in description: CID: ABC-123, circuit-id XYZ/456
+    name: "circuit_id",
+    pattern: /(?:CID|circuit[- ]?id|circuit)\s*[:# ]\s*([A-Za-z0-9\-/]{3,30})/gi,
+    category: Category.CUSTOM,
+    confidence: 0.85,
+  },
+  {
+    // Org/customer name in description: LINK TO Acme Corp, CONNECTION FROM BigCo
+    name: "description_org",
+    pattern: /(?:(?:LINK|CONN(?:ECTION)?|CIRCUIT|PEER|UPLINK)\s+(?:TO|FROM|WITH)\s+)([A-Z][A-Za-z0-9\s&,.\-]{2,30})/g,
+    category: Category.ORG_NAME,
+    confidence: 0.75,
   },
 
   // ==========================================================================
@@ -805,6 +891,10 @@ export class RegexDetector implements BaseDetector {
             if (pdef.category === Category.IP_ADDRESS && isMask(grp)) {
               continue;
             }
+            // Skip documentation/example values (#7)
+            if (isDocExample(grp, pdef.category)) {
+              continue;
+            }
             seenSpans.push(span);
             entities.push({
               value: grp,
@@ -826,6 +916,10 @@ export class RegexDetector implements BaseDetector {
           const value = match[0];
           // Skip subnet/wildcard masks
           if (pdef.category === Category.IP_ADDRESS && isMask(value)) {
+            continue;
+          }
+          // Skip documentation/example values (#7)
+          if (isDocExample(value, pdef.category)) {
             continue;
           }
           seenSpans.push(span);

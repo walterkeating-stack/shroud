@@ -33,6 +33,17 @@ All notable changes to this project will be documented in this file.
   8. **Redaction levels** — three output modes: `full` (fake values), `masked` (partial masking), `stats` (category placeholders like `[HOSTNAME-1]`) (`redactionLevel` config)
   9. **Cross-agent entity consistency** — file-backed shared mapping store for multiple Shroud instances (`sharedStorePath` config, `SHROUD_SHARED_STORE` env)
   10. **Provenance tagging** — optional `«shroud:category:hash»` markers in output for downstream audit trail (`provenanceTagging` config)
+- **Detection improvements** (10 enhancements):
+  1. Context-aware confidence boosting (config keyword density → higher scores)
+  2. Multi-line PEM cert/key detection (captures full base64 body)
+  3. Proximity-based PII clustering (nearby name+email+phone boost each other)
+  4. Config-block hostname extraction (hostname X → detect bare X everywhere)
+  5. SNMP/syslog source correlation (facility codes, source-interface)
+  6. Description field scraping (circuit IDs, org names from description lines)
+  7. Negative lookahead for documentation examples (RFC 5737 TEST-NETs, example.com)
+  8. Recursive deobfuscation for nested structures (multi-pass, max 3)
+  9. Learned entity propagation (cross-invocation hostname memory)
+  10. Confidence decay for common English words (permit, deny, default, etc.)
 
 ### Changed
 - Detector `detector` field now includes rule name (e.g. `regex:email` instead of `regex`) for finer-grained audit and hit tracking.

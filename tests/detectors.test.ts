@@ -8,9 +8,9 @@ describe("RegexDetector", () => {
   const detector = new RegexDetector();
 
   test("detect email", () => {
-    const entities = detector.detect("Contact john.doe@example.com for details");
+    const entities = detector.detect("Contact john.doe@acme.com for details");
     expect(entities.length).toBe(1);
-    expect(entities[0].value).toBe("john.doe@example.com");
+    expect(entities[0].value).toBe("john.doe@acme.com");
     expect(entities[0].category).toBe(Category.EMAIL);
   });
 
@@ -59,7 +59,7 @@ describe("RegexDetector", () => {
 
   test("detect multiple entity types", () => {
     const text =
-      "Email john@example.com from 10.0.0.1 about https://internal.dev/api";
+      "Email john@acme.com from 10.0.0.1 about https://internal.dev/api";
     const entities = detector.detect(text);
     const categories = new Set(entities.map((e) => e.category));
     expect(categories.has(Category.EMAIL)).toBe(true);
