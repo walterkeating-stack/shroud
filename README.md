@@ -113,6 +113,8 @@ To enable proof hashes and fake samples for deeper audit:
 | `logMappings` | boolean | `false` | Log mapping table (debug only) |
 | `customPatterns` | array | `[]` | User-defined regex detection patterns |
 
+> **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override `secretKey` and `persistentSalt` respectively (priority: env var > plugin config > default).
+
 ## Verify it works
 
 After restarting OpenClaw, send a message containing PII (e.g. an email or IP). Then check the logs:
