@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-03-22
+
+### Added
+- **Key rotation** — `KeyRing` class with versioned keys, add/retire/prune, and expiration TTL. `rotateKey()` on Obfuscator adds a new key; existing mappings remain valid. Session encrypt/decrypt tries all keys for cross-rotation import. New tools: `shroud-rotate-key`, `shroud-key-status`. Config: `keys` array and `activeKeyVersion`. Env var: `SHROUD_KEYS` (JSON array).
+- **SIEM webhook push** — `WebhookSink` for real-time event streaming to HTTP endpoints. Supports JSON and CEF formats, batching, exponential backoff retry, per-endpoint event type filtering, and auth headers. 7 event types: `obfuscation_summary`, `leak_detected`, `exposure_alert`, `key_rotation`, `compliance_violation`, `deobfuscation`, `monitor_alert`. Events emitted at `before_llm_send` and `transformResponse` hooks. Config: `siemWebhooks`, `siemBatchSize`, `siemFlushIntervalMs`, `siemMaxRetries`, `siemRetryBackoffMs`, `siemEventFormat`. Env vars: `SHROUD_SIEM_WEBHOOK_URL`, `SHROUD_SIEM_WEBHOOK_AUTH`.
+- **Hot-reload of detection rules** — `DetectorReloader` watches policy file and custom patterns file via `fs.watchFile`. Debounced reloads. Supports reloading policy rules, custom patterns, and detector overrides without restart. Config: `hotReload`, `customPatternsFile`, `hotReloadDebounceMs`.
+- **Per-session isolation** — `SessionManager` maintains separate mapping stores, engines, salts, and canary injectors per session. `createSession()`, `switchSession()`, `destroySession()` on Obfuscator. New tool: `shroud-sessions` (list/create/switch/destroy). Config: `sessionIsolation`.
+- **Active monitoring pipeline** — `AlertPipeline` with rate spike detection (EMA baseline), new category alerts, canary leak recording, exposure breach escalation with severity upgrade, and key expiry warnings. Alert acknowledgement, type/time filtering. Forwards to SIEM sink. New tool: `shroud-monitor`. Config: `monitorEnabled`, `monitorRateWindowMs`, `monitorSpikeMultiplier`, `monitorMaxAlerts`.
+- **Config validation** expanded for all new settings: key version uniqueness, key expiration, SIEM endpoint HTTPS checks, batch size bounds, flush interval warnings.
+- 60 new tests (303 total across 17 test files).
+
 ## [1.3.0] - 2026-03-22
 
 ### Added

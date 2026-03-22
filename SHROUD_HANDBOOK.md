@@ -34,9 +34,14 @@
 26. [Provenance Tagging](#26-provenance-tagging)
 27. [Compliance Mode](#27-compliance-mode)
 28. [Exposure Tracking](#28-exposure-tracking)
-29. [CLI Tools](#29-cli-tools)
-30. [Diagnostics & Troubleshooting](#30-diagnostics--troubleshooting)
-31. [Private Agent Integration (NCG)](#31-private-agent-integration-ncg)
+29. [Key Rotation](#29-key-rotation)
+30. [SIEM Integration](#30-siem-integration)
+31. [Hot-Reload](#31-hot-reload)
+32. [Per-Session Isolation](#32-per-session-isolation)
+33. [Active Monitoring](#33-active-monitoring)
+34. [CLI Tools](#34-cli-tools)
+35. [Diagnostics & Troubleshooting](#35-diagnostics--troubleshooting)
+36. [Private Agent Integration (NCG)](#36-private-agent-integration-ncg)
 
 ---
 
@@ -134,6 +139,22 @@ All config fields, types, and defaults:
 | `sharedStoreTtlMs` | number | `5000` | Cache TTL for shared store reads (ms). |
 | `provenanceTagging` | boolean | `false` | Embed `«shroud:category:hash»` markers. |
 | `sessionHandoff` | boolean | `false` | Enable encrypted mapping export/import. |
+| `keys` | array | `[]` | Versioned keys: `[{version, key, createdAt?, expiresAt?, retired?}]`. |
+| `activeKeyVersion` | number | `0` | Which key version to use for new obfuscations (0 = highest). |
+| `siemWebhooks` | array | `[]` | SIEM webhook endpoints: `[{url, authHeader?, headers?, eventTypes?}]`. |
+| `siemBatchSize` | number | `100` | Max events before auto-flush. |
+| `siemFlushIntervalMs` | number | `30000` | Periodic flush interval (ms). |
+| `siemMaxRetries` | number | `3` | Max retry attempts per HTTP flush. |
+| `siemRetryBackoffMs` | number | `1000` | Initial retry backoff (doubles each retry). |
+| `siemEventFormat` | `"json"` \| `"cef"` | `"json"` | SIEM event output format. |
+| `hotReload` | boolean | `false` | Watch config files and reload detection rules on change. |
+| `customPatternsFile` | string | `""` | Path to custom patterns JSON file (for hot-reload). |
+| `hotReloadDebounceMs` | number | `1000` | Debounce interval for file changes (ms). |
+| `sessionIsolation` | boolean | `false` | Enable per-session isolated mapping stores. |
+| `monitorEnabled` | boolean | `false` | Enable active monitoring and alerting pipeline. |
+| `monitorRateWindowMs` | number | `60000` | Rolling window for rate baseline (ms). |
+| `monitorSpikeMultiplier` | number | `3.0` | Alert when rate exceeds baseline × multiplier. |
+| `monitorMaxAlerts` | number | `500` | Max alerts to keep in memory. |
 
 ---
 
@@ -146,6 +167,9 @@ All config fields, types, and defaults:
 | `SHROUD_TENANT_ID` | `tenantId` | Tenant ID |
 | `SHROUD_SHARED_STORE` | `sharedStorePath` | Shared store file path |
 | `SHROUD_STATS_FILE` | — | Stats file location (default: `/tmp/shroud-stats.json`) |
+| `SHROUD_SIEM_WEBHOOK_URL` | `siemWebhooks` | Quick single-endpoint SIEM setup |
+| `SHROUD_SIEM_WEBHOOK_AUTH` | — | Auth header for `SHROUD_SIEM_WEBHOOK_URL` |
+| `SHROUD_KEYS` | `keys` | JSON-encoded array of versioned key objects |
 
 Priority: env vars > plugin config > defaults.
 
@@ -543,6 +567,22 @@ Returns an AES-256-GCM encrypted blob of all mappings.
 
 Restores mappings from an encrypted blob.
 
+### `shroud-rotate-key`
+
+Rotate the HMAC secret key at runtime. Accepts optional `key` (auto-generated if omitted) and `expiresAt`. Returns new version info.
+
+### `shroud-key-status`
+
+Show key ring status: active version, all versions with creation/expiry dates, retired/expired flags.
+
+### `shroud-monitor` (if `monitorEnabled: true`)
+
+Show active monitoring pipeline stats and recent alerts. Accepts `unacknowledgedOnly` filter.
+
+### `shroud-sessions` (if `sessionIsolation: true`)
+
+Manage per-session isolation. Actions: `list`, `create`, `switch`, `destroy`.
+
 ---
 
 ## 21. Enterprise Features
@@ -559,6 +599,11 @@ Restores mappings from an encrypted blob.
 | 8 | Redaction levels | `redactionLevel` | Full / masked / stats |
 | 9 | Shared store | `sharedStorePath` | Cross-agent consistency |
 | 10 | Provenance | `provenanceTagging` | Origin markers for audit trail |
+| 11 | Key rotation | `keys`, `activeKeyVersion` | Versioned keys with rotation, expiration, retirement |
+| 12 | SIEM push | `siemWebhooks` | Real-time event streaming to SIEM endpoints |
+| 13 | Hot-reload | `hotReload` | Live reload of detection rules on file change |
+| 14 | Session isolation | `sessionIsolation` | Per-session isolated mapping stores |
+| 15 | Active monitoring | `monitorEnabled` | Anomaly detection and alerting pipeline |
 
 ---
 
@@ -682,7 +727,445 @@ Sliding window tracks detection counts. `getExposureAlerts()` returns alerts whe
 
 ---
 
-## 29. CLI Tools
+## 29. Key Rotation
+
+### Overview
+
+Key rotation allows changing the HMAC secret key without losing the ability to decode existing mappings. Old fakes remain in the mapping store and deobfuscate correctly. New obfuscations use the new key.
+
+### How It Works
+
+1. **KeyRing** holds multiple `VersionedKey` entries, each with a version number, key string, creation timestamp, optional expiration, and retired flag.
+2. The **active key** is the highest non-expired, non-retired key (or explicitly set via `activeKeyVersion`).
+3. When you rotate, a new key is added to the ring and becomes active. The old key stays for deobfuscation.
+4. Session blobs encrypted with any key in the ring can be imported — Shroud tries each key until AES-GCM auth tag validation succeeds.
+
+### Configuration
+
+```json
+{
+  "keys": [
+    {
+      "version": 1,
+      "key": "original-key-at-least-16-chars-long",
+      "createdAt": "2025-01-01T00:00:00Z"
+    },
+    {
+      "version": 2,
+      "key": "rotated-key-at-least-16-chars-long",
+      "createdAt": "2025-06-01T00:00:00Z",
+      "expiresAt": "2026-06-01T00:00:00Z"
+    }
+  ],
+  "activeKeyVersion": 2
+}
+```
+
+If `keys` is empty or omitted, Shroud falls back to the single `secretKey` field (backward compatible).
+
+### Env Var
+
+`SHROUD_KEYS` — JSON-encoded array of key objects. Overrides `keys` in config when config has no keys.
+
+### Runtime Rotation
+
+**Programmatic:**
+```typescript
+const vk = obfuscator.rotateKey("new-secret-key-string", "2027-01-01T00:00:00Z");
+// vk.version = 3 (auto-incremented)
+// All new obfuscations now use v3
+// Old mappings from v1/v2 still deobfuscate from the store
+```
+
+**Tool:** `shroud-rotate-key` — accepts optional `key` (auto-generated if omitted) and `expiresAt`. Returns new version info.
+
+### Key Lifecycle
+
+| Operation | Method / Tool | Effect |
+|-----------|--------------|--------|
+| Add key | `rotateKey()` / `shroud-rotate-key` | New version, becomes active |
+| Retire key | `keyRing.retireKey(version)` | Soft-disable: not used for new obfuscation, still used for deobfuscation |
+| Expire key | Set `expiresAt` | Auto-excluded from active key selection after expiry |
+| Prune expired | `keyRing.pruneExpired()` | Remove expired keys from ring entirely |
+| View status | `getKeyInfo()` / `shroud-key-status` | Shows active, all versions, expired, retired |
+
+### Key Expiration
+
+When a key expires:
+- It cannot be selected as the active key
+- Its mappings remain in the store (deobfuscation still works)
+- It is excluded from `allKeys()` (won't be tried for session decrypt)
+- Call `pruneExpired()` to remove it entirely
+
+### SIEM Event
+
+A `key_rotation` event is emitted when `rotateKey()` is called, containing old version, new version, and total key count.
+
+### Config Validation
+
+| Check | Severity |
+|-------|----------|
+| Duplicate versions | ERROR |
+| Key < 16 chars | ERROR |
+| All keys expired | ERROR |
+| Some keys expired | WARNING |
+| Active version is retired | WARNING |
+| Active version not found | ERROR |
+
+### Security Notes
+
+- Old keys remain in memory (Node.js GC manages lifecycle). For high-security environments, consider process restart after key retirement.
+- Key versioning is in-memory only. To persist the key ring across restarts, store the `keys` array in config or environment.
+- Session export uses the active key for encryption; import tries all non-expired keys.
+
+---
+
+## 30. SIEM Integration
+
+### Overview
+
+Shroud pushes structured events to external SIEM endpoints via HTTP webhooks in real-time. Events are batched, retried with exponential backoff, and formatted as JSON or CEF.
+
+### Architecture
+
+```
+Obfuscator.obfuscate() / hooks.ts lifecycle
+        ↓
+  WebhookSink.emit(event)
+        ↓
+  Internal buffer (batching)
+        ↓  (flush timer OR batch threshold)
+  HTTP POST to each configured endpoint (with retry)
+```
+
+### Configuration
+
+```json
+{
+  "siemWebhooks": [
+    {
+      "url": "https://siem.example.com/api/events",
+      "authHeader": "Bearer your-siem-token",
+      "headers": { "X-Source": "shroud" },
+      "eventTypes": ["exposure_alert", "compliance_violation"]
+    },
+    {
+      "url": "https://splunk.internal:8088/services/collector",
+      "authHeader": "Splunk your-hec-token"
+    }
+  ],
+  "siemBatchSize": 100,
+  "siemFlushIntervalMs": 30000,
+  "siemMaxRetries": 3,
+  "siemRetryBackoffMs": 1000,
+  "siemEventFormat": "json"
+}
+```
+
+### Quick Setup (Single Endpoint)
+
+```bash
+export SHROUD_SIEM_WEBHOOK_URL="https://siem.example.com/events"
+export SHROUD_SIEM_WEBHOOK_AUTH="Bearer your-token"
+```
+
+### Event Types
+
+| Type | Severity | When Emitted |
+|------|----------|-------------|
+| `obfuscation_summary` | Info (0) | After obfuscating messages in `before_llm_send` |
+| `leak_detected` | High (7) | When canary token or unexpected fake appears in output |
+| `exposure_alert` | High (7) | When exposure threshold is breached |
+| `key_rotation` | Medium (5) | When `rotateKey()` is called |
+| `compliance_violation` | High (7) | When locked categories are missing |
+| `deobfuscation` | Info (0) | After deobfuscating LLM response |
+| `monitor_alert` | High (7) | When the monitoring pipeline fires an alert |
+
+### Event Structure (JSON)
+
+```json
+{
+  "timestamp": "2025-06-01T12:00:00.000Z",
+  "seq": 42,
+  "eventType": "exposure_alert",
+  "source": "tenant-abc",
+  "sessionId": "a1b2c3d4e5f6",
+  "requestId": "dc5f9199cfb0d835",
+  "severity": 7,
+  "data": {
+    "category": "email",
+    "count": 15,
+    "threshold": 10,
+    "message": "Exposure threshold exceeded"
+  }
+}
+```
+
+### CEF Format
+
+```
+CEF:0|Shroud|OpenClaw-Shroud|1.0.0|exposure_alert|exposure_alert|High|src=tenant-abc sessionId=a1b2 seq=42 category=email count=15
+```
+
+### Per-Endpoint Filtering
+
+Each endpoint can subscribe to specific event types via `eventTypes`. If omitted or empty, all events are sent. This allows routing:
+- High-severity alerts → PagerDuty webhook
+- All events → Splunk HEC
+- Compliance violations only → compliance dashboard
+
+### Batching & Retry
+
+- Events buffer in memory (default max 100)
+- `setInterval` flush every 30 seconds (configurable, timer is `unref`'d — doesn't block process exit)
+- On HTTP failure: retry with exponential backoff (1s, 2s, 4s, default max 3 retries)
+- After all retries fail: event is logged to console.warn and dropped (best-effort)
+- On process exit: `destroy()` drains remaining buffer
+
+### Stats
+
+`obfuscator.siemSink.getStats()` returns: `{ buffered, sent, failed }`.
+
+### Config Validation
+
+| Check | Severity |
+|-------|----------|
+| Non-HTTPS URL | WARNING |
+| `siemBatchSize < 1` | ERROR |
+| `siemFlushIntervalMs < 5000` | WARNING |
+
+### Security Notes
+
+- Events never contain real PII values — only categories, counts, hashes, and thresholds.
+- Auth headers are sent as-is. Use HTTPS to protect tokens in transit.
+- Zero external dependencies — uses Node.js built-in `fetch` (stable since Node 18).
+
+---
+
+## 31. Hot-Reload
+
+### Overview
+
+Hot-reload watches configuration files for changes and re-initializes detection rules without restarting the plugin. Useful for production environments where you want to tune detection without downtime.
+
+### Configuration
+
+```json
+{
+  "hotReload": true,
+  "policyFile": "/etc/shroud/policy.json",
+  "customPatternsFile": "/etc/shroud/patterns.json",
+  "hotReloadDebounceMs": 1000
+}
+```
+
+### What Can Be Hot-Reloaded
+
+| Resource | File | Effect |
+|----------|------|--------|
+| Policy rules | `policyFile` | Allowlist/denylist patterns updated |
+| Custom patterns | `customPatternsFile` | Custom regex detectors replaced |
+| Detector overrides | Via `triggerReload()` API | Built-in detectors re-initialized |
+
+### How It Works
+
+1. `DetectorReloader` calls `fs.watchFile()` on configured paths (poll interval: 2 seconds)
+2. On file change, a debounce timer waits (default 1 second) to avoid rapid reloads
+3. The file is read and parsed as JSON
+4. The callback on `Obfuscator` swaps the relevant detector:
+   - **Policy**: `_policyRules` replaced with new rules
+   - **Custom patterns**: Old `CustomPatternDetector` removed, new one added
+   - **Detector overrides**: All detectors re-initialized with new overrides
+
+### Custom Patterns File Format
+
+```json
+[
+  { "name": "employee_id", "pattern": "EMP-\\d{6}", "category": "custom" },
+  { "name": "project_code", "pattern": "PROJ-[A-Z]{3}-\\d+", "category": "custom" }
+]
+```
+
+### Programmatic Trigger
+
+```typescript
+// Force reload without file change
+obfuscator.reloader?.triggerReload("detectorOverrides", {
+  email: { enabled: false },
+  ipv4: { confidence: 0.9 },
+});
+```
+
+### Stats
+
+- `obfuscator.reloader.reloadCount` — number of successful reloads
+- `obfuscator.reloader.isWatching` — whether file watchers are active
+
+### Lifecycle
+
+- Watcher starts automatically when `hotReload: true` in config
+- Watcher stops on `obfuscator.shutdown()`
+- File must exist at startup to be watched (non-existent files are skipped)
+
+---
+
+## 32. Per-Session Isolation
+
+### Overview
+
+Per-session isolation gives each session its own mapping store, mapping engine, salt, subnet mapper, and canary injector. Mappings from one session never leak into another. This is critical for multi-user environments where a single Obfuscator instance serves multiple conversations.
+
+### Configuration
+
+```json
+{
+  "sessionIsolation": true
+}
+```
+
+### How It Works
+
+1. On startup, `SessionManager` is created and an initial session is auto-created
+2. Each session gets:
+   - Its own `MemoryStore` (separate real↔fake mappings)
+   - Its own `MappingEngine` (separate random salt, same secret key)
+   - Its own `SubnetMapper` (separate learned subnets)
+   - Its own `CanaryInjector` (if canary is enabled)
+3. Switching sessions swaps the active store, engine, subnet mapper, and canary on the `Obfuscator`
+
+### API
+
+```typescript
+// Create and switch to new session
+const sessionId = obfuscator.createSession("user-123");
+
+// Switch to existing session
+obfuscator.switchSession("user-456");
+
+// Destroy session and clear its data
+obfuscator.destroySession("user-123");
+
+// List all sessions
+const sessions = obfuscator.sessionManager!.listSessions();
+// → [{ id, createdAt, salt, storeSize, active }]
+```
+
+### Tool: `shroud-sessions`
+
+Registered when `sessionIsolation: true`. Accepts:
+
+| Action | Input | Description |
+|--------|-------|-------------|
+| `list` | — | Show all sessions with metadata |
+| `create` | `sessionId?` | Create new session (auto-ID if omitted) |
+| `switch` | `sessionId` | Switch to existing session |
+| `destroy` | `sessionId` | Destroy session and clear data |
+
+### Isolation Guarantees
+
+- Fakes generated in session A are not deobfuscatable in session B
+- Subnet learning is per-session (CIDR learned in A doesn't affect B)
+- Canary tokens are per-session
+- Store size limits (`maxStoreMappings`) apply per session
+
+### Stats
+
+`getStats()` includes:
+```json
+{
+  "sessions": {
+    "active": "user-123",
+    "count": 3,
+    "list": [...]
+  }
+}
+```
+
+---
+
+## 33. Active Monitoring
+
+### Overview
+
+The active monitoring pipeline watches for anomalies in real-time and generates alerts. It detects rate spikes, new entity categories, canary leaks, repeated exposure breaches, and key expiry warnings. Alerts are stored in memory and optionally forwarded to the SIEM sink.
+
+### Configuration
+
+```json
+{
+  "monitorEnabled": true,
+  "monitorRateWindowMs": 60000,
+  "monitorSpikeMultiplier": 3.0,
+  "monitorMaxAlerts": 500
+}
+```
+
+### Alert Types
+
+| Type | Severity | Trigger |
+|------|----------|---------|
+| `rate_spike` | Warning | Detection rate exceeds baseline × multiplier (and > 10 absolute) |
+| `new_category` | Info | Entity category seen for the first time (after learning period) |
+| `canary_leak` | Critical | Canary token detected in LLM output |
+| `exposure_breach` | Warning → Critical | Exposure threshold breached (escalates on repeat) |
+| `key_expiry_warning` | Warning / Critical | Key expires within threshold (critical if < 1 hour) |
+
+### Rate Spike Detection
+
+Uses exponential moving average (EMA) as baseline:
+- `baseline = baseline * 0.9 + currentRate * 0.1`
+- Alert fires when `currentRate > baseline * spikeMultiplier` AND `currentRate > 10`
+- First ~5 events are a "learning period" — no new-category alerts during this time
+
+### Exposure Breach Escalation
+
+Consecutive breaches for the same category escalate severity:
+- Breaches 1–3: `warning`
+- Breach 4+: `critical`
+
+### Alert Management
+
+```typescript
+// Get all alerts
+const alerts = obfuscator.monitor!.getAlerts();
+
+// Filter
+const unacked = obfuscator.monitor!.getAlerts({ unacknowledgedOnly: true });
+const canaries = obfuscator.monitor!.getAlerts({ alertType: "canary_leak" });
+const recent = obfuscator.monitor!.getAlerts({ since: "2025-06-01T00:00:00Z" });
+
+// Acknowledge
+obfuscator.monitor!.acknowledge(alertId);
+
+// Stats
+const stats = obfuscator.monitor!.getStats();
+// → { totalAlerts, unacknowledged, byType, currentRate, baseline, categoriesSeen }
+
+// Reset
+obfuscator.monitor!.reset();
+
+// Disable/enable
+obfuscator.monitor!.setEnabled(false);
+```
+
+### Tool: `shroud-monitor`
+
+Shows pipeline stats and recent alerts. Accepts `unacknowledgedOnly` boolean filter.
+
+### SIEM Integration
+
+When both monitoring and SIEM are enabled, every monitor alert is automatically forwarded as a `monitor_alert` SIEM event containing the alert type, message, and details.
+
+### Integration with Obfuscation Pipeline
+
+The monitor is fed automatically during `obfuscate()`:
+1. Entity count and categories are recorded after filtering
+2. Exposure tracker alerts are forwarded to the monitor as breach events
+3. No additional API calls needed — monitoring is transparent
+
+---
+
+## 34. CLI Tools
 
 ### `shroud-stats`
 
@@ -701,7 +1184,7 @@ Output shows all rules with status, confidence, hit counts, store size, audit st
 
 ---
 
-## 30. Diagnostics & Troubleshooting
+## 35. Diagnostics & Troubleshooting
 
 ### Check If Shroud Is Active
 
@@ -741,7 +1224,7 @@ Call `getStats()` for:
 
 ---
 
-## 31. Private Agent Integration (NCG)
+## 36. Private Agent Integration (NCG)
 
 ### Architecture
 

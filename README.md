@@ -134,7 +134,38 @@ To enable proof hashes and fake samples for deeper audit:
 | `provenanceTagging` | boolean | `false` | Embed `«shroud:category:hash»` markers in output |
 | `sessionHandoff` | boolean | `false` | Enable session export/import tools |
 
-> **Env var overrides:** `SHROUD_SECRET_KEY`, `SHROUD_PERSISTENT_SALT`, `SHROUD_TENANT_ID`, and `SHROUD_SHARED_STORE` override their respective config keys (priority: env var > plugin config > default).
+### Key rotation settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `keys` | array | `[]` | Versioned keys: `[{version, key, createdAt?, expiresAt?, retired?}]` |
+| `activeKeyVersion` | number | `0` | Which key version to use (0 = highest non-expired) |
+
+### SIEM integration settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `siemWebhooks` | array | `[]` | Webhook endpoints: `[{url, authHeader?, headers?, eventTypes?}]` |
+| `siemBatchSize` | number | `100` | Max events before auto-flush |
+| `siemFlushIntervalMs` | number | `30000` | Flush interval (ms) |
+| `siemMaxRetries` | number | `3` | Max retry attempts per flush |
+| `siemRetryBackoffMs` | number | `1000` | Initial retry backoff (doubles each retry) |
+| `siemEventFormat` | `"json"` \| `"cef"` | `"json"` | Output format for SIEM events |
+
+### Hot-reload, session isolation, and monitoring settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `hotReload` | boolean | `false` | Watch config files and reload detection rules on change |
+| `customPatternsFile` | string | `""` | Path to custom patterns JSON file to watch |
+| `hotReloadDebounceMs` | number | `1000` | Debounce interval for file change events |
+| `sessionIsolation` | boolean | `false` | Per-session isolated stores and mapping engines |
+| `monitorEnabled` | boolean | `false` | Active monitoring and alerting pipeline |
+| `monitorRateWindowMs` | number | `60000` | Rolling window for rate baseline |
+| `monitorSpikeMultiplier` | number | `3.0` | Alert when rate exceeds baseline × multiplier |
+| `monitorMaxAlerts` | number | `500` | Max alerts to keep in memory |
+
+> **Env var overrides:** `SHROUD_SECRET_KEY`, `SHROUD_PERSISTENT_SALT`, `SHROUD_TENANT_ID`, `SHROUD_SHARED_STORE`, `SHROUD_SIEM_WEBHOOK_URL`, `SHROUD_SIEM_WEBHOOK_AUTH`, and `SHROUD_KEYS` (JSON array) override their respective config keys (priority: env var > plugin config > default).
 
 ### Detector overrides
 
@@ -196,6 +227,75 @@ Enable encrypted export/import of mapping tables for cross-session continuity. W
 ```jsonc
 "sessionHandoff": true
 ```
+
+### Key rotation
+
+Rotate secret keys without losing existing mappings. Old fakes remain decodable; new obfuscations use the new key. Session blobs encrypted with old keys can still be imported (Shroud tries all keys for decryption).
+
+```jsonc
+"keys": [
+  { "version": 1, "key": "old-key-at-least-16-chars", "createdAt": "2025-01-01T00:00:00Z", "retired": true },
+  { "version": 2, "key": "new-key-at-least-16-chars", "createdAt": "2025-06-01T00:00:00Z" }
+],
+"activeKeyVersion": 2
+```
+
+Runtime rotation: call `obfuscator.rotateKey("new-key")` or use the `shroud-rotate-key` tool. Key status is available via `shroud-key-status`.
+
+### SIEM integration
+
+Push events in real-time to SIEM endpoints via HTTP webhooks. Supports JSON and CEF formats, batching, exponential backoff retry, and per-endpoint event type filtering.
+
+```jsonc
+"siemWebhooks": [
+  {
+    "url": "https://siem.example.com/events",
+    "authHeader": "Bearer your-token",
+    "eventTypes": ["exposure_alert", "compliance_violation", "key_rotation"]
+  }
+],
+"siemEventFormat": "json"
+```
+
+Event types: `obfuscation_summary`, `leak_detected`, `exposure_alert`, `key_rotation`, `compliance_violation`, `deobfuscation`, `session_event`, `monitor_alert`.
+
+Or quick single-endpoint setup via env vars: `SHROUD_SIEM_WEBHOOK_URL` and `SHROUD_SIEM_WEBHOOK_AUTH`.
+
+### Hot-reload
+
+Watch config files for changes and reload detection rules without restarting:
+
+```jsonc
+"hotReload": true,
+"policyFile": "/path/to/policy.json",
+"customPatternsFile": "/path/to/patterns.json"
+```
+
+Supports reloading: policy rules, custom patterns, and detector overrides. Changes are debounced (default 1s).
+
+### Per-session isolation
+
+Each session gets its own mapping store, mapping engine, salt, and canary injector. Mappings never leak across sessions.
+
+```jsonc
+"sessionIsolation": true
+```
+
+Manage sessions via the `shroud-sessions` tool (list/create/switch/destroy) or programmatically:
+- `obfuscator.createSession("session-id")`
+- `obfuscator.switchSession("session-id")`
+- `obfuscator.destroySession("session-id")`
+
+### Active monitoring
+
+Real-time anomaly detection with alerting:
+
+```jsonc
+"monitorEnabled": true,
+"monitorSpikeMultiplier": 3.0
+```
+
+Detects: rate spikes (vs rolling baseline), new entity categories, canary token leaks, repeated exposure breaches, key expiry warnings. Alerts forward to SIEM sink when configured. View via `shroud-monitor` tool.
 
 ### Redaction levels
 
@@ -328,7 +428,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (203 tests)
+npm test          # run vitest (303 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```

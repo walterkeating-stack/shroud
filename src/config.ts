@@ -166,7 +166,68 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     // LRU store eviction (0 = unlimited)
     maxStoreMappings:
       typeof raw.maxStoreMappings === "number" ? raw.maxStoreMappings : 0,
+
+    // --- Key rotation ---
+    keys: Array.isArray(raw.keys) ? (raw.keys as ShroudConfig["keys"]) : [],
+    activeKeyVersion:
+      typeof raw.activeKeyVersion === "number" ? raw.activeKeyVersion : 0,
+
+    // --- SIEM integration ---
+    siemWebhooks: Array.isArray(raw.siemWebhooks)
+      ? (raw.siemWebhooks as ShroudConfig["siemWebhooks"])
+      : [],
+    siemBatchSize:
+      typeof raw.siemBatchSize === "number" ? raw.siemBatchSize : 100,
+    siemFlushIntervalMs:
+      typeof raw.siemFlushIntervalMs === "number" ? raw.siemFlushIntervalMs : 30_000,
+    siemMaxRetries:
+      typeof raw.siemMaxRetries === "number" ? raw.siemMaxRetries : 3,
+    siemRetryBackoffMs:
+      typeof raw.siemRetryBackoffMs === "number" ? raw.siemRetryBackoffMs : 1000,
+    siemEventFormat:
+      raw.siemEventFormat === "cef" ? "cef" : "json",
+
+    // --- Hot-reload ---
+    hotReload:
+      typeof raw.hotReload === "boolean" ? raw.hotReload : false,
+    customPatternsFile:
+      typeof raw.customPatternsFile === "string" ? raw.customPatternsFile : "",
+    hotReloadDebounceMs:
+      typeof raw.hotReloadDebounceMs === "number" ? raw.hotReloadDebounceMs : 1000,
+
+    // --- Per-session isolation ---
+    sessionIsolation:
+      typeof raw.sessionIsolation === "boolean" ? raw.sessionIsolation : false,
+
+    // --- Active monitoring ---
+    monitorEnabled:
+      typeof raw.monitorEnabled === "boolean" ? raw.monitorEnabled : false,
+    monitorRateWindowMs:
+      typeof raw.monitorRateWindowMs === "number" ? raw.monitorRateWindowMs : 60_000,
+    monitorSpikeMultiplier:
+      typeof raw.monitorSpikeMultiplier === "number" ? raw.monitorSpikeMultiplier : 3.0,
+    monitorMaxAlerts:
+      typeof raw.monitorMaxAlerts === "number" ? raw.monitorMaxAlerts : 500,
   };
+
+  // Env var support: SHROUD_SIEM_WEBHOOK_URL for single-endpoint quick setup
+  const envSiemUrl = process.env.SHROUD_SIEM_WEBHOOK_URL;
+  if (envSiemUrl && config.siemWebhooks.length === 0) {
+    config.siemWebhooks.push({
+      url: envSiemUrl,
+      authHeader: process.env.SHROUD_SIEM_WEBHOOK_AUTH,
+    });
+  }
+
+  // Env var support: SHROUD_KEYS for JSON-encoded key array
+  const envKeys = process.env.SHROUD_KEYS;
+  if (envKeys && config.keys.length === 0) {
+    try {
+      config.keys = JSON.parse(envKeys);
+    } catch {
+      console.warn("[shroud] WARNING: SHROUD_KEYS env var is not valid JSON — ignored.");
+    }
+  }
 
   return config;
 }
@@ -253,6 +314,73 @@ export function validateConfig(config: ShroudConfig): ConfigIssue[] {
   // Detector overrides referencing unknown rules (info-level since we can't check at config time)
   if (Object.keys(config.detectorOverrides).length > 0) {
     issues.push({ severity: "info", field: "detectorOverrides", message: `${Object.keys(config.detectorOverrides).length} detector override(s) configured.` });
+  }
+
+  // --- Key rotation validation ---
+  if (config.keys.length > 0) {
+    const versions = config.keys.map((k) => k.version);
+    if (new Set(versions).size !== versions.length) {
+      issues.push({ severity: "error", field: "keys", message: "Key versions must be unique." });
+    }
+    for (const k of config.keys) {
+      if (!k.key || k.key.length < 16) {
+        issues.push({ severity: "error", field: "keys", message: `Key version ${k.version} is shorter than 16 chars.` });
+      }
+    }
+    const nonExpired = config.keys.filter((k) => {
+      if (!k.expiresAt) return true;
+      return new Date(k.expiresAt).getTime() > Date.now();
+    });
+    if (nonExpired.length === 0) {
+      issues.push({ severity: "error", field: "keys", message: "All keys are expired — no valid key available." });
+    }
+    const expired = config.keys.filter((k) => k.expiresAt && new Date(k.expiresAt).getTime() <= Date.now());
+    if (expired.length > 0) {
+      issues.push({ severity: "warning", field: "keys", message: `${expired.length} key(s) are expired.` });
+    }
+    if (config.activeKeyVersion > 0) {
+      const active = config.keys.find((k) => k.version === config.activeKeyVersion);
+      if (!active) {
+        issues.push({ severity: "error", field: "activeKeyVersion", message: `Active key version ${config.activeKeyVersion} not found in keys array.` });
+      } else if (active.retired) {
+        issues.push({ severity: "warning", field: "activeKeyVersion", message: `Active key version ${config.activeKeyVersion} is retired.` });
+      }
+    }
+    issues.push({ severity: "info", field: "keys", message: `Key rotation active: ${config.keys.length} key(s), ${nonExpired.length} valid.` });
+  }
+
+  // --- SIEM validation ---
+  if (config.siemWebhooks.length > 0) {
+    for (const wh of config.siemWebhooks) {
+      if (!wh.url.startsWith("https://") && !wh.url.startsWith("http://localhost")) {
+        issues.push({ severity: "warning", field: "siemWebhooks", message: `Webhook URL "${wh.url}" is not HTTPS — credentials may be exposed in transit.` });
+      }
+    }
+    if (config.siemBatchSize < 1) {
+      issues.push({ severity: "error", field: "siemBatchSize", message: "siemBatchSize must be >= 1." });
+    }
+    if (config.siemFlushIntervalMs < 5000 && config.siemFlushIntervalMs > 0) {
+      issues.push({ severity: "warning", field: "siemFlushIntervalMs", message: `siemFlushIntervalMs=${config.siemFlushIntervalMs}ms is very short — may overload endpoints.` });
+    }
+    issues.push({ severity: "info", field: "siemWebhooks", message: `SIEM push active: ${config.siemWebhooks.length} endpoint(s).` });
+  }
+
+  // --- Hot-reload validation ---
+  if (config.hotReload) {
+    issues.push({ severity: "info", field: "hotReload", message: "Hot-reload enabled — detection rules will auto-update on file changes." });
+  }
+
+  // --- Session isolation ---
+  if (config.sessionIsolation) {
+    issues.push({ severity: "info", field: "sessionIsolation", message: "Per-session isolation enabled." });
+  }
+
+  // --- Monitor validation ---
+  if (config.monitorEnabled) {
+    if (config.monitorSpikeMultiplier < 1) {
+      issues.push({ severity: "warning", field: "monitorSpikeMultiplier", message: "monitorSpikeMultiplier < 1 will trigger on any detection — likely too sensitive." });
+    }
+    issues.push({ severity: "info", field: "monitorEnabled", message: "Active monitoring pipeline enabled." });
   }
 
   return issues;
