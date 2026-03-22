@@ -36,14 +36,36 @@ const DOC_HOSTNAMES = new Set([
   "YOUR_HOST", "YOURHOST", "hostname", "example",
 ]);
 
+/** IPv6 documentation/reserved prefixes that should not be obfuscated. */
+const DOC_IPV6_PREFIXES = [
+  "2001:db8:",    // RFC 3849 documentation prefix
+  "2001:0db8:",   // Same, zero-padded
+];
+const DOC_IPV6_EXACT = new Set([
+  "::1",          // Loopback
+  "::0",          // Unspecified
+  "::",           // Unspecified
+]);
+
 /** Check if a value is a well-known documentation/example/placeholder. */
 export function isDocExample(value: string, category: Category): boolean {
   switch (category) {
-    case Category.IP_ADDRESS:
+    case Category.IP_ADDRESS: {
+      // IPv6 check
+      if (value.includes(":")) {
+        const lower = value.toLowerCase();
+        if (DOC_IPV6_EXACT.has(lower)) return true;
+        for (const pfx of DOC_IPV6_PREFIXES) {
+          if (lower.startsWith(pfx)) return true;
+        }
+        return false;
+      }
+      // IPv4 check
       for (const pfx of DOC_IP_PREFIXES) {
         if (value.startsWith(pfx)) return true;
       }
       return false;
+    }
 
     case Category.EMAIL:
     case Category.URL: {
@@ -115,8 +137,9 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "ipv6",
-    // Full, compressed (::), and IPv4-mapped forms
-    pattern: /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,7}:(?:[0-9a-fA-F]{1,4})?(?::\b[0-9a-fA-F]{1,4})*\b|\b::(?:ffff:)?(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b|\b(?:[0-9a-fA-F]{1,4}:){1,5}:(?:[0-9a-fA-F]{1,4}:)*[0-9a-fA-F]{1,4}\b|\b::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}\b/g,
+    // Full 8-group, compressed ::, loopback ::1, link-local, IPv4-mapped
+    // Uses \b where possible; :: forms use lookaround for proper boundary
+    pattern: /\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,7}:[0-9a-fA-F]{1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,6}(?::[0-9a-fA-F]{1,4}){1,2}\b|\b(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,3}\b|\b(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,4}\b|\b(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,5}\b|\b(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,6}\b|\b[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,7}\b|(?:^|(?<=[\s,;=(]))::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4}){0,6})?(?=$|[\s,;)\]\/])|(?:^|(?<=[\s,;=(]))::(?:ffff:)?(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?=$|[\s,;)\]\/])/g,
     category: Category.IP_ADDRESS,
     confidence: 0.9,
   },

@@ -38,6 +38,72 @@ const PROV_RE = /\u00abshroud:[^\u00bb]+\u00bb/g;
 /** Regex to find CGNAT IPs (100.64.0.0/10) in text. */
 const CGNAT_IP_RE = /\b(100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})\b/g;
 
+/** Regex to find fd00::/8 ULA IPv6 addresses (Shroud fake range) in text. */
+const ULA_IPV6_RE = /(?:^|(?<=[\s,;=(\[]))fd00(?::[0-9a-fA-F]{1,4}){0,7}(?:::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?)?(?=$|[\s,;)\]\/])/gi;
+
+/**
+ * Expand a compressed IPv6 address to full 8-group form.
+ * e.g. "fd00:a1b2::1" → "fd00:a1b2:0000:0000:0000:0000:0000:0001"
+ */
+function expandIPv6(addr: string): string {
+  // Remove any trailing CIDR prefix
+  const cidrIdx = addr.indexOf("/");
+  const clean = cidrIdx >= 0 ? addr.slice(0, cidrIdx) : addr;
+
+  if (!clean.includes("::")) {
+    // Already full form — just zero-pad each group
+    const groups = clean.split(":");
+    if (groups.length !== 8) return clean.toLowerCase();
+    return groups.map((g) => g.padStart(4, "0")).join(":").toLowerCase();
+  }
+
+  const [left, right] = clean.split("::");
+  const leftGroups = left ? left.split(":") : [];
+  const rightGroups = right ? right.split(":") : [];
+  const missing = 8 - leftGroups.length - rightGroups.length;
+  const allGroups = [
+    ...leftGroups,
+    ...Array(missing).fill("0000"),
+    ...rightGroups,
+  ];
+  return allGroups.map((g) => g.padStart(4, "0")).join(":").toLowerCase();
+}
+
+/**
+ * Compress a full 8-group IPv6 address to shortest form.
+ * e.g. "2001:0db8:0000:0000:0000:0000:0000:0001" → "2001:db8::1"
+ */
+function compressIPv6(addr: string): string {
+  const groups = addr.split(":").map((g) => g.replace(/^0+/, "") || "0");
+
+  // Find longest run of consecutive "0" groups
+  let bestStart = -1;
+  let bestLen = 0;
+  let curStart = -1;
+  let curLen = 0;
+  for (let i = 0; i < groups.length; i++) {
+    if (groups[i] === "0") {
+      if (curStart === -1) curStart = i;
+      curLen++;
+      if (curLen > bestLen) {
+        bestStart = curStart;
+        bestLen = curLen;
+      }
+    } else {
+      curStart = -1;
+      curLen = 0;
+    }
+  }
+
+  if (bestLen >= 2) {
+    const left = groups.slice(0, bestStart).join(":");
+    const right = groups.slice(bestStart + bestLen).join(":");
+    return `${left}::${right}`;
+  }
+
+  return groups.join(":");
+}
+
 export class Obfuscator {
   readonly config: ShroudConfig;
 
@@ -444,6 +510,13 @@ export class Obfuscator {
       totalReplacements += residual.count;
     }
 
+    // IPv6 ULA residual deobfuscation (compressed forms, /64 prefixes)
+    const residualV6 = this._deobfuscateResidualUla(result, reverse);
+    if (residualV6.count > 0) {
+      result = residualV6.text;
+      totalReplacements += residualV6.count;
+    }
+
     // Audit log
     if (this._audit && totalReplacements > 0) {
       const elapsed = Date.now() - startTime;
@@ -514,6 +587,13 @@ export class Obfuscator {
     if (residual.count > 0) {
       result = residual.text;
       replacementCount += residual.count;
+    }
+
+    // IPv6 ULA residual deobfuscation
+    const residualV6 = this._deobfuscateResidualUla(result, reverse);
+    if (residualV6.count > 0) {
+      result = residualV6.text;
+      replacementCount += residualV6.count;
     }
 
     if (this._audit && replacementCount > 0) {
@@ -626,6 +706,77 @@ export class Obfuscator {
             const realIp = intToIp((realNetInt | hostBits) >>> 0);
             count++;
             return realIp;
+          }
+        }
+      } catch {
+        // skip invalid
+      }
+      return match;
+    });
+
+    return { text: result, count };
+  }
+
+  /**
+   * Normalize-and-match deobfuscation for fd00::/8 ULA IPv6 addresses.
+   *
+   * Shroud generates full 8-group IPv6 fakes (fd00:xxxx:xxxx:...). But the
+   * LLM may compress them (fd00:a1b2::1), extract /64 prefixes, or
+   * otherwise derive new forms. This method expands any ULA IPv6 found in
+   * the text to full form and checks against the mapping store.
+   */
+  private _deobfuscateResidualUla(text: string, reverse: Map<string, string>): { text: string; count: number } {
+    // Build expanded-form lookup from existing reverse map
+    const expandedReverse = new Map<string, string>();
+    for (const [fake, real] of reverse) {
+      if (fake.includes(":") && fake.toLowerCase().startsWith("fd00")) {
+        expandedReverse.set(expandIPv6(fake), real);
+      }
+    }
+    if (expandedReverse.size === 0) return { text, count: 0 };
+
+    let count = 0;
+    const result = text.replace(ULA_IPV6_RE, (match) => {
+      // Try exact match first (already handled by normal pass, but just in case)
+      if (reverse.has(match)) return match;
+
+      try {
+        const expanded = expandIPv6(match);
+        const real = expandedReverse.get(expanded);
+        if (real) {
+          count++;
+          return real;
+        }
+
+        // Try prefix match: if LLM wrote "fd00:a1b2:c3d4:e5f6::/64",
+        // find any fake that shares the same prefix
+        // (This handles /64 subnet prefix extraction by the LLM)
+        for (const [expandedFake, realVal] of expandedReverse) {
+          // Check if the residual is a prefix of a known fake (or vice versa)
+          // by comparing the first N groups
+          const matchGroups = expanded.split(":");
+          const fakeGroups = expandedFake.split(":");
+          let commonLen = 0;
+          for (let i = 0; i < 8; i++) {
+            if (matchGroups[i] === fakeGroups[i]) commonLen++;
+            else break;
+          }
+          // If at least 4 groups match (a /64) and the remaining groups in
+          // the match are all zeros, it's a prefix extraction
+          if (commonLen >= 4) {
+            const trailingZeros = matchGroups.slice(commonLen).every((g) => g === "0000");
+            if (trailingZeros) {
+              // Reconstruct real IP with same zero pattern
+              const realExpanded = expandIPv6(realVal);
+              const realGroups = realExpanded.split(":");
+              const reconstructed = [
+                ...realGroups.slice(0, commonLen),
+                ...matchGroups.slice(commonLen),
+              ].join(":");
+              // Compress back to readable form
+              count++;
+              return compressIPv6(reconstructed);
+            }
           }
         }
       } catch {
