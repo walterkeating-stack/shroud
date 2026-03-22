@@ -24,15 +24,26 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 
 ## Install
 
+Clone the repo and build:
+
 ```bash
-openclaw plugins install openclaw-shroud
+git clone https://github.com/walterkeating-stack/shroud.git
+cd shroud
+npm install
+npm run build
 ```
 
-Or from local path:
+Deploy to OpenClaw:
 
 ```bash
-cd shroud && npm run build
+mkdir -p ~/.openclaw/extensions/openclaw-shroud
 cp -r dist package.json openclaw.plugin.json ~/.openclaw/extensions/openclaw-shroud/
+```
+
+Or use the included script:
+
+```bash
+bash deploy-local.sh
 ```
 
 ## Configure
@@ -154,12 +165,55 @@ npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```
 
-### Local deploy (no npm publish)
+### Deploy after changes
 
 ```bash
 npm run build
 bash deploy-local.sh   # copies dist/ to ~/.openclaw/extensions/openclaw-shroud/
+openclaw gateway restart
 ```
+
+## Release workflow
+
+### Tagging a release
+
+```bash
+# 1. Update version in package.json and openclaw.plugin.json
+# 2. Update CHANGELOG.md
+# 3. Commit and tag
+git add -A
+git commit -m "Release v1.x.y"
+git tag v1.x.y
+git push && git push --tags
+```
+
+Then create a GitHub Release from the tag (attach the changelog entry as notes).
+
+### npm publish (not published yet — maintainers only)
+
+This package is **not published to npm**. The `package.json` is pre-configured so publishing is a single command when the time comes. Do not publish without maintainer approval.
+
+```bash
+# Pre-flight (always run before publishing)
+npm pack --dry-run             # verify only dist/, openclaw.plugin.json, LICENSE are included
+npm run prepublishOnly         # lint + test + build (runs automatically on npm publish)
+
+# One-time setup (when you decide to publish)
+npm login
+npm profile enable-2fa auth-and-writes
+
+# Publish
+npm publish                    # publishConfig.access = "public" is already set
+```
+
+**Security notes:**
+- Enable 2FA for both login and publish (`auth-and-writes`). This prevents token-only takeover.
+- Never commit npm tokens to git. Use `npm login` interactively or set `NPM_TOKEN` as a GitHub Actions secret.
+- Use `npm publish --provenance` in CI to add Sigstore attestation (links the package to the exact source commit).
+
+### CI
+
+The repo includes `.github/workflows/ci.yml` which runs lint + test + build on every push and PR. The publish job is present but only triggers on `v*` tags and requires `NPM_TOKEN` as a repository secret — it will no-op until that secret is configured.
 
 ## Entity categories
 
