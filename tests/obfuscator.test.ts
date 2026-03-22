@@ -611,3 +611,64 @@ describe("Filter stats (QW8)", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// QW1: Wildcard allowlist
+// ---------------------------------------------------------------------------
+
+describe("Wildcard allowlist (QW1)", () => {
+  test("glob * matches domain suffix", () => {
+    const obf = makeObfuscator({ allowlist: ["*@acme.com"] });
+    const result = obf.obfuscate("Contact john@acme.com and jane@acme.com");
+    // Both emails should be preserved (allowlisted by wildcard)
+    expect(result.obfuscated).toContain("john@acme.com");
+    expect(result.obfuscated).toContain("jane@acme.com");
+  });
+
+  test("glob * matches IP prefix", () => {
+    const obf = makeObfuscator({ allowlist: ["10.0.0.*"] });
+    const result = obf.obfuscate("Server at 10.0.0.1 and 10.0.0.2");
+    expect(result.obfuscated).toContain("10.0.0.1");
+    expect(result.obfuscated).toContain("10.0.0.2");
+  });
+
+  test("wildcard does not match non-matching values", () => {
+    const obf = makeObfuscator({ allowlist: ["*@acme.com"] });
+    const result = obf.obfuscate("Contact john@other.com");
+    expect(result.obfuscated).not.toContain("john@other.com");
+  });
+
+  test("? matches single character", () => {
+    const obf = makeObfuscator({ allowlist: ["10.0.0.?"] });
+    const result = obf.obfuscate("Server at 10.0.0.1");
+    expect(result.obfuscated).toContain("10.0.0.1");
+  });
+
+  test("exact allowlist entries still work", () => {
+    const obf = makeObfuscator({ allowlist: ["john@acme.com"] });
+    const result = obf.obfuscate("Contact john@acme.com from 10.0.0.1");
+    expect(result.obfuscated).toContain("john@acme.com");
+    expect(result.obfuscated).not.toContain("10.0.0.1");
+  });
+
+  test("wildcard allowlisted entities counted in filterStats", () => {
+    const obf = makeObfuscator({ allowlist: ["*@acme.com"] });
+    const result = obf.obfuscate("Contact john@acme.com");
+    expect(result.filterStats!.allowlisted).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// QW10: LRU eviction via obfuscator
+// ---------------------------------------------------------------------------
+
+describe("LRU eviction via obfuscator (QW10)", () => {
+  test("maxStoreMappings limits store size", () => {
+    const obf = makeObfuscator({ maxStoreMappings: 2 });
+    obf.obfuscate("john@acme.com");
+    obf.obfuscate("jane@corp.com");
+    obf.obfuscate("bob@test.org");
+    const stats = obf.getStats() as any;
+    expect(stats.storeMappings).toBeLessThanOrEqual(2);
+  });
+});
