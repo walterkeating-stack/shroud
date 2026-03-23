@@ -1,7 +1,7 @@
 {
   "id": "openclaw-shroud",
   "name": "Shroud",
-  "version": "1.3.0",
+  "version": "1.5.0",
   "description": "Privacy obfuscation with deterministic fake values and deobfuscation — PII never reaches the LLM, tool calls still work",
   "configSchema": {
     "type": "object",
@@ -78,5 +78,8 @@
     "adapter": "ncg_adapter.py",
     "adapterClass": "ShroudPlugin",
     "bridge": "shroud_bridge.mjs"
+  },
+  "compatibility": {
+    "minOpenClawVersion": "2026.3.0"
   }
 }
