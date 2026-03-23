@@ -53,10 +53,14 @@ if [ -d "$EXT_DIR" ]; then
   rm -rf "$EXT_DIR"
 fi
 
-# Remove stale install record so config validation doesn't block
-# (openclaw plugins install will re-add it)
+# Temporarily strip all plugin references so OpenClaw config validation passes.
+# (openclaw plugins install will re-add allow, entries, and installs)
 TEMP_CONFIG=$(mktemp)
-jq "del(.plugins.installs.\"$PLUGIN_NAME\")" "$CONFIG_FILE" > "$TEMP_CONFIG"
+jq "
+  del(.plugins.installs.\"$PLUGIN_NAME\") |
+  del(.plugins.entries.\"$PLUGIN_NAME\") |
+  .plugins.allow = [.plugins.allow[]? | select(. != \"$PLUGIN_NAME\")]
+" "$CONFIG_FILE" > "$TEMP_CONFIG"
 mv "$TEMP_CONFIG" "$CONFIG_FILE"
 
 # Install from npm
