@@ -22,6 +22,8 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
 | `message_sending` | Agent → User | Deobfuscate outbound messages (WhatsApp, auto-reply, etc.) |
 
+> **Streaming deobfuscation:** On first load, Shroud automatically patches pi-ai's EventStream to deobfuscate LLM responses. A restart is required to activate the patch.
+
 ## Install
 
 ### OpenClaw
@@ -264,7 +266,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (215 tests)
+npm test          # run vitest (210 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```

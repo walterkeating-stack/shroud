@@ -15,18 +15,36 @@
  */
 
 import { Obfuscator } from "../dist/obfuscator.js";
-import {
-  AssistantMessageEventStream,
-} from "/home/ka/.npm-global/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js";
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+
+// Resolve pi-ai event-stream.js dynamically from the openclaw binary location
+function findEventStream() {
+  try {
+    const bin = execSync("command -v openclaw", { encoding: "utf8" }).trim();
+    if (bin) {
+      const binDir = dirname(bin);
+      for (const candidate of [
+        join(binDir, "../lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js"),
+        join(binDir, "../node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js"),
+      ]) {
+        if (existsSync(candidate)) return candidate;
+      }
+    }
+  } catch {}
+  throw new Error("Could not find pi-ai event-stream.js — is OpenClaw installed?");
+}
+
+const { AssistantMessageEventStream } = await import(findEventStream());
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 const REAL_EMAIL = "jj@kk.net";
 const SLACK_REAL_EMAIL = "testuser@example.net";
-const SLACK_BOT_TOKEN =
-  "xoxb-10745109802022-10748404881269-C1QPEVkSDH2ss7vntW6jgHFT";
-const SLACK_CHANNEL = "C0AMN8NUXPZ";
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN || "";
+const SLACK_CHANNEL = process.env.SLACK_CHANNEL || "";
 
 function makeTestConfig() {
   return {
@@ -213,6 +231,11 @@ async function testLocalStreamDeobfuscation() {
 // ---------------------------------------------------------------------------
 async function testSlackEndToEnd() {
   console.log("\n=== Test 2: Slack end-to-end via OpenClaw ===\n");
+
+  if (!SLACK_BOT_TOKEN || !SLACK_CHANNEL) {
+    console.log("  SKIP  Set SLACK_BOT_TOKEN and SLACK_CHANNEL env vars to run this test");
+    return true;
+  }
 
   // 1. Read the latest message ts from the channel (baseline)
   console.log(`  Reading latest message ts from channel ${SLACK_CHANNEL} ...`);
