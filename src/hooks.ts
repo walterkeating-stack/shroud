@@ -530,12 +530,17 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               const sid = (obfuscator.getStats() as any).audit?.sessionId ?? "";
               obfuscator.siemSink.emit(SiemEventBuilder.deobfuscation(src, sid, capturedReqId, { replacementCount }));
             }
+            dumpStatsFile(obfuscator);
             return deobfuscated;
           } catch {
-            return obfuscator.deobfuscate(text);
+            const result = obfuscator.deobfuscate(text);
+            dumpStatsFile(obfuscator);
+            return result;
           }
         }
-        return obfuscator.deobfuscate(text);
+        const result = obfuscator.deobfuscate(text);
+        dumpStatsFile(obfuscator);
+        return result;
       },
     };
   });
@@ -603,6 +608,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (deobfuscated === event.content) return;
 
     api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
+    dumpStatsFile(obfuscator);
 
     return { content: deobfuscated };
   });
