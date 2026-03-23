@@ -162,6 +162,72 @@ describe("hooks - before_message_write", () => {
   });
 });
 
+describe("hooks - before_llm_send", () => {
+  test("obfuscates messages and returns transformResponse", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const event = {
+      messages: [
+        { role: "user", content: "Contact john@acme.com" },
+        { role: "assistant", content: "OK" },
+      ],
+    };
+    const result = await handlers["before_llm_send"](event);
+    expect(result).toBeDefined();
+    expect(result.transformResponse).toBeTypeOf("function");
+    // Messages should be obfuscated
+    expect(result.messages).toBeDefined();
+    expect(result.messages[0].content).not.toContain("john@acme.com");
+    expect(result.messages[1].content).toBe("OK"); // no PII, unchanged
+  });
+
+  test("transformResponse deobfuscates LLM output", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate to populate store
+    const obResult = obf.obfuscate("john@acme.com");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+
+    const event = { messages: [{ role: "user", content: "Hi" }] };
+    const result = await handlers["before_llm_send"](event);
+    expect(result.transformResponse).toBeTypeOf("function");
+
+    // Simulate LLM response containing fake value
+    const transformed = result.transformResponse(`The email is ${fakeEmail}`);
+    expect(transformed).toContain("john@acme.com");
+    expect(transformed).not.toContain(fakeEmail);
+  });
+
+  test("returns transformResponse even when no messages obfuscated", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    // Pre-populate store so transformResponse has something to work with
+    obf.obfuscate("john@acme.com");
+
+    const event = { messages: [{ role: "user", content: "Hello world" }] };
+    const result = await handlers["before_llm_send"](event);
+    expect(result).toBeDefined();
+    expect(result.transformResponse).toBeTypeOf("function");
+    // messages should be undefined since nothing changed
+    expect(result.messages).toBeUndefined();
+  });
+
+  test("returns void for non-array messages", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const result = await handlers["before_llm_send"]({});
+    expect(result).toBeUndefined();
+  });
+});
+
 describe("hooks - before_tool_call", () => {
   test("deobfuscates tool params (object)", async () => {
     const obf = new Obfuscator(testConfig);
@@ -307,6 +373,27 @@ describe("hooks - full flow", () => {
     expect(step5).toBeDefined();
     expect(step5.content).toContain("john@acme.com");
     expect(step5.content).not.toContain(fakeEmail);
+  });
+
+  test("before_llm_send transformResponse deobfuscates LLM output (>=2026.3.14 path)", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    // Step 1: Obfuscate via prompt build
+    await handlers["before_prompt_build"]({ prompt: "Look up john@acme.com" });
+    const fakeEmail = obf.obfuscate("john@acme.com").mappingsUsed["john@acme.com"];
+
+    // Step 2: before_llm_send installs transformResponse
+    const llmResult = await handlers["before_llm_send"]({
+      messages: [{ role: "user", content: `Find ${fakeEmail}` }],
+    });
+    expect(llmResult.transformResponse).toBeTypeOf("function");
+
+    // Step 3: LLM responds with fake value — transformResponse deobfuscates
+    const deobfuscated = llmResult.transformResponse(`The contact is ${fakeEmail}`);
+    expect(deobfuscated).toContain("john@acme.com");
+    expect(deobfuscated).not.toContain(fakeEmail);
   });
 });
 

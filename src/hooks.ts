@@ -1,12 +1,13 @@
 /**
  * OpenClaw lifecycle hooks for the Shroud privacy plugin.
  *
- * Registers 5 hooks:
+ * Registers 6 hooks (version-adaptive — unused hooks are silently ignored):
  * 1. before_prompt_build   (async) -- obfuscate user prompt via prependContext
  * 2. before_message_write  (SYNC)  -- obfuscate every message written to the session transcript
- * 3. before_tool_call      (async) -- deobfuscate tool params (+ depth tracking)
- * 4. tool_result_persist   (SYNC)  -- obfuscate tool result message
- * 5. message_sending       (async) -- deobfuscate outbound message content
+ * 3. before_llm_send       (async) -- obfuscate LLM messages + install transformResponse for deobfuscation (>=2026.3.14)
+ * 4. before_tool_call      (async) -- deobfuscate tool params (+ depth tracking)
+ * 5. tool_result_persist   (SYNC)  -- obfuscate tool result message
+ * 6. message_sending       (async) -- deobfuscate outbound message content
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -292,7 +293,60 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 3. before_tool_call (async): deobfuscate tool params + track depth
+  // 3. before_llm_send (async): obfuscate LLM context + install transformResponse
+  //    Available on OpenClaw >=2026.3.14. Silently ignored on older versions.
+  //    This is the most reliable deobfuscation path — transformResponse catches
+  //    ALL LLM output text including streaming deltas.
+  // -----------------------------------------------------------------------
+  api.on("before_llm_send", async (event: any) => {
+    const messages = event?.messages;
+    if (!Array.isArray(messages)) return;
+
+    // Obfuscate all string content in the message array
+    let totalEntities = 0;
+    const obfuscatedMessages = messages.map((msg: any) => {
+      if (!msg || typeof msg !== "object") return msg;
+      const walked = walkStrings(msg.content, (s: string) => {
+        const result = obfuscator.obfuscate(s);
+        totalEntities += result.entities.length;
+        return result.obfuscated;
+      });
+      if (walked === msg.content) return msg;
+      return { ...msg, content: walked };
+    });
+
+    if (totalEntities > 0) {
+      dumpStatsFile(obfuscator);
+      api.logger?.info(
+        `[shroud] before_llm_send: obfuscated ${totalEntities} entities in ${messages.length} messages`,
+      );
+    }
+
+    // Install transformResponse — this deobfuscates LLM output text.
+    // It's a synchronous function called on every response chunk.
+    const requestId = randomBytes(8).toString("hex");
+    const transformResponse = (text: string): string => {
+      if (auditActive) {
+        const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(text);
+        if (deobfuscated !== text) {
+          try {
+            emitDeobfuscationAudit(api.logger, config, requestId, replacementCount);
+          } catch { /* best-effort */ }
+          dumpStatsFile(obfuscator);
+        }
+        return deobfuscated;
+      }
+      return obfuscator.deobfuscate(text);
+    };
+
+    return {
+      messages: totalEntities > 0 ? obfuscatedMessages : undefined,
+      transformResponse,
+    };
+  });
+
+  // -----------------------------------------------------------------------
+  // 4. before_tool_call (async): deobfuscate tool params + track depth
   // -----------------------------------------------------------------------
   api.on("before_tool_call", async (event: any) => {
     if (!event?.params || typeof event.params !== "object") return;
@@ -327,7 +381,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 4. tool_result_persist (SYNC): obfuscate tool result message
+  // 5. tool_result_persist (SYNC): obfuscate tool result message
   // -----------------------------------------------------------------------
   api.on("tool_result_persist", (event: any) => {
     if (!event?.message) return;
@@ -345,7 +399,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 5. message_sending (async): deobfuscate outbound message content
+  // 6. message_sending (async): deobfuscate outbound message content
+  //    Fallback for versions without before_llm_send/transformResponse.
   // -----------------------------------------------------------------------
   api.on("message_sending", async (event: any) => {
     if (typeof event?.content !== "string") return;
