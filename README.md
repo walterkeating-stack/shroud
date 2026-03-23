@@ -2,7 +2,7 @@
 
 Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitive data (PII, network infrastructure, credentials) and replaces it with deterministic fake values before anything reaches the LLM. Tool calls still work because Shroud deobfuscates on the way back.
 
-> **Open-source Community Edition** — free to use under MIT license. [Enterprise Edition](#enterprise-edition) available with additional features for teams.
+> **Open-source Community Edition** — free to use under Apache 2.0 license. [Enterprise Edition](#enterprise-edition) available with additional features for teams.
 
 ## What it does
 
@@ -41,6 +41,38 @@ npm install && npm run build
 bash deploy-local.sh     # → OpenClaw (~/.openclaw/extensions/)
 ```
 
+## Updating
+
+OpenClaw doesn't have a `plugins update` command yet, so updating requires removing the old install first. A helper script is included:
+
+```bash
+# Update to latest version (preserves your config)
+bash scripts/update-openclaw-plugin.sh
+
+# Update to a specific version
+bash scripts/update-openclaw-plugin.sh 2.0.1
+```
+
+The script saves your plugin config from `openclaw.json`, removes the old extension, reinstalls from npm, restores your config, and restarts the gateway.
+
+### Manual update
+
+If you prefer to do it manually:
+
+```bash
+# 1. Remove old plugin files
+rm -rf ~/.openclaw/extensions/shroud-privacy
+
+# 2. Reinstall (this resets your plugin config to defaults)
+openclaw plugins install shroud-privacy
+
+# 3. Re-apply your config in ~/.openclaw/openclaw.json
+#    (under plugins.entries."shroud-privacy".config)
+
+# 4. Restart
+openclaw gateway restart
+```
+
 ## Configure
 
 Edit `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`:
@@ -75,7 +107,6 @@ Out of the box, Shroud:
 - Detects all entity categories at confidence >= 0.0
 - Logs audit lines (counts + categories) but **not** proof hashes or fake samples
 - Never logs raw values, real→fake mappings, or original text
-- All enterprise features are opt-in and disabled by default
 
 To enable proof hashes and fake samples for deeper audit:
 
@@ -111,56 +142,12 @@ To enable proof hashes and fake samples for deeper audit:
 | `logMappings` | boolean | `false` | Log mapping table (debug only) |
 | `customPatterns` | array | `[]` | User-defined regex detection patterns |
 | `detectorOverrides` | object | `{}` | Override built-in rules: disable or change confidence per rule name |
-
-### Enterprise settings
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `tenantId` | string | `""` | Multi-tenant isolation: tenant ID for HMAC keying |
-| `lockedCategories` | string[] | `[]` | Compliance mode: categories that MUST be detected |
 | `maxToolDepth` | number | `10` | Max nested tool call depth before warning |
-| `exposureWindow` | number | `60000` | Sliding window (ms) for exposure rate tracking |
-| `exposureThresholds` | object | `{}` | Per-category max detections per window |
-| `exposureGlobalThreshold` | number | `100` | Global max detections per window |
-| `policyFile` | string | `""` | Path to external JSON policy file (allowlist/denylist with glob/regex) |
 | `redactionLevel` | `"full"` \| `"masked"` \| `"stats"` | `"full"` | Output mode: fake values, partial masking, or category placeholders |
-| `sharedStorePath` | string | `""` | File path for cross-agent shared mapping store |
-| `sharedStoreTtlMs` | number | `5000` | Cache TTL for shared store reads (ms) |
-| `provenanceTagging` | boolean | `false` | Embed `«shroud:category:hash»` markers in output |
-| `sessionHandoff` | boolean | `false` | Enable session export/import tools |
+| `dryRun` | boolean | `false` | Detect entities but don't replace (testing mode) |
+| `maxStoreMappings` | number | `0` | Max mapping store size with LRU eviction (0 = unlimited) |
 
-### Key rotation settings
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `keys` | array | `[]` | Versioned keys: `[{version, key, createdAt?, expiresAt?, retired?}]` |
-| `activeKeyVersion` | number | `0` | Which key version to use (0 = highest non-expired) |
-
-### SIEM integration settings
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `siemWebhooks` | array | `[]` | Webhook endpoints: `[{url, authHeader?, headers?, eventTypes?}]` |
-| `siemBatchSize` | number | `100` | Max events before auto-flush |
-| `siemFlushIntervalMs` | number | `30000` | Flush interval (ms) |
-| `siemMaxRetries` | number | `3` | Max retry attempts per flush |
-| `siemRetryBackoffMs` | number | `1000` | Initial retry backoff (doubles each retry) |
-| `siemEventFormat` | `"json"` \| `"cef"` | `"json"` | Output format for SIEM events |
-
-### Hot-reload, session isolation, and monitoring settings
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `hotReload` | boolean | `false` | Watch config files and reload detection rules on change |
-| `customPatternsFile` | string | `""` | Path to custom patterns JSON file to watch |
-| `hotReloadDebounceMs` | number | `1000` | Debounce interval for file change events |
-| `sessionIsolation` | boolean | `false` | Per-session isolated stores and mapping engines |
-| `monitorEnabled` | boolean | `false` | Active monitoring and alerting pipeline |
-| `monitorRateWindowMs` | number | `60000` | Rolling window for rate baseline |
-| `monitorSpikeMultiplier` | number | `3.0` | Alert when rate exceeds baseline × multiplier |
-| `monitorMaxAlerts` | number | `500` | Max alerts to keep in memory |
-
-> **Env var overrides:** `SHROUD_SECRET_KEY`, `SHROUD_PERSISTENT_SALT`, `SHROUD_TENANT_ID`, `SHROUD_SHARED_STORE`, `SHROUD_SIEM_WEBHOOK_URL`, `SHROUD_SIEM_WEBHOOK_AUTH`, and `SHROUD_KEYS` (JSON array) override their respective config keys (priority: env var > plugin config > default).
+> **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override their respective config keys (priority: env var > plugin config > default).
 
 ### Detector overrides
 
@@ -254,12 +241,6 @@ With proof hashes enabled:
 [shroud][audit] OBFUSCATE req=a3f1bc9e02d4e7f1 | entities=4 | touched=2/5 | blocks=2 | chars=1200->1218 (delta=+18) | modified=YES | byCat=email:1,ip_address:2,hostname:1 | proof_in=8a3c1f0e2b4d proof_out=f7d2a1c9e084 | fakes=[jsmith@corp.net|100.64.0.12|SW-LAB-01]
 ```
 
-With compliance locking:
-
-```
-[shroud][audit] OBFUSCATE req=... | ... | COMPLIANCE_WARN=missing:[credit_card]
-```
-
 ### Audit field reference
 
 | Field | Meaning |
@@ -276,7 +257,6 @@ With compliance locking:
 | `proof_in` | Truncated salted SHA-256 of input text |
 | `proof_out` | Truncated salted SHA-256 of output text |
 | `fakes` | Sample of fake replacement values (never real values) |
-| `COMPLIANCE_WARN` | Missing locked categories (if compliance mode enabled) |
 
 ### Note on log duplication
 
@@ -286,7 +266,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (303 tests)
+npm test          # run vitest (210 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```
@@ -315,9 +295,7 @@ git push && git push --tags
 
 Then create a GitHub Release from the tag (attach the changelog entry as notes).
 
-### npm publish (not published yet — maintainers only)
-
-This package is **not published to npm**. The `package.json` is pre-configured so publishing is a single command when the time comes. Do not publish without maintainer approval.
+### npm publish (maintainers only)
 
 ```bash
 # Pre-flight (always run before publishing)
@@ -347,4 +325,4 @@ The repo includes `.github/workflows/ci.yml` which runs lint + test + build on e
 
 ## License
 
-[MIT](LICENSE)
+[Apache 2.0](LICENSE)
