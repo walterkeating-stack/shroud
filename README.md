@@ -199,7 +199,7 @@ On subsequent loads, the patch is detected and skipped. To revert: restore the `
 
 Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in three places:
 
-- **`shroud-stats` CLI** — run `node scripts/shroud-stats.mjs` to see all rules with status, confidence, and hit counts. Shows live cumulative stats from the running OpenClaw gateway via `/tmp/shroud-stats.json`. Use `--test "text with PII"` to test detection against sample input.
+- **`shroud-stats` CLI** — run `shroud-stats` to see all rules with status, confidence, and hit counts. Shows live cumulative stats from the running gateway via `/tmp/shroud-stats.json`. Use `--test "text with PII"` to test detection against sample input.
 - **Audit log lines** — `byRule=regex:email:3,regex:ipv4:2,...` alongside the existing `byCat` field.
 - **`getStats()`** — the `ruleHits` object in the stats response, useful for programmatic access.
 
