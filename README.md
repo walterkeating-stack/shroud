@@ -177,12 +177,12 @@ Shroud registers tools that the LLM can call during conversations:
 You can also run the stats CLI directly:
 
 ```bash
-node scripts/shroud-stats.mjs              # live rule table from running gateway
-node scripts/shroud-stats.mjs --json       # machine-readable JSON output
-node scripts/shroud-stats.mjs --test "Contact john@acme.com"  # test detection
+shroud-stats                               # live rule table from running gateway
+shroud-stats --json                        # machine-readable JSON output
+shroud-stats --test "Contact john@acme.com"  # test detection
 ```
 
-Stats are read from `/tmp/shroud-stats.json` (override with `SHROUD_STATS_FILE` env var).
+The CLI reads live stats from `/tmp/shroud-stats.json` (override with `SHROUD_STATS_FILE` env var). The stats file is updated by the running gateway on every obfuscation event.
 
 ### Auto-patching on first install
 
