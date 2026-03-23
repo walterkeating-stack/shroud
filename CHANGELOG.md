@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.4] - 2026-03-23
+
+### Fixed
+- **OpenClaw compatibility** — added `before_message_write` hook to obfuscate messages as they're written to the session transcript. This replaces the `before_llm_send` hook which is not supported on public OpenClaw 2026.3.22. All messages in the LLM context window are now obfuscated regardless of OpenClaw version. Tool depth reset moved to `before_prompt_build`.
+- 5 new tests for `before_message_write` hook (215 total).
+
 ## [2.0.3] - 2026-03-23
 
 ### Fixed

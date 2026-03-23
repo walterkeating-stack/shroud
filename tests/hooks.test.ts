@@ -156,6 +156,71 @@ describe("hooks - before_llm_send", () => {
   });
 });
 
+describe("hooks - before_message_write", () => {
+  test("obfuscates string content in messages", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const event = { message: { role: "user", content: "Contact john@acme.com please" } };
+    const result = handlers["before_message_write"](event);
+    expect(result).toBeDefined();
+    expect(result.message.content).not.toContain("john@acme.com");
+    expect(result.message.content).toContain("@"); // fake email
+    expect(result.message.role).toBe("user");
+  });
+
+  test("obfuscates array-of-blocks content", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const event = {
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Found alice@secret.org in logs" }],
+      },
+    };
+    const result = handlers["before_message_write"](event);
+    expect(result).toBeDefined();
+    expect(result.message.content[0].text).not.toContain("alice@secret.org");
+  });
+
+  test("returns void when no PII detected", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const event = { message: { role: "user", content: "Hello world" } };
+    const result = handlers["before_message_write"](event);
+    expect(result).toBeUndefined();
+  });
+
+  test("returns void for empty/missing message", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    expect(handlers["before_message_write"]({})).toBeUndefined();
+    expect(handlers["before_message_write"]({ message: null })).toBeUndefined();
+  });
+
+  test("deobfuscation works after message_write obfuscation", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate via before_message_write
+    const event = { message: { role: "user", content: "Email john@acme.com" } };
+    const result = handlers["before_message_write"](event);
+    const fakeContent = result.message.content;
+
+    // Deobfuscate via message_sending (simulating outbound)
+    const deobResult = obf.deobfuscate(fakeContent);
+    expect(deobResult).toContain("john@acme.com");
+  });
+});
+
 describe("hooks - before_tool_call", () => {
   test("deobfuscates tool params (object)", async () => {
     const obf = new Obfuscator(testConfig);

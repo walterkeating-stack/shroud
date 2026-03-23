@@ -1,12 +1,13 @@
 /**
  * OpenClaw lifecycle hooks for the Shroud privacy plugin.
  *
- * Registers 5 hooks:
- * 1. before_prompt_build  (async) -- obfuscate user prompt via prependContext
- * 2. before_llm_send     (async) -- obfuscate LLM input messages + return transformResponse for deobfuscation
- * 3. before_tool_call    (async) -- deobfuscate tool params (+ depth tracking)
- * 4. tool_result_persist  (SYNC) -- obfuscate tool result message
- * 5. message_sending     (async) -- deobfuscate outbound message content (fallback)
+ * Registers 6 hooks:
+ * 1. before_prompt_build   (async) -- obfuscate user prompt via prependContext
+ * 2. before_message_write  (SYNC)  -- obfuscate every message written to the session transcript
+ * 3. before_llm_send       (async) -- obfuscate LLM input messages (only on platforms that support it)
+ * 4. before_tool_call      (async) -- deobfuscate tool params (+ depth tracking)
+ * 5. tool_result_persist   (SYNC)  -- obfuscate tool result message
+ * 6. message_sending       (async) -- deobfuscate outbound message content
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -343,6 +344,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // 1. before_prompt_build (async): obfuscate user prompt
   // -----------------------------------------------------------------------
   api.on("before_prompt_build", async (event: any) => {
+    // Reset tool depth at the start of each turn — tool calls from the
+    // previous turn are complete, so the counter should not carry over.
+    if (obfuscator.toolDepth > 0) {
+      obfuscator.resetToolDepth();
+    }
+
     const prompt = event?.prompt;
     if (typeof prompt !== "string" || !prompt) return;
 
@@ -367,13 +374,52 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 2. before_llm_send (async): obfuscate LLM input + provide response deobfuscator
+  // 2. before_message_write (SYNC): obfuscate every message written to session
+  //    This ensures the LLM always sees obfuscated history, even on platforms
+  //    that don't support before_llm_send.
+  // -----------------------------------------------------------------------
+  api.on("before_message_write", (event: any) => {
+    if (!event?.message || typeof event.message !== "object") return;
+
+    const msg = event.message;
+
+    // Obfuscate string content
+    if (typeof msg.content === "string") {
+      const result = obfuscator.obfuscate(msg.content);
+      if (result.entities.length === 0) return;
+      dumpStatsFile(obfuscator);
+      return { message: { ...msg, content: result.obfuscated } };
+    }
+
+    // Obfuscate array-of-blocks content
+    if (Array.isArray(msg.content)) {
+      let changed = false;
+      const newContent = msg.content.map((block: any) => {
+        if (block && typeof block === "object" && typeof block.text === "string") {
+          const result = obfuscator.obfuscate(block.text);
+          if (result.entities.length > 0) {
+            changed = true;
+            return { ...block, text: result.obfuscated };
+          }
+        }
+        return block;
+      });
+      if (!changed) return;
+      dumpStatsFile(obfuscator);
+      return { message: { ...msg, content: newContent } };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // 3. before_llm_send (async): obfuscate LLM input + provide response deobfuscator
+  //    Only fires on platforms that support this hook (e.g. custom forks).
+  //    On standard OpenClaw, before_message_write handles obfuscation instead.
   // -----------------------------------------------------------------------
   api.on("before_llm_send", async (event: any) => {
     if (!Array.isArray(event?.messages)) return;
 
-    // Reset tool depth at the start of each LLM turn — tool calls from the
-    // previous turn are complete, so the counter should not carry over.
+    // Reset tool depth (also done in before_prompt_build for platforms
+    // that don't support before_llm_send)
     if (obfuscator.toolDepth > 0) {
       obfuscator.resetToolDepth();
     }
