@@ -436,3 +436,119 @@ describe("hooks - shroud-stats tool", () => {
     expect(text).toContain("DISABLED");
   });
 });
+
+describe("hooks - transport interceptor", () => {
+  test("wraps WebClient.prototype.apiCall when found in require.cache", () => {
+    // Simulate @slack/web-api being loaded in require.cache
+    const { createRequire } = require("node:module");
+    const esmRequire = createRequire(import.meta.url);
+
+    // Create a fake WebClient class
+    class FakeWebClient {
+      async apiCall(method: string, options?: any) {
+        return { ok: true, method, options };
+      }
+    }
+
+    // Inject into require.cache under a @slack/web-api key
+    const fakeModulePath = "/fake/node_modules/@slack/web-api/dist/index.js";
+    esmRequire.cache[fakeModulePath] = {
+      id: fakeModulePath,
+      filename: fakeModulePath,
+      loaded: true,
+      exports: { WebClient: FakeWebClient },
+    } as any;
+
+    try {
+      const obf = new Obfuscator(testConfig);
+      const { api, logLines } = createMockApi();
+      registerHooks(api, obf);
+
+      expect(logLines.some((l) => l.includes("Installed Slack transport interceptor"))).toBe(true);
+      expect((FakeWebClient.prototype as any).__shroudPatched).toBe(true);
+    } finally {
+      delete esmRequire.cache[fakeModulePath];
+    }
+  });
+
+  test("deobfuscates text in chat.postMessage calls", async () => {
+    const { createRequire } = require("node:module");
+    const esmRequire = createRequire(import.meta.url);
+
+    const callLog: any[] = [];
+    class FakeWebClient {
+      async apiCall(method: string, options?: any) {
+        callLog.push({ method, text: options?.text });
+        return { ok: true };
+      }
+    }
+
+    const fakeModulePath = "/fake2/node_modules/@slack/web-api/dist/index.js";
+    esmRequire.cache[fakeModulePath] = {
+      id: fakeModulePath,
+      filename: fakeModulePath,
+      loaded: true,
+      exports: { WebClient: FakeWebClient },
+    } as any;
+
+    try {
+      const obf = new Obfuscator(testConfig);
+      // First obfuscate to populate the mapping store
+      const result = obf.obfuscate("Contact john@acme.com");
+      const fakeEmail = result.obfuscated.match(/\S+@\S+/)![0];
+
+      const { api } = createMockApi();
+      registerHooks(api, obf);
+
+      // Simulate a Slack API call with the fake email
+      const client = new FakeWebClient();
+      await client.apiCall("chat.postMessage", { channel: "C123", text: `Here is the email: ${fakeEmail}` });
+
+      // The interceptor should have deobfuscated the text
+      expect(callLog[0].text).toContain("john@acme.com");
+      expect(callLog[0].text).not.toContain(fakeEmail);
+    } finally {
+      delete esmRequire.cache[fakeModulePath];
+      delete (FakeWebClient.prototype as any).__shroudPatched;
+    }
+  });
+
+  test("does not modify non-chat API calls", async () => {
+    const { createRequire } = require("node:module");
+    const esmRequire = createRequire(import.meta.url);
+
+    const callLog: any[] = [];
+    class FakeWebClient {
+      async apiCall(method: string, options?: any) {
+        callLog.push({ method, text: options?.text });
+        return { ok: true };
+      }
+    }
+
+    const fakeModulePath = "/fake3/node_modules/@slack/web-api/dist/index.js";
+    esmRequire.cache[fakeModulePath] = {
+      id: fakeModulePath,
+      filename: fakeModulePath,
+      loaded: true,
+      exports: { WebClient: FakeWebClient },
+    } as any;
+
+    try {
+      const obf = new Obfuscator(testConfig);
+      const result = obf.obfuscate("Contact john@acme.com");
+      const fakeEmail = result.obfuscated.match(/\S+@\S+/)![0];
+
+      const { api } = createMockApi();
+      registerHooks(api, obf);
+
+      // Non-chat API call should pass through unchanged
+      const client = new FakeWebClient();
+      await client.apiCall("conversations.list", { text: fakeEmail });
+
+      expect(callLog[0].text).toBe(fakeEmail);
+    } finally {
+      delete esmRequire.cache[fakeModulePath];
+      delete (FakeWebClient.prototype as any).__shroudPatched;
+    }
+  });
+});

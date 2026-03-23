@@ -526,6 +526,48 @@ describe("Wildcard allowlist (QW1)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Slack mrkdwn link stripping
+// ---------------------------------------------------------------------------
+
+describe("Slack mrkdwn link stripping", () => {
+  test("mailto links are stripped so full email is detected", () => {
+    const obf = makeObfuscator();
+    // Slack wraps "jj@kk.net" as <mailto:jj@kk.et|jj@kk.>net
+    const result = obf.obfuscate("test: <mailto:jj@kk.et|jj@kk.>net");
+    // The entity should be jj@kk.net (reconstructed from display text + trailing)
+    expect(result.entities.length).toBeGreaterThanOrEqual(1);
+    const emailEntity = result.entities.find((e) => e.category === Category.EMAIL);
+    expect(emailEntity).toBeDefined();
+    expect(emailEntity!.value).toBe("jj@kk.net");
+    // Deobfuscation should round-trip
+    const deob = obf.deobfuscate(result.obfuscated);
+    expect(deob).toContain("jj@kk.net");
+  });
+
+  test("standard Slack mailto link is stripped", () => {
+    const obf = makeObfuscator();
+    // Standard format: <mailto:user@example.com|user@example.com>
+    const result = obf.obfuscate("email: <mailto:user@example.com|user@example.com>");
+    const emailEntity = result.entities.find((e) => e.category === Category.EMAIL);
+    // example.com emails are filtered by documentation detection, but the stripping should work
+    // The text after stripping should be "email: user@example.com"
+    expect(result.obfuscated).not.toContain("<mailto:");
+  });
+
+  test("URL links are stripped", () => {
+    const obf = makeObfuscator();
+    const result = obf.obfuscate("visit <https://secret.internal.corp/api|secret.internal.corp/api>");
+    expect(result.obfuscated).not.toContain("<https://");
+  });
+
+  test("bare URL links are stripped", () => {
+    const obf = makeObfuscator();
+    const result = obf.obfuscate("see <https://10.0.0.1/config>");
+    expect(result.obfuscated).not.toContain("<https://");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // QW10: LRU eviction via obfuscator
 // ---------------------------------------------------------------------------
 

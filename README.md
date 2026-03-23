@@ -264,7 +264,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (208 tests)
+npm test          # run vitest (215 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```

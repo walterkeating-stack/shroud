@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.7] - 2026-03-23
+
+### Fixed
+- **Slack deobfuscation on OpenClaw 2026.3.11** — added transport-level interceptor that wraps `WebClient.prototype.apiCall` to deobfuscate Slack messages (`chat.postMessage`/`chat.update`) at the API call level. This is a universal fallback: on older OpenClaw versions where `message_sending` doesn't fire for Slack, the interceptor catches it. On >=2026.3.14, `transformResponse` handles deobfuscation first and the interceptor is a no-op.
+- **Slack mrkdwn link formatting breaking email detection** — Slack auto-links emails as `<mailto:X|display>`, which splits entity text across tag boundaries (e.g. `jj@kk.net` becomes `<mailto:jj@kk.et|jj@kk.>net`). Added `stripSlackLinks()` pre-processing in `obfuscate()` to recover plain text before entity detection. Also handles URL links (`<URL|display>` and `<URL>`).
+- 4 new Slack mrkdwn stripping tests (215 total).
+
 ## [2.0.6] - 2026-03-23
 
 ### Fixed
