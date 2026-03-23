@@ -63,13 +63,13 @@ The LLM never sees real sensitive data. All operations are synchronous and deter
 ### OpenClaw
 
 ```bash
-openclaw plugins install openclaw-shroud
+openclaw plugins install shroud-privacy
 ```
 
 ### NCG Agent
 
 ```bash
-python agent.py plugin install openclaw-shroud
+python agent.py plugin install shroud-privacy
 ```
 
 ### From Source (Development)
@@ -85,8 +85,8 @@ bash deploy-ncg.sh       # → NCG (~/.ncg/extensions/)
 Import `Obfuscator` and `resolveConfig` directly:
 
 ```javascript
-import { resolveConfig } from 'openclaw-shroud/dist/config.js';
-import { Obfuscator } from 'openclaw-shroud/dist/obfuscator.js';
+import { resolveConfig } from 'shroud-privacy/dist/config.js';
+import { Obfuscator } from 'shroud-privacy/dist/obfuscator.js';
 
 const config = resolveConfig({ secretKey: 'your-key' });
 const obf = new Obfuscator(config);
@@ -110,14 +110,14 @@ Both OpenClaw and NCG store Shroud config in the same JSON structure — only th
 | OpenClaw | `~/.openclaw/openclaw.json` |
 | NCG | `~/.ncg/ncg.json` |
 
-In both cases, Shroud's settings go inside `plugins.entries."openclaw-shroud".config`:
+In both cases, Shroud's settings go inside `plugins.entries."shroud-privacy".config`:
 
 ```jsonc
 // ~/.openclaw/openclaw.json  OR  ~/.ncg/ncg.json
 {
   "plugins": {
     "entries": {
-      "openclaw-shroud": {
+      "shroud-privacy": {
         "enabled": true,
         "config": {
           // ← All Shroud config goes here.
@@ -140,7 +140,7 @@ In both cases, Shroud's settings go inside `plugins.entries."openclaw-shroud".co
 > ```json
 > { "auditEnabled": true, "auditLogFormat": "json" }
 > ```
-> it means add those keys to your config file at `plugins.entries."openclaw-shroud".config`.
+> it means add those keys to your config file at `plugins.entries."shroud-privacy".config`.
 
 ---
 
@@ -271,10 +271,10 @@ Text flows through four detector layers:
 
 ### Custom Patterns
 
-In `~/.openclaw/openclaw.json` (inside `plugins.entries."openclaw-shroud".config`):
+In `~/.openclaw/openclaw.json` (inside `plugins.entries."shroud-privacy".config`):
 
 ```jsonc
-// ~/.openclaw/openclaw.json → plugins.entries."openclaw-shroud".config
+// ~/.openclaw/openclaw.json → plugins.entries."shroud-privacy".config
 {
   "customPatterns": [
     { "name": "employee_id", "pattern": "EMP-\\d{6}", "category": "custom" },
@@ -538,7 +538,7 @@ Every `ObfuscationResult` includes `filterStats`:
 ## 17. Config Validation
 
 ```javascript
-import { resolveConfig, validateConfig } from 'openclaw-shroud/dist/config.js';
+import { resolveConfig, validateConfig } from 'shroud-privacy/dist/config.js';
 
 const config = resolveConfig(rawConfig);
 const issues = validateConfig(config);
@@ -1276,18 +1276,18 @@ Call `getStats()` for:
 ### Install
 
 ```bash
-python agent.py plugin install openclaw-shroud
+python agent.py plugin install shroud-privacy
 ```
 
-This installs to `~/.ncg/extensions/openclaw-shroud/` and creates a default config entry in `~/.ncg/ncg.json`.
+This installs to `~/.ncg/extensions/shroud-privacy/` and creates a default config entry in `~/.ncg/ncg.json`.
 
 ### Plugin Management
 
 ```bash
 python agent.py plugin list                    # list installed plugins
-python agent.py plugin enable openclaw-shroud   # enable
-python agent.py plugin disable openclaw-shroud  # disable
-python agent.py plugin uninstall openclaw-shroud # remove
+python agent.py plugin enable shroud-privacy   # enable
+python agent.py plugin disable shroud-privacy  # disable
+python agent.py plugin uninstall shroud-privacy # remove
 ```
 
 ### Architecture
@@ -1312,7 +1312,7 @@ Both files ship in the npm package and are installed to the extensions directory
 
 ### Configuration
 
-Edit `~/.ncg/ncg.json` → `plugins.entries."openclaw-shroud".config`. Same keys as OpenClaw — see [Configuration Reference](#3-configuration-reference).
+Edit `~/.ncg/ncg.json` → `plugins.entries."shroud-privacy".config`. Same keys as OpenClaw — see [Configuration Reference](#3-configuration-reference).
 
 ### Verifying Deployment
 
@@ -1324,7 +1324,7 @@ python agent.py plugin list
 journalctl -u ncg-gateway.service | grep shroud
 
 # Check version
-python agent.py plugin list | grep openclaw-shroud
+python agent.py plugin list | grep shroud-privacy
 
 # Check stats
 cat /tmp/shroud-stats.json

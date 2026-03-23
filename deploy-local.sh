@@ -3,5 +3,5 @@
 set -e
 cd "$(dirname "$0")"
 npm run build
-cp -r dist package.json openclaw.plugin.json "$HOME/.openclaw/extensions/openclaw-shroud/"
+cp -r dist package.json openclaw.plugin.json "$HOME/.openclaw/extensions/shroud-privacy/"
 echo "Deployed. Restart OpenClaw to pick up changes."

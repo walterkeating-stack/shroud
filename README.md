@@ -27,18 +27,18 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 ### OpenClaw
 
 ```bash
-openclaw plugins install openclaw-shroud
+openclaw plugins install shroud-privacy
 ```
 
-That's it. Configure in `~/.openclaw/openclaw.json` under `plugins.entries."openclaw-shroud".config`.
+That's it. Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`.
 
 ### NCG Agent
 
 ```bash
-python agent.py plugin install openclaw-shroud
+python agent.py plugin install shroud-privacy
 ```
 
-Configure in `~/.ncg/ncg.json` under `plugins.entries."openclaw-shroud".config`.
+Configure in `~/.ncg/ncg.json` under `plugins.entries."shroud-privacy".config`.
 
 ### From source (development)
 
@@ -57,11 +57,11 @@ Both OpenClaw and NCG store Shroud config in the same structure — only the fil
 
 | Platform | Config file | Config path |
 |----------|-------------|-------------|
-| OpenClaw | `~/.openclaw/openclaw.json` | `plugins.entries."openclaw-shroud".config` |
-| NCG | `~/.ncg/ncg.json` | `plugins.entries."openclaw-shroud".config` |
+| OpenClaw | `~/.openclaw/openclaw.json` | `plugins.entries."shroud-privacy".config` |
+| NCG | `~/.ncg/ncg.json` | `plugins.entries."shroud-privacy".config` |
 
 ```jsonc
-"openclaw-shroud": {
+"shroud-privacy": {
   "enabled": true,
   "config": {
     // Recommended: safe defaults for community use
@@ -448,8 +448,8 @@ npm run lint      # type-check without emitting
 
 ```bash
 npm run build
-bash deploy-local.sh   # → OpenClaw (~/.openclaw/extensions/openclaw-shroud/)
-bash deploy-ncg.sh     # → NCG (~/.ncg/extensions/openclaw-shroud/)
+bash deploy-local.sh   # → OpenClaw (~/.openclaw/extensions/shroud-privacy/)
+bash deploy-ncg.sh     # → NCG (~/.ncg/extensions/shroud-privacy/)
 
 openclaw gateway restart                    # restart OpenClaw
 sudo systemctl restart ncg-gateway.service  # restart NCG
