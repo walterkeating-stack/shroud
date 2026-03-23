@@ -1,8 +1,8 @@
-# Shroud
+# Shroud — Community Edition
 
 Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitive data (PII, network infrastructure, credentials) and replaces it with deterministic fake values before anything reaches the LLM. Tool calls still work because Shroud deobfuscates on the way back.
 
-> **Community release** — not an official OpenClaw plugin. Use at your own risk.
+> **Open-source Community Edition** — free to use under MIT license. [Enterprise Edition](#enterprise-edition) available with additional features for teams.
 
 ## What it does
 
@@ -202,113 +202,7 @@ Shroud tracks per-rule match counts for the lifetime of the process. Counters ap
 
 Counters reset on `reset()` or gateway restart.
 
-## Enterprise features
-
-### Multi-tenant isolation
-
-When running agents for multiple customers/teams through the same gateway, set `tenantId` per request to ensure mappings never leak across boundaries. Each tenant gets its own HMAC salt and mapping store.
-
-```jsonc
-"tenantId": "customer-abc"
-// Or set SHROUD_TENANT_ID env var
-```
-
-### Compliance-mode entity locking
-
-In regulated environments, specify categories that MUST be detected. If detection fails for a locked category, Shroud emits a compliance warning in audit logs and includes a `complianceReport` in the obfuscation result.
-
-```jsonc
-"lockedCategories": ["email", "credit_card", "ssn"]
-```
-
-### Rate-of-exposure tracking
-
-Monitor for anomalous PII exposure rates that might indicate a jailbreak or prompt injection. Configure per-category thresholds — when exceeded, warnings are logged.
-
-```jsonc
-"exposureWindow": 60000,
-"exposureThresholds": { "hostname": 20, "email": 10 },
-"exposureGlobalThreshold": 50
-```
-
-### Session handoff
-
-Enable encrypted export/import of mapping tables for cross-session continuity. When `sessionHandoff` is true, two tools are registered: `shroud-session-export` and `shroud-session-import`.
-
-```jsonc
-"sessionHandoff": true
-```
-
-### Key rotation
-
-Rotate secret keys without losing existing mappings. Old fakes remain decodable; new obfuscations use the new key. Session blobs encrypted with old keys can still be imported (Shroud tries all keys for decryption).
-
-```jsonc
-"keys": [
-  { "version": 1, "key": "old-key-at-least-16-chars", "createdAt": "2025-01-01T00:00:00Z", "retired": true },
-  { "version": 2, "key": "new-key-at-least-16-chars", "createdAt": "2025-06-01T00:00:00Z" }
-],
-"activeKeyVersion": 2
-```
-
-Runtime rotation: call `obfuscator.rotateKey("new-key")` or use the `shroud-rotate-key` tool. Key status is available via `shroud-key-status`.
-
-### SIEM integration
-
-Push events in real-time to SIEM endpoints via HTTP webhooks. Supports JSON and CEF formats, batching, exponential backoff retry, and per-endpoint event type filtering.
-
-```jsonc
-"siemWebhooks": [
-  {
-    "url": "https://siem.example.com/events",
-    "authHeader": "Bearer your-token",
-    "eventTypes": ["exposure_alert", "compliance_violation", "key_rotation"]
-  }
-],
-"siemEventFormat": "json"
-```
-
-Event types: `obfuscation_summary`, `leak_detected`, `exposure_alert`, `key_rotation`, `compliance_violation`, `deobfuscation`, `session_event`, `monitor_alert`.
-
-Or quick single-endpoint setup via env vars: `SHROUD_SIEM_WEBHOOK_URL` and `SHROUD_SIEM_WEBHOOK_AUTH`.
-
-### Hot-reload
-
-Watch config files for changes and reload detection rules without restarting:
-
-```jsonc
-"hotReload": true,
-"policyFile": "/path/to/policy.json",
-"customPatternsFile": "/path/to/patterns.json"
-```
-
-Supports reloading: policy rules, custom patterns, and detector overrides. Changes are debounced (default 1s).
-
-### Per-session isolation
-
-Each session gets its own mapping store, mapping engine, salt, and canary injector. Mappings never leak across sessions.
-
-```jsonc
-"sessionIsolation": true
-```
-
-Manage sessions via the `shroud-sessions` tool (list/create/switch/destroy) or programmatically:
-- `obfuscator.createSession("session-id")`
-- `obfuscator.switchSession("session-id")`
-- `obfuscator.destroySession("session-id")`
-
-### Active monitoring
-
-Real-time anomaly detection with alerting:
-
-```jsonc
-"monitorEnabled": true,
-"monitorSpikeMultiplier": 3.0
-```
-
-Detects: rate spikes (vs rolling baseline), new entity categories, canary token leaks, repeated exposure breaches, key expiry warnings. Alerts forward to SIEM sink when configured. View via `shroud-monitor` tool.
-
-### Redaction levels
+## Redaction levels
 
 Three output modes for different audiences:
 
@@ -320,56 +214,25 @@ Three output modes for different audiences:
 "redactionLevel": "masked"
 ```
 
-### Cross-agent shared store
+## Enterprise Edition
 
-Multiple Shroud instances (e.g., planner + specialist agents) share mappings via a common file so the same real value always maps to the same fake.
+The **Shroud Enterprise Edition** adds features for teams and regulated environments:
 
-```jsonc
-"sharedStorePath": "/tmp/shroud-shared-store.json"
-// Or set SHROUD_SHARED_STORE env var
-```
+- **Multi-tenant isolation** — per-tenant HMAC keying and mapping stores
+- **SIEM integration** — real-time event streaming to webhooks (JSON/CEF)
+- **Key rotation** — rotate secrets without losing existing mappings
+- **Active monitoring** — anomaly detection with alerting pipeline
+- **Policy-as-code** — external JSON policy files with glob/regex rules
+- **Shared store** — cross-agent file-backed mapping synchronization
+- **Compliance mode** — locked category enforcement with audit trail
+- **Exposure tracking** — rate-of-exposure alerting per category
+- **Hot-reload** — live rule updates without restart
+- **Session isolation** — per-session stores and mapping engines
+- **Session handoff** — encrypted export/import for session continuity
+- **Provenance tagging** — invisible audit markers in output
+- **Corpus pre-scanning** — batch obfuscation for RAG pipelines
 
-### Policy-as-code
-
-Load allowlist/denylist from external JSON files with support for literal strings, glob patterns, and regular expressions.
-
-```json
-{
-  "allowlist": [
-    "192.168.1.1",
-    { "pattern": "10.0.0.*", "type": "glob" },
-    { "pattern": "\\bTEST-.*", "type": "regex" }
-  ],
-  "denylist": [
-    { "pattern": "CLASSIFIED|SECRET", "type": "regex", "category": "custom" }
-  ]
-}
-```
-
-```jsonc
-"policyFile": "/path/to/policy.json"
-```
-
-### Provenance tagging
-
-Embed invisible origin markers in obfuscated output for downstream audit trail. Markers follow the format `«shroud:category:hash»` and are automatically stripped during deobfuscation.
-
-```jsonc
-"provenanceTagging": true
-```
-
-### Corpus pre-scanning
-
-For RAG pipelines, obfuscate documents at index time using the `preScanCorpus()` API:
-
-```typescript
-const result = obfuscator.preScanCorpus([
-  { id: "doc1", text: "Contact john@acme.com..." },
-  { id: "doc2", text: "Server 10.0.0.1 is..." },
-]);
-// result.documents: obfuscated docs for indexing
-// result.mappingRef: encrypted mapping reference for later deobfuscation
-```
+Contact for licensing: https://github.com/walterkeating-stack/shroud
 
 ## Detection intelligence
 

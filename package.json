@@ -1,6 +1,6 @@
 {
   "name": "shroud-privacy",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "Privacy obfuscation plugin for OpenClaw and NCG — deterministic fake values with deobfuscation",
   "type": "module",
   "main": "dist/index.js",
@@ -10,7 +10,8 @@
     "openclaw.plugin.json",
     "ncg_adapter.py",
     "shroud_bridge.mjs",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "scripts": {
     "build": "tsc",
@@ -30,7 +31,7 @@
     "redaction"
   ],
   "author": "walterkeating-stack",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
   },

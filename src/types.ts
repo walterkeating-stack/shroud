@@ -52,8 +52,6 @@ export interface ObfuscationResult {
   obfuscated: string;
   entities: DetectedEntity[];
   mappingsUsed: Record<string, string>;
-  /** Compliance report — present when lockedCategories is configured. */
-  complianceReport?: ComplianceReport;
   /** Filtering stats — how many entities were skipped and why. */
   filterStats?: FilterStats;
 }
@@ -66,19 +64,12 @@ export interface FilterStats {
   replaced: number;
   /** Entities skipped because confidence < minConfidence. */
   belowThreshold: number;
-  /** Entities skipped by allowlist or policy allowlist. */
+  /** Entities skipped by allowlist. */
   allowlisted: number;
   /** Entities skipped because they are doc/example values. */
   docExamples: number;
   /** Entities skipped because they are already-known fakes. */
   alreadyObfuscated: number;
-}
-
-/** Compliance check result for locked categories. */
-export interface ComplianceReport {
-  found: Category[];
-  missing: Category[];
-  passed: boolean;
 }
 
 /** Configuration for the Shroud plugin. */
@@ -102,103 +93,15 @@ export interface ShroudConfig {
   auditMaxFakesSample: number;
   detectorOverrides: Record<string, { enabled?: boolean; confidence?: number }>;
 
-  // --- Enterprise features ---
-
-  /** Feature 1: Multi-tenant isolation — tenant ID for HMAC keying. */
-  tenantId: string;
-
-  /** Feature 3: Tool chain depth awareness — max depth before warning. */
+  /** Tool chain depth awareness — max depth before warning. */
   maxToolDepth: number;
 
-  /** Feature 4: Compliance-mode entity locking — categories that MUST be detected. */
-  lockedCategories: Category[];
-
-  /** Feature 5: Rate-of-exposure tracking — sliding window in ms. */
-  exposureWindow: number;
-  /** Feature 5: Per-category thresholds (category -> max detections per window). */
-  exposureThresholds: Record<string, number>;
-  /** Feature 5: Global threshold across all categories. */
-  exposureGlobalThreshold: number;
-
-  /** Feature 7: Policy-as-code — path to external policy JSON file. */
-  policyFile: string;
-
-  /** Feature 8: Redaction levels — 'full' | 'masked' | 'stats'. */
+  /** Redaction levels — 'full' | 'masked' | 'stats'. */
   redactionLevel: RedactionLevel;
-
-  /** Feature 9: Cross-agent shared store — file path for shared mappings. */
-  sharedStorePath: string;
-  /** Feature 9: Cache TTL for shared store reads (ms). */
-  sharedStoreTtlMs: number;
-
-  /** Feature 10: Provenance tagging — embed origin markers in output. */
-  provenanceTagging: boolean;
-
-  /** Feature 2: Session handoff — enable export/import of mapping tables. */
-  sessionHandoff: boolean;
 
   /** Dry-run mode: detect entities but don't replace them. */
   dryRun: boolean;
 
   /** Max mapping store size; oldest entries evicted when exceeded. 0 = unlimited. */
   maxStoreMappings: number;
-
-  // --- Key rotation ---
-
-  /** Array of versioned keys for key rotation. When set, secretKey is used as fallback only. */
-  keys: Array<{
-    version: number;
-    key: string;
-    createdAt?: string;
-    expiresAt?: string;
-    retired?: boolean;
-  }>;
-
-  /** Which key version to use for new obfuscations. Defaults to highest non-expired. */
-  activeKeyVersion: number;
-
-  // --- SIEM integration ---
-
-  /** SIEM webhook endpoints for real-time event streaming. */
-  siemWebhooks: Array<{
-    url: string;
-    authHeader?: string;
-    headers?: Record<string, string>;
-    eventTypes?: string[];
-  }>;
-  /** Max events before auto-flush (default 100). */
-  siemBatchSize: number;
-  /** Flush interval in ms (default 30000). */
-  siemFlushIntervalMs: number;
-  /** Max retry attempts per flush (default 3). */
-  siemMaxRetries: number;
-  /** Initial retry backoff in ms, doubles each retry (default 1000). */
-  siemRetryBackoffMs: number;
-  /** Event format: 'json' or 'cef' (default 'json'). */
-  siemEventFormat: "json" | "cef";
-
-  // --- Hot-reload ---
-
-  /** Enable hot-reload of detection rules when config files change. */
-  hotReload: boolean;
-  /** Path to a custom patterns JSON file to watch for hot-reload. */
-  customPatternsFile: string;
-  /** Debounce interval for hot-reload in ms (default 1000). */
-  hotReloadDebounceMs: number;
-
-  // --- Per-session isolation ---
-
-  /** Enable per-session isolation (separate stores per session). */
-  sessionIsolation: boolean;
-
-  // --- Active monitoring ---
-
-  /** Enable active monitoring and alerting pipeline. */
-  monitorEnabled: boolean;
-  /** Rolling window for rate baseline in ms (default 60000). */
-  monitorRateWindowMs: number;
-  /** Rate spike multiplier threshold (default 3.0). */
-  monitorSpikeMultiplier: number;
-  /** Max alerts to keep in memory (default 500). */
-  monitorMaxAlerts: number;
 }
