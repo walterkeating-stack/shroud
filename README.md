@@ -24,31 +24,41 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 
 ## Install
 
-Clone the repo and build:
+### OpenClaw
+
+```bash
+openclaw plugins install openclaw-shroud
+```
+
+That's it. Configure in `~/.openclaw/openclaw.json` under `plugins.entries."openclaw-shroud".config`.
+
+### NCG Agent
+
+```bash
+python agent.py plugin install openclaw-shroud
+```
+
+Configure in `~/.ncg/ncg.json` under `plugins.entries."openclaw-shroud".config`.
+
+### From source (development)
 
 ```bash
 git clone https://github.com/walterkeating-stack/shroud.git
 cd shroud
-npm install
-npm run build
-```
+npm install && npm run build
 
-Deploy to OpenClaw:
-
-```bash
-mkdir -p ~/.openclaw/extensions/openclaw-shroud
-cp -r dist package.json openclaw.plugin.json ~/.openclaw/extensions/openclaw-shroud/
-```
-
-Or use the included script:
-
-```bash
-bash deploy-local.sh
+bash deploy-local.sh     # → OpenClaw (~/.openclaw/extensions/)
+bash deploy-ncg.sh       # → NCG (~/.ncg/extensions/)
 ```
 
 ## Configure
 
-Add to `~/.openclaw/openclaw.json` under `plugins.entries`:
+Both OpenClaw and NCG store Shroud config in the same structure — only the file path differs:
+
+| Platform | Config file | Config path |
+|----------|-------------|-------------|
+| OpenClaw | `~/.openclaw/openclaw.json` | `plugins.entries."openclaw-shroud".config` |
+| NCG | `~/.ncg/ncg.json` | `plugins.entries."openclaw-shroud".config` |
 
 ```jsonc
 "openclaw-shroud": {
@@ -70,7 +80,8 @@ Add to `~/.openclaw/openclaw.json` under `plugins.entries`:
 Restart the gateway after config changes:
 
 ```bash
-openclaw gateway restart
+openclaw gateway restart                    # OpenClaw
+sudo systemctl restart ncg-gateway.service  # NCG
 ```
 
 ### Safe defaults
@@ -437,8 +448,11 @@ npm run lint      # type-check without emitting
 
 ```bash
 npm run build
-bash deploy-local.sh   # copies dist/ to ~/.openclaw/extensions/openclaw-shroud/
-openclaw gateway restart
+bash deploy-local.sh   # → OpenClaw (~/.openclaw/extensions/openclaw-shroud/)
+bash deploy-ncg.sh     # → NCG (~/.ncg/extensions/openclaw-shroud/)
+
+openclaw gateway restart                    # restart OpenClaw
+sudo systemctl restart ncg-gateway.service  # restart NCG
 ```
 
 ## Release workflow
