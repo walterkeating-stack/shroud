@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.5] - 2026-03-23
+
+### Changed
+- **Hook architecture** — replaced `before_llm_send` (not supported on public OpenClaw 2026.3.22) with `before_message_write` for per-message obfuscation as messages are written to the session transcript. Audit logging (entity counts, categories, rules, proof hashes, fakes sample) fully preserved via per-message audit emitter. Deobfuscation audit logging added to `message_sending` hook. Tool depth reset moved to `before_prompt_build`. No more "unknown typed hook" warnings in OpenClaw logs.
+- Removed dead code from old `before_llm_send` path (batch message obfuscation, batch audit stats).
+
 ## [2.0.4] - 2026-03-23
 
 ### Fixed
