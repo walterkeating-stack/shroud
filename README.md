@@ -174,12 +174,17 @@ Shroud registers tools that the LLM can call during conversations:
 | `shroud_status` | Quick stats: entity counts, session info, audit status (JSON) |
 | `shroud_reset` | Clear all mappings and start a fresh privacy session |
 
-You can also run the stats CLI directly:
+You can also run the stats CLI from the terminal:
 
 ```bash
-shroud-stats                               # live rule table from running gateway
-shroud-stats --json                        # machine-readable JSON output
-shroud-stats --test "Contact john@acme.com"  # test detection
+node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs           # live rule table
+node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs --json    # JSON output
+node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs --test "Contact john@acme.com"
+```
+
+Tip: create an alias for convenience:
+```bash
+alias shroud-stats="node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs"
 ```
 
 The CLI reads live stats from `/tmp/shroud-stats.json` (override with `SHROUD_STATS_FILE` env var). The stats file is updated by the running gateway on every obfuscation event.
@@ -199,7 +204,7 @@ On subsequent loads, the patch is detected and skipped. To revert: restore the `
 
 Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in three places:
 
-- **`shroud-stats` CLI** — run `shroud-stats` to see all rules with status, confidence, and hit counts. Shows live cumulative stats from the running gateway via `/tmp/shroud-stats.json`. Use `--test "text with PII"` to test detection against sample input.
+- **`shroud-stats` CLI** — see [Conversational tools](#conversational-tools) above for usage. Shows all rules with status, confidence, and hit counts from the running gateway.
 - **Audit log lines** — `byRule=regex:email:3,regex:ipv4:2,...` alongside the existing `byCat` field.
 - **`getStats()`** — the `ruleHits` object in the stats response, useful for programmatic access.
 
