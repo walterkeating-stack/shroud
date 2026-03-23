@@ -12,6 +12,46 @@
 import { Category, DetectedEntity } from "../types.js";
 import { BaseDetector } from "./base.js";
 
+/**
+ * Single-pass multi-string scanner using a combined regex.
+ * Replaces per-string indexOf loops with one regex alternation pass — O(M)
+ * instead of O(S*M) where S = number of strings, M = text length.
+ */
+function scanMultiplePatterns(
+  text: string,
+  values: string[],
+  covered: Set<string>,
+  category: Category,
+  confidence: number,
+  detector: string,
+): DetectedEntity[] {
+  if (values.length === 0) return [];
+  // Sort longest-first so regex matches greedily
+  const sorted = values.slice().sort((a, b) => b.length - a.length);
+  const escaped = sorted.map((v) => v.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(escaped.join("|"), "g");
+
+  const results: DetectedEntity[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const pos = m.index;
+    const val = m[0];
+    const key = `${pos}:${pos + val.length}`;
+    if (!covered.has(key)) {
+      covered.add(key);
+      results.push({
+        value: val,
+        start: pos,
+        end: pos + val.length,
+        category,
+        confidence,
+        detector,
+      });
+    }
+  }
+  return results;
+}
+
 // ---------------------------------------------------------------------------
 // Config keyword sets for context boosting (#1)
 // ---------------------------------------------------------------------------
@@ -152,11 +192,19 @@ export class ContextDetector implements BaseDetector {
       blockScores.push({ start: block.start, end: block.end, score });
     }
 
-    // Boost entities in high-scoring blocks
+    // Boost entities in high-scoring blocks.
+    // Blocks are sorted by start position, so use binary search — O(log B) per entity.
     return entities.map((e) => {
-      const block = blockScores.find(
-        (b) => e.start >= b.start && e.end <= b.end,
-      );
+      // Binary search for block containing entity
+      let lo = 0, hi = blockScores.length - 1;
+      let block: { start: number; end: number; score: number } | null = null;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        const b = blockScores[mid];
+        if (e.start >= b.start && e.end <= b.end) { block = b; break; }
+        if (e.start < b.start) hi = mid - 1;
+        else lo = mid + 1;
+      }
       if (block && block.score >= 2) {
         return {
           ...e,
@@ -171,13 +219,20 @@ export class ContextDetector implements BaseDetector {
     text: string,
   ): Array<{ text: string; start: number; end: number }> {
     const blocks: Array<{ text: string; start: number; end: number }> = [];
-    // Split by double newline (paragraphs)
-    const parts = text.split(/\n\s*\n/);
-    let pos = 0;
-    for (const part of parts) {
-      const idx = text.indexOf(part, pos);
-      blocks.push({ text: part, start: idx, end: idx + part.length });
-      pos = idx + part.length;
+    // Use matchAll to find paragraph separators and derive block positions
+    // without re-scanning the text with indexOf.
+    const sepRe = /\n\s*\n/g;
+    let lastEnd = 0;
+    let m: RegExpExecArray | null;
+    while ((m = sepRe.exec(text)) !== null) {
+      if (m.index > lastEnd) {
+        blocks.push({ text: text.slice(lastEnd, m.index), start: lastEnd, end: m.index });
+      }
+      lastEnd = m.index + m[0].length;
+    }
+    // Trailing block
+    if (lastEnd < text.length) {
+      blocks.push({ text: text.slice(lastEnd), start: lastEnd, end: text.length });
     }
     // If no paragraph breaks, treat whole text as one block
     if (blocks.length <= 1) {
@@ -194,30 +249,39 @@ export class ContextDetector implements BaseDetector {
   private _boostByProximity(entities: DetectedEntity[]): DetectedEntity[] {
     if (entities.length < 2) return entities;
 
-    return entities.map((e) => {
+    // Sort by start position for two-pointer window scan — O(n log n)
+    const sorted = entities.slice().sort((a, b) => a.start - b.start);
+
+    // For each entity, count cluster peers within PROXIMITY_WINDOW using
+    // a sliding window instead of O(n²) pairwise comparison.
+    const nearbyCounts = new Map<DetectedEntity, number>();
+    for (let i = 0; i < sorted.length; i++) {
+      const e = sorted[i];
       const peers = getClusterPeers(e.category);
-      if (peers.size === 0) return e;
+      if (peers.size === 0) continue;
 
-      let nearbyCount = 0;
-      for (const other of entities) {
-        if (other === e) continue;
-        if (!peers.has(other.category)) continue;
-        const dist = Math.min(
-          Math.abs(other.start - e.end),
-          Math.abs(e.start - other.end),
-        );
-        if (dist <= PROXIMITY_WINDOW) {
-          nearbyCount++;
-        }
+      let count = 0;
+      // Scan forward within window
+      for (let j = i + 1; j < sorted.length; j++) {
+        if (sorted[j].start - e.end > PROXIMITY_WINDOW) break;
+        if (peers.has(sorted[j].category)) count++;
       }
+      // Scan backward within window
+      for (let j = i - 1; j >= 0; j--) {
+        if (e.start - sorted[j].end > PROXIMITY_WINDOW) break;
+        if (peers.has(sorted[j].category)) count++;
+      }
+      if (count > 0) nearbyCounts.set(e, count);
+    }
 
-      if (nearbyCount > 0) {
+    if (nearbyCounts.size === 0) return entities;
+
+    return entities.map((e) => {
+      const count = nearbyCounts.get(e);
+      if (count) {
         return {
           ...e,
-          confidence: Math.min(
-            1.0,
-            e.confidence + PROXIMITY_BOOST * nearbyCount,
-          ),
+          confidence: Math.min(1.0, e.confidence + PROXIMITY_BOOST * count),
         };
       }
       return e;
@@ -258,28 +322,15 @@ export class ContextDetector implements BaseDetector {
       entities.map((e) => `${e.start}:${e.end}`),
     );
 
-    // Find bare occurrences of extracted hostnames
-    const additional: DetectedEntity[] = [];
-    for (const hostname of hostnames) {
-      let idx = 0;
-      while (true) {
-        const pos = text.indexOf(hostname, idx);
-        if (pos === -1) break;
-        const key = `${pos}:${pos + hostname.length}`;
-        if (!covered.has(key)) {
-          covered.add(key);
-          additional.push({
-            value: hostname,
-            start: pos,
-            end: pos + hostname.length,
-            category: Category.HOSTNAME,
-            confidence: 0.85,
-            detector: "context:hostname_propagation",
-          });
-        }
-        idx = pos + 1;
-      }
-    }
+    // Single-pass combined regex for all hostnames instead of per-hostname indexOf
+    const additional = scanMultiplePatterns(
+      text,
+      [...hostnames],
+      covered,
+      Category.HOSTNAME,
+      0.85,
+      "context:hostname_propagation",
+    );
 
     if (additional.length === 0) return entities;
     return [...entities, ...additional].sort(
@@ -300,27 +351,26 @@ export class ContextDetector implements BaseDetector {
     const covered = new Set(
       entities.map((e) => `${e.start}:${e.end}`),
     );
-    const additional: DetectedEntity[] = [];
 
+    // Group learned entities by category for batch scanning
+    const byCat = new Map<Category, string[]>();
     for (const [value, category] of this._learnedEntities) {
-      let idx = 0;
-      while (true) {
-        const pos = text.indexOf(value, idx);
-        if (pos === -1) break;
-        const key = `${pos}:${pos + value.length}`;
-        if (!covered.has(key)) {
-          covered.add(key);
-          additional.push({
-            value,
-            start: pos,
-            end: pos + value.length,
-            category,
-            confidence: 0.80,
-            detector: "context:learned_entity",
-          });
-        }
-        idx = pos + 1;
-      }
+      let arr = byCat.get(category);
+      if (!arr) { arr = []; byCat.set(category, arr); }
+      arr.push(value);
+    }
+
+    const additional: DetectedEntity[] = [];
+    for (const [category, values] of byCat) {
+      const hits = scanMultiplePatterns(
+        text,
+        values,
+        covered,
+        category,
+        0.80,
+        "context:learned_entity",
+      );
+      additional.push(...hits);
     }
 
     if (additional.length === 0) return entities;
@@ -356,10 +406,16 @@ export class ContextDetector implements BaseDetector {
       }
     }
 
-    // Cap learned entities to prevent unbounded growth
+    // Cap learned entities to prevent unbounded growth.
+    // Delete oldest entries (Map preserves insertion order) without rebuilding.
     if (this._learnedEntities.size > 1000) {
-      const entries = [...this._learnedEntities.entries()];
-      this._learnedEntities = new Map(entries.slice(-500));
+      const toDelete = this._learnedEntities.size - 500;
+      let deleted = 0;
+      for (const key of this._learnedEntities.keys()) {
+        if (deleted >= toDelete) break;
+        this._learnedEntities.delete(key);
+        deleted++;
+      }
     }
   }
 

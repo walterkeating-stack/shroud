@@ -111,9 +111,21 @@ function compressIPv6(addr: string): string {
 }
 
 /**
- * Convert a simple wildcard pattern (* and ?) to a RegExp.
- * Caches compiled patterns for reuse.
+ * Build a single combined regex from an array of literal strings.
+ * Strings are escaped and joined with alternation (|), sorted longest-first
+ * so the regex engine matches greedily. Returns null for empty arrays.
  */
+function buildCombinedFakeRegex(fakes: string[]): RegExp | null {
+  if (fakes.length === 0) return null;
+  const escaped = fakes.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  return new RegExp(escaped.join("|"), "g");
+}
+
+/**
+ * Convert a simple wildcard pattern (* and ?) to a RegExp.
+ * Caches compiled patterns for reuse. Bounded to 500 entries.
+ */
+const MAX_WILDCARD_CACHE = 500;
 const _wildcardCache = new Map<string, RegExp>();
 function wildcardMatch(value: string, pattern: string): boolean {
   // Fast path: no wildcards = exact match
@@ -125,6 +137,11 @@ function wildcardMatch(value: string, pattern: string): boolean {
     const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
     const reStr = "^" + escaped.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
     re = new RegExp(reStr, "i");
+    // Evict oldest entries if cache is full
+    if (_wildcardCache.size >= MAX_WILDCARD_CACHE) {
+      const firstKey = _wildcardCache.keys().next().value;
+      if (firstKey !== undefined) _wildcardCache.delete(firstKey);
+    }
     _wildcardCache.set(pattern, re);
   }
   return re.test(value);
@@ -409,21 +426,21 @@ export class Obfuscator {
       allEntities.push(...detector.detect(text));
     }
 
-    // 3. Apply denylist -- force-add any denylist values found in text
-    for (const denied of this.config.denylist) {
-      let idx = 0;
-      while (true) {
-        const pos = text.indexOf(denied, idx);
-        if (pos === -1) break;
+    // 3. Apply denylist -- single-pass combined regex instead of per-entry indexOf
+    if (this.config.denylist.length > 0) {
+      const sorted = this.config.denylist.slice().sort((a, b) => b.length - a.length);
+      const escaped = sorted.map((d) => d.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      const denyRe = new RegExp(escaped.join("|"), "g");
+      let dm: RegExpExecArray | null;
+      while ((dm = denyRe.exec(text)) !== null) {
         allEntities.push({
-          value: denied,
-          start: pos,
-          end: pos + denied.length,
+          value: dm[0],
+          start: dm.index,
+          end: dm.index + dm[0].length,
           category: Category.CUSTOM,
           confidence: 1.0,
           detector: "denylist",
         });
-        idx = pos + 1;
       }
     }
 
@@ -521,14 +538,21 @@ export class Obfuscator {
     const level: RedactionLevel = this.config.redactionLevel;
     this._redactionFormatter.resetCounters();
 
-    // 6. Map and replace (process right-to-left to preserve positions)
+    // 6. Map and replace using segment collection (single-pass, no repeated slicing).
     //    QW6: In dry-run mode, compute mappings but skip text replacement.
     let resultText = text;
     const mappingsUsed: Record<string, string> = {};
 
-    if (!this.config.dryRun) {
-      for (let i = filtered.length - 1; i >= 0; i--) {
-        const entity = filtered[i];
+    if (!this.config.dryRun && filtered.length > 0) {
+      // Collect text segments and replacements in one forward pass
+      const segments: string[] = [];
+      let cursor = 0;
+
+      for (const entity of filtered) {
+        // Append text before this entity
+        if (entity.start > cursor) {
+          segments.push(text.slice(cursor, entity.start));
+        }
 
         // Check if we already have a mapping for this exact value
         let fake = this._store.getFake(entity.value);
@@ -553,11 +577,9 @@ export class Obfuscator {
           finalReplacement = `${replacement}${PROV_OPEN}shroud:${entity.category}:${hash4}${PROV_CLOSE}`;
         }
 
+        segments.push(finalReplacement);
         mappingsUsed[entity.value] = fake;
-        resultText =
-          resultText.slice(0, entity.start) +
-          finalReplacement +
-          resultText.slice(entity.end);
+        cursor = entity.end;
 
         // QW2: per-category replacement count
         this._replacementsByCategory.set(
@@ -565,6 +587,12 @@ export class Obfuscator {
           (this._replacementsByCategory.get(entity.category) ?? 0) + 1,
         );
       }
+
+      // Append trailing text
+      if (cursor < text.length) {
+        segments.push(text.slice(cursor));
+      }
+      resultText = segments.join("");
     }
 
     // 7. Inject canary token if enabled
@@ -660,6 +688,8 @@ export class Obfuscator {
       reverse.set(fake, real);
     }
 
+    // Build a single combined regex for all fakes (longest-match-first).
+    // This replaces the O(F*M) per-fake split/join loop with O(M) single-pass.
     const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
 
     // #8: Recursive deobfuscation — multiple passes for nested structures
@@ -670,16 +700,22 @@ export class Obfuscator {
     // Collect known fakes that were NOT replaced (for residual pass)
     const knownFakeSet = new Set(fakes);
 
+    // Build combined regex: escape each fake, join with alternation
+    const combinedRe = buildCombinedFakeRegex(fakes);
+
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       let passReplacements = 0;
-      for (const fake of fakes) {
-        const real = reverse.get(fake)!;
-        const parts = result.split(fake);
-        if (parts.length > 1) {
-          passReplacements += parts.length - 1;
-          result = parts.join(real);
-          knownFakeSet.delete(fake); // successfully replaced
-        }
+      if (combinedRe) {
+        combinedRe.lastIndex = 0;
+        result = result.replace(combinedRe, (match) => {
+          const real = reverse.get(match);
+          if (real !== undefined) {
+            passReplacements++;
+            knownFakeSet.delete(match);
+            return real;
+          }
+          return match;
+        });
       }
       totalReplacements += passReplacements;
       if (passReplacements === 0) break; // No more replacements possible
@@ -750,16 +786,21 @@ export class Obfuscator {
     const MAX_PASSES = 3;
     const knownFakeSet = new Set(fakes);
 
+    const combinedRe = buildCombinedFakeRegex(fakes);
+
     for (let pass = 0; pass < MAX_PASSES; pass++) {
       let passReplacements = 0;
-      for (const fake of fakes) {
-        const real = reverse.get(fake)!;
-        const parts = result.split(fake);
-        if (parts.length > 1) {
-          passReplacements += parts.length - 1;
-          result = parts.join(real);
-          knownFakeSet.delete(fake);
-        }
+      if (combinedRe) {
+        combinedRe.lastIndex = 0;
+        result = result.replace(combinedRe, (match) => {
+          const real = reverse.get(match);
+          if (real !== undefined) {
+            passReplacements++;
+            knownFakeSet.delete(match);
+            return real;
+          }
+          return match;
+        });
       }
       replacementCount += passReplacements;
       if (passReplacements === 0) break;
