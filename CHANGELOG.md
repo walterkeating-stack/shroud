@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.2] - 2026-03-23
+
+### Added
+- **Plugin update script** — `scripts/update-openclaw-plugin.sh` automates the update cycle (saves config, reinstalls from npm, restores config, restarts gateway).
+
+### Fixed
+- README: removed enterprise-only config tables from community edition, fixed license references (MIT → Apache 2.0), updated test count, removed stale "not published" notice.
+
 ## [2.0.0] - 2026-03-23
 
 ### Changed
