@@ -118,7 +118,7 @@ describe("hooks - before_message_write", () => {
 
     const event = {
       message: {
-        role: "assistant",
+        role: "user",
         content: [{ type: "text", text: "Found alice@secret.org in logs" }],
       },
     };
@@ -162,71 +162,6 @@ describe("hooks - before_message_write", () => {
   });
 });
 
-describe("hooks - before_llm_send", () => {
-  test("obfuscates messages and returns transformResponse", async () => {
-    const obf = new Obfuscator(testConfig);
-    const { api, handlers } = createMockApi();
-    registerHooks(api, obf);
-
-    const event = {
-      messages: [
-        { role: "user", content: "Contact john@acme.com" },
-        { role: "assistant", content: "OK" },
-      ],
-    };
-    const result = await handlers["before_llm_send"](event);
-    expect(result).toBeDefined();
-    expect(result.transformResponse).toBeTypeOf("function");
-    // Messages should be obfuscated
-    expect(result.messages).toBeDefined();
-    expect(result.messages[0].content).not.toContain("john@acme.com");
-    expect(result.messages[1].content).toBe("OK"); // no PII, unchanged
-  });
-
-  test("transformResponse deobfuscates LLM output", async () => {
-    const obf = new Obfuscator(testConfig);
-    const { api, handlers } = createMockApi();
-    registerHooks(api, obf);
-
-    // Obfuscate to populate store
-    const obResult = obf.obfuscate("john@acme.com");
-    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
-
-    const event = { messages: [{ role: "user", content: "Hi" }] };
-    const result = await handlers["before_llm_send"](event);
-    expect(result.transformResponse).toBeTypeOf("function");
-
-    // Simulate LLM response containing fake value
-    const transformed = result.transformResponse(`The email is ${fakeEmail}`);
-    expect(transformed).toContain("john@acme.com");
-    expect(transformed).not.toContain(fakeEmail);
-  });
-
-  test("returns transformResponse even when no messages obfuscated", async () => {
-    const obf = new Obfuscator(testConfig);
-    const { api, handlers } = createMockApi();
-    registerHooks(api, obf);
-
-    // Pre-populate store so transformResponse has something to work with
-    obf.obfuscate("john@acme.com");
-
-    const event = { messages: [{ role: "user", content: "Hello world" }] };
-    const result = await handlers["before_llm_send"](event);
-    expect(result).toBeDefined();
-    expect(result.transformResponse).toBeTypeOf("function");
-    // messages should be undefined since nothing changed
-    expect(result.messages).toBeUndefined();
-  });
-
-  test("returns void for non-array messages", async () => {
-    const obf = new Obfuscator(testConfig);
-    const { api, handlers } = createMockApi();
-    registerHooks(api, obf);
-
-    const result = await handlers["before_llm_send"]({});
-    expect(result).toBeUndefined();
-  });
-});
 
 describe("hooks - before_tool_call", () => {
   test("deobfuscates tool params (object)", async () => {
@@ -375,26 +310,6 @@ describe("hooks - full flow", () => {
     expect(step5.content).not.toContain(fakeEmail);
   });
 
-  test("before_llm_send transformResponse deobfuscates LLM output (>=2026.3.14 path)", async () => {
-    const obf = new Obfuscator(testConfig);
-    const { api, handlers } = createMockApi();
-    registerHooks(api, obf);
-
-    // Step 1: Obfuscate via prompt build
-    await handlers["before_prompt_build"]({ prompt: "Look up john@acme.com" });
-    const fakeEmail = obf.obfuscate("john@acme.com").mappingsUsed["john@acme.com"];
-
-    // Step 2: before_llm_send installs transformResponse
-    const llmResult = await handlers["before_llm_send"]({
-      messages: [{ role: "user", content: `Find ${fakeEmail}` }],
-    });
-    expect(llmResult.transformResponse).toBeTypeOf("function");
-
-    // Step 3: LLM responds with fake value — transformResponse deobfuscates
-    const deobfuscated = llmResult.transformResponse(`The contact is ${fakeEmail}`);
-    expect(deobfuscated).toContain("john@acme.com");
-    expect(deobfuscated).not.toContain(fakeEmail);
-  });
 });
 
 // =========================================================================
@@ -437,118 +352,65 @@ describe("hooks - shroud-stats tool", () => {
   });
 });
 
-describe("hooks - transport interceptor", () => {
-  test("wraps WebClient.prototype.apiCall when found in require.cache", () => {
-    // Simulate @slack/web-api being loaded in require.cache
-    const { createRequire } = require("node:module");
-    const esmRequire = createRequire(import.meta.url);
+describe("hooks - before_message_write assistant deobfuscation", () => {
+  test("deobfuscates assistant message string content", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers: hooks } = createMockApi();
+    registerHooks(api, obf);
 
-    // Create a fake WebClient class
-    class FakeWebClient {
-      async apiCall(method: string, options?: any) {
-        return { ok: true, method, options };
-      }
-    }
+    // Obfuscate to populate mapping store
+    const result = obf.obfuscate("Contact john@acme.com for details");
+    const fakeEmail = result.obfuscated.match(/\S+@\S+/)![0];
 
-    // Inject into require.cache under a @slack/web-api key
-    const fakeModulePath = "/fake/node_modules/@slack/web-api/dist/index.js";
-    esmRequire.cache[fakeModulePath] = {
-      id: fakeModulePath,
-      filename: fakeModulePath,
-      loaded: true,
-      exports: { WebClient: FakeWebClient },
-    } as any;
+    // Simulate assistant message with fakes
+    const handler = hooks["before_message_write"];
+    const out = handler({
+      message: { role: "assistant", content: `Here is the email: ${fakeEmail}` },
+    });
 
-    try {
-      const obf = new Obfuscator(testConfig);
-      const { api, logLines } = createMockApi();
-      registerHooks(api, obf);
+    expect(out).toBeDefined();
+    expect(out.message.content).toContain("john@acme.com");
+    expect(out.message.content).not.toContain(fakeEmail);
+  });
 
-      expect(logLines.some((l) => l.includes("Installed Slack transport interceptor"))).toBe(true);
-      expect((FakeWebClient.prototype as any).__shroudPatched).toBe(true);
-    } finally {
-      delete esmRequire.cache[fakeModulePath];
+  test("does not deobfuscate user messages", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers: hooks } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate to populate mapping
+    const result = obf.obfuscate("Contact john@acme.com");
+    const fakeEmail = result.obfuscated.match(/\S+@\S+/)![0];
+
+    // User message with fake should be obfuscated further, not deobfuscated
+    const handler = hooks["before_message_write"];
+    const out = handler({
+      message: { role: "user", content: `Send to ${fakeEmail}` },
+    });
+
+    // User message gets obfuscated (not deobfuscated)
+    if (out) {
+      expect(out.message.content).not.toContain("john@acme.com");
     }
   });
 
-  test("deobfuscates text in chat.postMessage calls", async () => {
-    const { createRequire } = require("node:module");
-    const esmRequire = createRequire(import.meta.url);
+  test("deobfuscates assistant array-of-blocks content", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers: hooks } = createMockApi();
+    registerHooks(api, obf);
 
-    const callLog: any[] = [];
-    class FakeWebClient {
-      async apiCall(method: string, options?: any) {
-        callLog.push({ method, text: options?.text });
-        return { ok: true };
-      }
-    }
+    const result = obf.obfuscate("Contact john@acme.com");
+    const fakeEmail = result.obfuscated.match(/\S+@\S+/)![0];
 
-    const fakeModulePath = "/fake2/node_modules/@slack/web-api/dist/index.js";
-    esmRequire.cache[fakeModulePath] = {
-      id: fakeModulePath,
-      filename: fakeModulePath,
-      loaded: true,
-      exports: { WebClient: FakeWebClient },
-    } as any;
+    const handler = hooks["before_message_write"];
+    const out = handler({
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: `Email: ${fakeEmail}` }],
+      },
+    });
 
-    try {
-      const obf = new Obfuscator(testConfig);
-      // First obfuscate to populate the mapping store
-      const result = obf.obfuscate("Contact john@acme.com");
-      const fakeEmail = result.obfuscated.match(/\S+@\S+/)![0];
-
-      const { api } = createMockApi();
-      registerHooks(api, obf);
-
-      // Simulate a Slack API call with the fake email
-      const client = new FakeWebClient();
-      await client.apiCall("chat.postMessage", { channel: "C123", text: `Here is the email: ${fakeEmail}` });
-
-      // The interceptor should have deobfuscated the text
-      expect(callLog[0].text).toContain("john@acme.com");
-      expect(callLog[0].text).not.toContain(fakeEmail);
-    } finally {
-      delete esmRequire.cache[fakeModulePath];
-      delete (FakeWebClient.prototype as any).__shroudPatched;
-    }
-  });
-
-  test("does not modify non-chat API calls", async () => {
-    const { createRequire } = require("node:module");
-    const esmRequire = createRequire(import.meta.url);
-
-    const callLog: any[] = [];
-    class FakeWebClient {
-      async apiCall(method: string, options?: any) {
-        callLog.push({ method, text: options?.text });
-        return { ok: true };
-      }
-    }
-
-    const fakeModulePath = "/fake3/node_modules/@slack/web-api/dist/index.js";
-    esmRequire.cache[fakeModulePath] = {
-      id: fakeModulePath,
-      filename: fakeModulePath,
-      loaded: true,
-      exports: { WebClient: FakeWebClient },
-    } as any;
-
-    try {
-      const obf = new Obfuscator(testConfig);
-      const result = obf.obfuscate("Contact john@acme.com");
-      const fakeEmail = result.obfuscated.match(/\S+@\S+/)![0];
-
-      const { api } = createMockApi();
-      registerHooks(api, obf);
-
-      // Non-chat API call should pass through unchanged
-      const client = new FakeWebClient();
-      await client.apiCall("conversations.list", { text: fakeEmail });
-
-      expect(callLog[0].text).toBe(fakeEmail);
-    } finally {
-      delete esmRequire.cache[fakeModulePath];
-      delete (FakeWebClient.prototype as any).__shroudPatched;
-    }
+    expect(out).toBeDefined();
+    expect(out.message.content[0].text).toContain("john@acme.com");
   });
 });

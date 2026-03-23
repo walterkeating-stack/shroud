@@ -4,10 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [2.0.7] - 2026-03-23
 
+### Added
+- **Universal streaming deobfuscation** — LLM responses are deobfuscated at the pi-ai EventStream level via a global hook (`globalThis.__shroudStreamDeobfuscate`). Works for ALL LLM providers (Anthropic, OpenAI, Google) and ALL delivery channels (Slack, WhatsApp, Telegram, Discord, Signal, etc.) on any OpenClaw version. The hook is injected into pi-ai's `EventStream.push()` by `deploy-local.sh` and uses buffered streaming deobfuscation to handle token-level chunks.
+- **Bidirectional `before_message_write`** — assistant messages are deobfuscated (fakes → real values) for the transcript; non-assistant messages are obfuscated as before.
+- **`deploy-local.sh` auto-patches pi-ai** — patches `EventStream.push()` with the deobfuscation hook, backs up the original, and clears the Node.js V8 compile cache to ensure the patch takes effect. Idempotent.
+- **`maxFakeLength()`** on Obfuscator — returns the longest fake value in the mapping store (used for streaming holdback calculation).
+- **Automated test script** — `scripts/test-deobfuscation.mjs` with local round-trip and Slack end-to-end tests.
+
 ### Fixed
-- **Slack deobfuscation on OpenClaw 2026.3.11** — added transport-level interceptor that wraps `WebClient.prototype.apiCall` to deobfuscate Slack messages (`chat.postMessage`/`chat.update`) at the API call level. This is a universal fallback: on older OpenClaw versions where `message_sending` doesn't fire for Slack, the interceptor catches it. On >=2026.3.14, `transformResponse` handles deobfuscation first and the interceptor is a no-op.
-- **Slack mrkdwn link formatting breaking email detection** — Slack auto-links emails as `<mailto:X|display>`, which splits entity text across tag boundaries (e.g. `jj@kk.net` becomes `<mailto:jj@kk.et|jj@kk.>net`). Added `stripSlackLinks()` pre-processing in `obfuscate()` to recover plain text before entity detection. Also handles URL links (`<URL|display>` and `<URL>`).
-- 4 new Slack mrkdwn stripping tests (215 total).
+- **Slack mrkdwn link formatting breaking email detection** — Slack auto-links emails as `<mailto:X|display>`, which splits entity text across tag boundaries (e.g. `jj@kk.net` becomes `<mailto:jj@kk.et|jj@kk.>net`). Added `stripSlackLinks()` pre-processing in `obfuscate()` to recover plain text before entity detection.
+
+### Removed
+- Transport-level per-channel interceptors (Slack WebClient wrapper, WhatsApp sendMessage wrapper) — replaced by the universal pi-ai EventStream hook.
+- `before_llm_send` hook and `transformResponse` callback — these were based on a local PR build and don't exist in any public OpenClaw release.
+- 210 tests (removed obsolete before_llm_send and transport interceptor tests, added mrkdwn stripping and assistant deobfuscation tests).
 
 ## [2.0.6] - 2026-03-23
 
