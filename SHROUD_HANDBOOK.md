@@ -60,17 +60,27 @@ The LLM never sees real sensitive data. All operations are synchronous and deter
 
 ## 2. Installation & Deployment
 
-### OpenClaw Plugin (Local)
+### OpenClaw
 
 ```bash
-# Install
-cd shroud && npm run build
-cp -r dist/ ~/.openclaw/extensions/openclaw-shroud/dist/
+openclaw plugins install openclaw-shroud
 ```
 
-Then enable Shroud in OpenClaw's config file (see [Where Config Lives](#where-config-lives) below).
+### NCG Agent
 
-### Private Agent (NCG / Custom)
+```bash
+python agent.py plugin install openclaw-shroud
+```
+
+### From Source (Development)
+
+```bash
+cd shroud && npm install && npm run build
+bash deploy-local.sh     # → OpenClaw (~/.openclaw/extensions/)
+bash deploy-ncg.sh       # → NCG (~/.ncg/extensions/)
+```
+
+### Custom Integration
 
 Import `Obfuscator` and `resolveConfig` directly:
 
@@ -93,10 +103,17 @@ const real = obf.deobfuscate(llmResponse);
 
 ## Where Config Lives
 
-All Shroud configuration lives in **one file**: `~/.openclaw/openclaw.json`. Shroud's settings go inside the `plugins.entries."openclaw-shroud".config` object:
+Both OpenClaw and NCG store Shroud config in the same JSON structure — only the file path differs:
+
+| Platform | Config file |
+|----------|-------------|
+| OpenClaw | `~/.openclaw/openclaw.json` |
+| NCG | `~/.ncg/ncg.json` |
+
+In both cases, Shroud's settings go inside `plugins.entries."openclaw-shroud".config`:
 
 ```jsonc
-// ~/.openclaw/openclaw.json
+// ~/.openclaw/openclaw.json  OR  ~/.ncg/ncg.json
 {
   "plugins": {
     "entries": {
@@ -115,7 +132,7 @@ All Shroud configuration lives in **one file**: `~/.openclaw/openclaw.json`. Shr
 }
 ```
 
-**For NCG / custom agents**, there is no config file — you pass the same keys as a plain object to `resolveConfig({ ... })`.
+**For custom integrations**, there is no config file — you pass the same keys as a plain object to `resolveConfig({ ... })`.
 
 **Environment variables** (e.g. `SHROUD_SECRET_KEY`) override config file values regardless of deployment. See [Environment Variables](#4-environment-variables).
 
@@ -123,7 +140,7 @@ All Shroud configuration lives in **one file**: `~/.openclaw/openclaw.json`. Shr
 > ```json
 > { "auditEnabled": true, "auditLogFormat": "json" }
 > ```
-> it means add those keys to `~/.openclaw/openclaw.json` → `plugins.entries."openclaw-shroud".config`.
+> it means add those keys to your config file at `plugins.entries."openclaw-shroud".config`.
 
 ---
 
@@ -1254,43 +1271,70 @@ Call `getStats()` for:
 
 ---
 
-## 36. Private Agent Integration (NCG)
+## 36. NCG Agent Integration
+
+### Install
+
+```bash
+python agent.py plugin install openclaw-shroud
+```
+
+This installs to `~/.ncg/extensions/openclaw-shroud/` and creates a default config entry in `~/.ncg/ncg.json`.
+
+### Plugin Management
+
+```bash
+python agent.py plugin list                    # list installed plugins
+python agent.py plugin enable openclaw-shroud   # enable
+python agent.py plugin disable openclaw-shroud  # disable
+python agent.py plugin uninstall openclaw-shroud # remove
+```
 
 ### Architecture
 
-NCG uses a bridge (`plugins/shroud_bridge.mjs`) that loads Shroud's `Obfuscator` directly:
+NCG loads Shroud via a Python adapter (`ncg_adapter.py`) that manages a Node.js bridge subprocess (`shroud_bridge.mjs`):
 
 ```
-User → NCG Agent → Shroud obfuscate() → LLM
-LLM → Shroud deobfuscate() → NCG Agent → User
+User → NCG Agent → shroud.sanitize() → LLM
+LLM → shroud.desanitize() → NCG Agent → User
 ```
 
-### Bridge Features
+Both files ship in the npm package and are installed to the extensions directory automatically.
+
+### Features
 
 - Obfuscates outgoing messages (user prompts + tool results)
 - Deobfuscates incoming messages (LLM responses)
 - Residual detection: scans for leaked CGNAT (`100.64.x.x`) and ULA (`fd00::`) fakes
 - Writes stats to `/tmp/shroud-stats.json` for monitoring
-- Reads config from `~/.openclaw/openclaw.json`
+- Config from `~/.ncg/ncg.json` (same JSON structure as OpenClaw)
+- 4 runtime tools: `shroud_status`, `shroud_reset`, `shroud_activate`, `shroud_deactivate`
 
-### Python Plugin (`plugins/shroud.py`)
+### Configuration
 
-For pure-Python agents, the shroud.py plugin provides:
-- `obfuscate(text)` / `deobfuscate(text)` wrappers
-- Residual fake detection (CGNAT + ULA regex scanning)
-- Warning logs when fakes leak through
+Edit `~/.ncg/ncg.json` → `plugins.entries."openclaw-shroud".config`. Same keys as OpenClaw — see [Configuration Reference](#3-configuration-reference).
 
 ### Verifying Deployment
 
 ```bash
+# Check plugin is installed
+python agent.py plugin list
+
 # Check bridge is loaded
 journalctl -u ncg-gateway.service | grep shroud
 
 # Check version
-md5sum ~/.openclaw/extensions/openclaw-shroud/dist/obfuscator.js
-md5sum /path/to/shroud/dist/obfuscator.js
-# Should match
+python agent.py plugin list | grep openclaw-shroud
 
 # Check stats
-node /path/to/shroud/scripts/shroud-stats.mjs --json
+cat /tmp/shroud-stats.json
+```
+
+### Development Workflow
+
+```bash
+cd /path/to/shroud
+npm run build
+bash deploy-ncg.sh                              # install to ~/.ncg/extensions/
+sudo systemctl restart ncg-gateway.service       # pick up changes
 ```
