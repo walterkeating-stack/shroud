@@ -16,11 +16,10 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 | Hook | Direction | What happens |
 |------|-----------|-------------|
 | `before_prompt_build` | User → LLM | Obfuscate user prompt, prepend privacy context |
-| `before_llm_send` | User → LLM | Obfuscate all messages + install `transformResponse` |
-| `transformResponse` | LLM → User | Deobfuscate LLM output (auto-reply, WhatsApp, etc.) |
+| `before_message_write` | Any → History | Obfuscate every message written to the session transcript |
 | `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
-| `message_sending` | Agent → User | Deobfuscate outbound messages (fallback path) |
+| `message_sending` | Agent → User | Deobfuscate outbound messages (WhatsApp, auto-reply, etc.) |
 
 ## Install
 
@@ -232,13 +231,13 @@ tail -f ~/.openclaw/logs/openclaw.log \
 You should see:
 
 ```
-[shroud][audit] OBFUSCATE req=dc5f9199cfb0d835 | entities=4 | touched=2/5 | blocks=2 | chars=1200->1218 (delta=+18) | modified=YES | byCat=email:1,ip_address:2,hostname:1
+[shroud][audit] OBFUSCATE req=dc5f9199cfb0d835 | entities=4 | chars=1200->1218 (delta=+18) | modified=YES | byCat=email:1,ip_address:2,hostname:1 | byRule=regex:email:1,regex:ipv4:2,regex:hostname:1
 ```
 
 With proof hashes enabled:
 
 ```
-[shroud][audit] OBFUSCATE req=a3f1bc9e02d4e7f1 | entities=4 | touched=2/5 | blocks=2 | chars=1200->1218 (delta=+18) | modified=YES | byCat=email:1,ip_address:2,hostname:1 | proof_in=8a3c1f0e2b4d proof_out=f7d2a1c9e084 | fakes=[jsmith@corp.net|100.64.0.12|SW-LAB-01]
+[shroud][audit] OBFUSCATE req=a3f1bc9e02d4e7f1 | entities=4 | chars=1200->1218 (delta=+18) | modified=YES | byCat=email:1,ip_address:2,hostname:1 | byRule=regex:email:1,regex:ipv4:2,regex:hostname:1 | proof_in=8a3c1f0e2b4d proof_out=f7d2a1c9e084 | fakes=[jsmith@corp.net|100.64.0.12|SW-LAB-01]
 ```
 
 ### Audit field reference
@@ -247,16 +246,14 @@ With proof hashes enabled:
 |-------|---------|
 | `req` | Random request ID (hex) — correlates obfuscate ↔ deobfuscate |
 | `entities` | Total entities detected and replaced |
-| `touched` | Messages with replacements / total messages |
-| `blocks` | Content blocks with replacements |
 | `chars` | Input → output character count |
 | `delta` | Character count change (fakes may be longer/shorter) |
 | `modified` | `YES` if text was changed, `NO` if pass-through |
 | `byCat` | Entity counts by category |
 | `byRule` | Entity counts by detector rule |
-| `proof_in` | Truncated salted SHA-256 of input text |
-| `proof_out` | Truncated salted SHA-256 of output text |
-| `fakes` | Sample of fake replacement values (never real values) |
+| `proof_in` | Truncated salted SHA-256 of input text (opt-in) |
+| `proof_out` | Truncated salted SHA-256 of output text (opt-in) |
+| `fakes` | Sample of fake replacement values (opt-in, never real values) |
 
 ### Note on log duplication
 
@@ -266,7 +263,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (210 tests)
+npm test          # run vitest (203 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```
