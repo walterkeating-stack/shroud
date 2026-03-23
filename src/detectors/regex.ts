@@ -446,7 +446,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
 
   // ==========================================================================
-  // Wave 1: Enterprise / Regulated / Critical Infrastructure
+  // Wave 1: Regulated / Critical Infrastructure
   // ==========================================================================
 
   // --- Austrian / EU identifiers ---

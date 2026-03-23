@@ -26,7 +26,7 @@ export enum Category {
   ROUTE_MAP = "route_map",
   OSPF_ID = "ospf_id",
   ACL_NAME = "acl_name",
-  // Regulated / enterprise categories
+  // Regulated / extended categories
   IBAN = "iban",
   NATIONAL_ID = "national_id",
   JWT = "jwt",
