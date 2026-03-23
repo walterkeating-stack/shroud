@@ -16,13 +16,12 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 | Hook | Direction | What happens |
 |------|-----------|-------------|
 | `before_prompt_build` | User → LLM | Obfuscate user prompt, prepend privacy context |
-| `before_message_write` | Any → History | Obfuscate every message written to the session transcript |
-| `before_llm_send` | Context → LLM | Obfuscate LLM messages + install `transformResponse` for deobfuscation (>=2026.3.14) |
+| `before_message_write` | Any → History | Obfuscate non-assistant messages; deobfuscate assistant messages |
 | `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
-| `message_sending` | Agent → User | Deobfuscate outbound messages (WhatsApp, auto-reply, etc.) |
+| `message_sending` | Agent → User | Deobfuscate outbound messages (fallback) |
 
-> **Streaming deobfuscation:** On first load, Shroud automatically patches pi-ai's EventStream to deobfuscate LLM responses. A restart is required to activate the patch.
+> **Streaming deobfuscation:** On first load, Shroud patches pi-ai's EventStream to deobfuscate ALL LLM responses at the stream level — every provider (Anthropic, OpenAI, Google), every channel (Slack, WhatsApp, Telegram, etc.). A single gateway restart activates the patch.
 
 ## Install
 
