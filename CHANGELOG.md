@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.6] - 2026-03-23
+
+### Fixed
+- **Cross-version hook compatibility** — added `before_llm_send` hook with `transformResponse` callback for deobfuscation on OpenClaw >=2026.3.14. Shroud now registers 6 hooks: the new `before_llm_send` (with `transformResponse` for LLM output deobfuscation) alongside the existing `message_sending` and `before_tool_call` hooks. On older OpenClaw versions (2026.3.11), `before_llm_send` is silently ignored and deobfuscation falls back to `message_sending`/`before_tool_call`. On newer versions (>=2026.3.14), `transformResponse` provides the most reliable deobfuscation path — it catches ALL LLM output text including streaming deltas.
+- 5 new tests for `before_llm_send` hook and `transformResponse` deobfuscation (208 total).
+
 ## [2.0.5] - 2026-03-23
 
 ### Changed

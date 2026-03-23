@@ -17,6 +17,7 @@ Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitiv
 |------|-----------|-------------|
 | `before_prompt_build` | User → LLM | Obfuscate user prompt, prepend privacy context |
 | `before_message_write` | Any → History | Obfuscate every message written to the session transcript |
+| `before_llm_send` | Context → LLM | Obfuscate LLM messages + install `transformResponse` for deobfuscation (>=2026.3.14) |
 | `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
 | `message_sending` | Agent → User | Deobfuscate outbound messages (WhatsApp, auto-reply, etc.) |
@@ -263,7 +264,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (203 tests)
+npm test          # run vitest (208 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```
