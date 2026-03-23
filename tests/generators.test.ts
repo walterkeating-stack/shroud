@@ -171,4 +171,26 @@ describe("Phone generation", () => {
     expect(fake).toMatch(/\(\d{3}\)/);
     expect(fake.replace(/[^0-9]/g, "").length).toBe(10);
   });
+
+  test("international no-separator preserves compact format", () => {
+    const engine = new MappingEngine("test-secret", "fixed-salt");
+    const fake = engine.mapValue("+4366488643158", Category.PHONE);
+    // Must NOT contain spaces — LLMs strip spaces in tool calls, breaking deobfuscation
+    expect(fake).not.toContain(" ");
+    expect(fake).toMatch(/^\+43\d+$/);
+  });
+
+  test("international with dashes preserves dashes", () => {
+    const engine = new MappingEngine("test-secret", "fixed-salt");
+    const fake = engine.mapValue("+43-664-886-4315", Category.PHONE);
+    expect(fake).toContain("-");
+    expect(fake).toMatch(/^\+43-/);
+  });
+
+  test("international with spaces preserves spaces", () => {
+    const engine = new MappingEngine("test-secret", "fixed-salt");
+    const fake = engine.mapValue("+43 664 886 4315", Category.PHONE);
+    expect(fake).toContain(" ");
+    expect(fake).toMatch(/^\+43 /);
+  });
 });
