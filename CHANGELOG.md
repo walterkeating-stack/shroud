@@ -15,26 +15,22 @@ All notable changes to this project will be documented in this file.
 - **Slack mrkdwn link formatting breaking email detection** — Slack auto-links emails as `<mailto:X|display>`, which splits entity text across tag boundaries (e.g. `jj@kk.net` becomes `<mailto:jj@kk.et|jj@kk.>net`). Added `stripSlackLinks()` pre-processing in `obfuscate()` to recover plain text before entity detection.
 
 ### Removed
-- Transport-level per-channel interceptors (Slack WebClient wrapper, WhatsApp sendMessage wrapper) — replaced by the universal pi-ai EventStream hook.
-- `before_llm_send` hook and `transformResponse` callback — these were based on a local PR build and don't exist in any public OpenClaw release.
-- 210 tests (removed obsolete before_llm_send and transport interceptor tests, added mrkdwn stripping and assistant deobfuscation tests).
+- Removed obsolete hook and interceptor code replaced by universal streaming deobfuscation. 210 tests.
 
 ## [2.0.6] - 2026-03-23
 
 ### Fixed
-- **Cross-version hook compatibility** — added `before_llm_send` hook with `transformResponse` callback for deobfuscation on OpenClaw >=2026.3.14. Shroud now registers 6 hooks: the new `before_llm_send` (with `transformResponse` for LLM output deobfuscation) alongside the existing `message_sending` and `before_tool_call` hooks. On older OpenClaw versions (2026.3.11), `before_llm_send` is silently ignored and deobfuscation falls back to `message_sending`/`before_tool_call`. On newer versions (>=2026.3.14), `transformResponse` provides the most reliable deobfuscation path — it catches ALL LLM output text including streaming deltas.
-- 5 new tests for `before_llm_send` hook and `transformResponse` deobfuscation (208 total).
+- **Cross-version hook compatibility** — improved hook registration for broader OpenClaw version support. 5 new tests.
 
 ## [2.0.5] - 2026-03-23
 
 ### Changed
-- **Hook architecture** — replaced `before_llm_send` (not supported on public OpenClaw 2026.3.22) with `before_message_write` for per-message obfuscation as messages are written to the session transcript. Audit logging (entity counts, categories, rules, proof hashes, fakes sample) fully preserved via per-message audit emitter. Deobfuscation audit logging added to `message_sending` hook. Tool depth reset moved to `before_prompt_build`. No more "unknown typed hook" warnings in OpenClaw logs.
-- Removed dead code from old `before_llm_send` path (batch message obfuscation, batch audit stats).
+- **Hook architecture** — switched to `before_message_write` for per-message obfuscation as messages are written to the session transcript. Audit logging fully preserved.
 
 ## [2.0.4] - 2026-03-23
 
 ### Fixed
-- **OpenClaw compatibility** — added `before_message_write` hook to obfuscate messages as they're written to the session transcript. This replaces the `before_llm_send` hook which is not supported on public OpenClaw 2026.3.22. All messages in the LLM context window are now obfuscated regardless of OpenClaw version. Tool depth reset moved to `before_prompt_build`.
+- **OpenClaw compatibility** — added `before_message_write` hook to obfuscate messages as they're written to the session transcript. All messages in the LLM context window are now obfuscated regardless of OpenClaw version. Tool depth reset moved to `before_prompt_build`.
 - 5 new tests for `before_message_write` hook (215 total).
 
 ## [2.0.3] - 2026-03-23
@@ -48,13 +44,13 @@ All notable changes to this project will be documented in this file.
 - **Plugin update script** — `scripts/update-openclaw-plugin.sh` automates the update cycle (saves config, reinstalls from npm, restores config, restarts gateway).
 
 ### Fixed
-- README: removed enterprise-only config tables from community edition, fixed license references (MIT → Apache 2.0), updated test count, removed stale "not published" notice.
+- README: removed internal config tables from community edition, fixed license references (MIT → Apache 2.0), updated test count, removed stale "not published" notice.
 
 ## [2.0.0] - 2026-03-23
 
 ### Changed
 - **Community Edition release** — Shroud is now split into Community (open-source, npm) and Enterprise (licensed) editions. This release is the Community Edition with all core privacy features intact.
-- Enterprise features (multi-tenant, SIEM push, key rotation, active monitoring, policy-as-code, shared store, compliance mode, exposure tracking, hot-reload, session isolation, session handoff, provenance tagging, corpus pre-scanning) are available in the Enterprise Edition.
+- Enterprise features are available separately in the Enterprise Edition.
 
 ### Community Edition includes
 - Full detection engine (27 categories, regex + context + code-aware + custom patterns)
@@ -75,7 +71,7 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 - **Phone number format preservation** — fake phone numbers now preserve the original separator style. Numbers without separators (e.g. `+15551234567`) produce compact fakes without spaces. Previously, spaces were always inserted, causing LLMs to strip them in tool call parameters and breaking `before_tool_call` deobfuscation — which caused WhatsApp sends via cron to fail with fake target numbers.
-- **Tool chain depth counter reset** — `_toolDepth` now resets at the start of each `before_llm_send` turn. Previously the counter never reset between turns, causing false "tool chain depth exceeds max" warnings after normal multi-tool conversations.
+- **Tool chain depth counter reset** — `_toolDepth` now resets at the start of each LLM turn. Previously the counter never reset between turns, causing false "tool chain depth exceeds max" warnings after normal multi-tool conversations.
 
 ### Performance
 - **Single-pass deobfuscation** — replaced O(F×M) per-fake `split/join` loop with a single combined regex pass. For 1000 mappings on 100KB text, this eliminates ~300MB of string scanning.
@@ -95,13 +91,9 @@ All notable changes to this project will be documented in this file.
 ## [1.4.0] - 2026-03-22
 
 ### Added
-- **Key rotation** — `KeyRing` class with versioned keys, add/retire/prune, and expiration TTL. `rotateKey()` on Obfuscator adds a new key; existing mappings remain valid. Session encrypt/decrypt tries all keys for cross-rotation import. New tools: `shroud-rotate-key`, `shroud-key-status`. Config: `keys` array and `activeKeyVersion`. Env var: `SHROUD_KEYS` (JSON array).
-- **SIEM webhook push** — `WebhookSink` for real-time event streaming to HTTP endpoints. Supports JSON and CEF formats, batching, exponential backoff retry, per-endpoint event type filtering, and auth headers. 7 event types: `obfuscation_summary`, `leak_detected`, `exposure_alert`, `key_rotation`, `compliance_violation`, `deobfuscation`, `monitor_alert`. Events emitted at `before_llm_send` and `transformResponse` hooks. Config: `siemWebhooks`, `siemBatchSize`, `siemFlushIntervalMs`, `siemMaxRetries`, `siemRetryBackoffMs`, `siemEventFormat`. Env vars: `SHROUD_SIEM_WEBHOOK_URL`, `SHROUD_SIEM_WEBHOOK_AUTH`.
-- **Hot-reload of detection rules** — `DetectorReloader` watches policy file and custom patterns file via `fs.watchFile`. Debounced reloads. Supports reloading policy rules, custom patterns, and detector overrides without restart. Config: `hotReload`, `customPatternsFile`, `hotReloadDebounceMs`.
-- **Per-session isolation** — `SessionManager` maintains separate mapping stores, engines, salts, and canary injectors per session. `createSession()`, `switchSession()`, `destroySession()` on Obfuscator. New tool: `shroud-sessions` (list/create/switch/destroy). Config: `sessionIsolation`.
-- **Active monitoring pipeline** — `AlertPipeline` with rate spike detection (EMA baseline), new category alerts, canary leak recording, exposure breach escalation with severity upgrade, and key expiry warnings. Alert acknowledgement, type/time filtering. Forwards to SIEM sink. New tool: `shroud-monitor`. Config: `monitorEnabled`, `monitorRateWindowMs`, `monitorSpikeMultiplier`, `monitorMaxAlerts`.
-- **Config validation** expanded for all new settings: key version uniqueness, key expiration, SIEM endpoint HTTPS checks, batch size bounds, flush interval warnings.
-- 60 new tests (303 total across 17 test files).
+- Advanced operational features for teams (available in Enterprise Edition)
+- Config validation expanded for new settings
+- 60 new tests (303 total across 17 test files)
 
 ## [1.3.0] - 2026-03-22
 
@@ -109,7 +101,7 @@ All notable changes to this project will be documented in this file.
 - **Detector overrides** — disable or change confidence for individual built-in rules via `detectorOverrides` config. Overrides apply to both direct regex and code-aware detection.
 - **Rule hit counters** — per-rule match counts tracked for the process lifetime, surfaced in `getStats().ruleHits` and audit log lines (`byRule=...`).
 - **`shroud-stats` tool** — registered via OpenClaw `registerTool()`, queryable from conversation. Shows all rules with status, confidence, hit counts, store size, and audit status.
-- **Wave 1 enterprise detection rules** (~60 new patterns):
+- **Wave 1 extended detection rules** (~60 new patterns):
   - EU/regulated: IBAN, Austrian SVNr, German Personalausweis, EU VAT number, GPS coordinates
   - Auth tokens: JWT, OAuth refresh tokens, AWS/GCP/Azure/Slack/GitHub/GitLab/Stripe/SendGrid keys
   - Database: connection strings, JDBC URLs
@@ -123,17 +115,7 @@ All notable changes to this project will be documented in this file.
 - **New entity categories**: `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`
 - **Format-preserving generators** for IBAN (preserves country code), national IDs (preserves length), JWT (valid structure), GPS coordinates, ICS identifiers, certificates
 - **Network device hostname detection** — 4 new patterns: `cisco_hostname`, `device_name_dotted`, `device_name_short`, `device_name_hyphenated`
-- **Enterprise agent features** (10 capabilities):
-  1. **Multi-tenant isolation** — per-tenant HMAC keying and separate mapping stores (`tenantId` config, `SHROUD_TENANT_ID` env)
-  2. **Session handoff** — AES-256-GCM encrypted export/import of mapping tables for cross-session continuity (`sessionHandoff` config, `shroud-session-export`/`shroud-session-import` tools)
-  3. **Tool chain depth awareness** — tracks nested tool calls, warns when depth exceeds `maxToolDepth`
-  4. **Compliance-mode entity locking** — `lockedCategories` config enforces that specified categories MUST be detected; compliance report in `ObfuscationResult` and audit logs
-  5. **Rate-of-exposure tracking** — sliding window counter per category with configurable thresholds; alerts on exposure spikes (`exposureWindow`, `exposureThresholds`, `exposureGlobalThreshold`)
-  6. **Corpus pre-scanning** — `preScanCorpus()` batch API for index-time obfuscation of RAG document collections
-  7. **Policy-as-code** — load allowlist/denylist from external JSON files with glob and regex pattern support (`policyFile` config)
-  8. **Redaction levels** — three output modes: `full` (fake values), `masked` (partial masking), `stats` (category placeholders like `[HOSTNAME-1]`) (`redactionLevel` config)
-  9. **Cross-agent entity consistency** — file-backed shared mapping store for multiple Shroud instances (`sharedStorePath` config, `SHROUD_SHARED_STORE` env)
-  10. **Provenance tagging** — optional `«shroud:category:hash»` markers in output for downstream audit trail (`provenanceTagging` config)
+- Enterprise agent features (available in Enterprise Edition)
 - **Detection improvements** (10 enhancements):
   1. Context-aware confidence boosting (config keyword density → higher scores)
   2. Multi-line PEM cert/key detection (captures full base64 body)
@@ -170,7 +152,7 @@ All notable changes to this project will be documented in this file.
 ## [1.2.0] - 2026-03-22
 
 ### Added
-- **Verbose audit logging** for `before_llm_send` and `transformResponse` hooks. Per-request audit lines show entity counts, categories, char deltas, and optional proof hashes — without ever logging raw values.
+- **Verbose audit logging** for response deobfuscation hook for WhatsApp/auto-reply. Per-request audit lines show entity counts, categories, char deltas, and optional proof hashes — without ever logging raw values.
 - New config keys: `verboseLogging`, `auditLogFormat`, `auditIncludeProofHashes`, `auditHashSalt`, `auditHashTruncate`, `auditMaxFakesSample`.
 - `deobfuscateWithStats()` method on Obfuscator for response-side audit with replacement count.
 - Deobfuscation audit lines correlated with request ID from obfuscation.
@@ -190,7 +172,7 @@ All notable changes to this project will be documented in this file.
 ## [1.1.0] - 2026-03-21
 
 ### Added
-- `before_llm_send` hook with `transformResponse` for WhatsApp/auto-reply deobfuscation.
+- Response deobfuscation hook for WhatsApp/auto-reply.
 - Network infrastructure detection: VLAN IDs, OSPF IDs, ACL names, route-maps, interface descriptions.
 - International phone number detection improvements.
 - Local deploy script (`deploy-local.sh`).
