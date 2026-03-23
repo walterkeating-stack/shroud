@@ -396,6 +396,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("before_llm_send", async (event: any) => {
     if (!Array.isArray(event?.messages)) return;
 
+    // Reset tool depth at the start of each LLM turn — tool calls from the
+    // previous turn are complete, so the counter should not carry over.
+    if (obfuscator.toolDepth > 0) {
+      obfuscator.resetToolDepth();
+    }
+
     const totalMessages = event.messages.length;
     let obfuscatedMessages: unknown[];
     let requestId = "";
