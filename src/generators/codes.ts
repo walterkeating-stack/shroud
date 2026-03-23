@@ -194,16 +194,23 @@ export class CodeGenerator implements BaseGenerator {
     // Detect format: +1, parens, dashes, spaces, dots
     const hasCountry = original.startsWith("+");
     const hasParens = original.includes("(");
+    const hasSep = original.includes("-") || original.includes(".") || original.includes(" ");
     const sep = original.includes("-")
       ? "-"
       : original.includes(".")
         ? "."
-        : " ";
+        : original.includes(" ")
+          ? " "
+          : "";
 
     if (hasCountry) {
-      // International format
+      // International format — preserve original separator style (or none)
       const countryMatch = original.match(/^\+(\d{1,3})/);
       const cc = countryMatch ? countryMatch[1] : "1";
+      if (!hasSep) {
+        // Original had no separators (e.g. +4366488643158) — keep it compact
+        return `+${cc}${area}${mid}${lastStr}`;
+      }
       return `+${cc}${sep}${area}${sep}${mid}${sep}${lastStr}`;
     } else if (hasParens) {
       return `(${area}) ${mid}-${lastStr}`;
