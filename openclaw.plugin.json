@@ -73,5 +73,10 @@
     "minConfidence": { "label": "Min Confidence", "help": "Detection confidence threshold (0.0-1.0)" },
     "canaryEnabled": { "label": "Enable Canary Tokens", "help": "Inject tracking tokens to detect PII leakage" },
     "auditEnabled": { "label": "Enable Audit Log", "help": "Tamper-evident obfuscation event tracking" }
+  },
+  "ncg": {
+    "adapter": "ncg_adapter.py",
+    "adapterClass": "ShroudPlugin",
+    "bridge": "shroud_bridge.mjs"
   }
 }
