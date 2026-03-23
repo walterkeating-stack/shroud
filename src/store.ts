@@ -87,7 +87,7 @@ export class MemoryStore implements MappingStore {
     this._insertionOrder = [];
   }
 
-  /** Export all mappings for session handoff. */
+  /** Export all mappings for serialization. */
   export(salt: string, tenantId?: string): SerializedStore {
     const mappings: [string, string, string][] = [];
     for (const [real, fake] of this._realToFake) {

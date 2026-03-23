@@ -51,7 +51,7 @@ OpenClaw doesn't have a `plugins update` command yet, so updating requires remov
 bash scripts/update-openclaw-plugin.sh
 
 # Update to a specific version
-bash scripts/update-openclaw-plugin.sh 2.0.1
+bash scripts/update-openclaw-plugin.sh <version>
 ```
 
 The script saves your plugin config from `openclaw.json`, removes the old extension, reinstalls from npm, restores your config, and restarts the gateway.
