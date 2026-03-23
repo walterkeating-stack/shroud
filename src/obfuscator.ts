@@ -94,6 +94,22 @@ function compressIPv6(addr: string): string {
 }
 
 /**
+ * Strip Slack/chat mrkdwn link formatting to recover plain text.
+ * Slack wraps emails as `<mailto:X|DISPLAY>` and URLs as `<URL|DISPLAY>`,
+ * which splits entities across tag boundaries and breaks regex detection.
+ * This converts display-text links back to their visible form.
+ */
+function stripSlackLinks(text: string): string {
+  // <mailto:X|DISPLAY> → DISPLAY  (email links)
+  text = text.replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1");
+  // <URL|DISPLAY> → DISPLAY       (URL links with display text)
+  text = text.replace(/<https?:\/\/[^|>]+\|([^>]*)>/g, "$1");
+  // <URL> → URL                    (bare URL links, no display text)
+  text = text.replace(/<(https?:\/\/[^>]+)>/g, "$1");
+  return text;
+}
+
+/**
  * Build a single combined regex from an array of literal strings.
  * Strings are escaped and joined with alternation (|), sorted longest-first
  * so the regex engine matches greedily. Returns null for empty arrays.
@@ -240,6 +256,11 @@ export class Obfuscator {
    */
   obfuscate(text: string, context?: string): ObfuscationResult {
     const startTime = Date.now();
+
+    // 0. Strip Slack/chat mrkdwn link formatting so detection sees clean text.
+    //    Slack wraps emails as <mailto:X|DISPLAY> and URLs as <URL|DISPLAY>,
+    //    which splits entities across tag boundaries and breaks regex matching.
+    text = stripSlackLinks(text);
 
     // 1. Learn subnet context from CIDR notation and masks in text
     this._subnetMapper.learnSubnetsFromText(text);

@@ -1,16 +1,25 @@
 /**
  * OpenClaw lifecycle hooks for the Shroud privacy plugin.
  *
- * Registers 6 hooks (version-adaptive — unused hooks are silently ignored):
+ * Registers 6 hooks + 1 transport interceptor (version-adaptive):
  * 1. before_prompt_build   (async) -- obfuscate user prompt via prependContext
  * 2. before_message_write  (SYNC)  -- obfuscate every message written to the session transcript
- * 3. before_llm_send       (async) -- obfuscate LLM messages + install transformResponse for deobfuscation (>=2026.3.14)
+ * 3. before_llm_send       (async) -- obfuscate LLM messages + install transformResponse (>=2026.3.14)
  * 4. before_tool_call      (async) -- deobfuscate tool params (+ depth tracking)
  * 5. tool_result_persist   (SYNC)  -- obfuscate tool result message
  * 6. message_sending       (async) -- deobfuscate outbound message content
+ * 7. Transport interceptor         -- wraps Slack WebClient.apiCall for universal deobfuscation
+ *
+ * The transport interceptor is the universal fallback: it deobfuscates Slack
+ * messages at the API-call level, independent of which OpenClaw hooks fire.
+ * On >=2026.3.14, transformResponse handles deobfuscation first (for ALL
+ * channels); the transport interceptor is a no-op since the text is already
+ * deobfuscated.  On older versions where message_sending doesn't fire for
+ * Slack, the interceptor catches it.
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
@@ -197,6 +206,91 @@ function walkStrings(
     return out;
   }
   return value;
+}
+
+// ---------------------------------------------------------------------------
+// Transport-level deobfuscation interceptor (fallback for all versions)
+// ---------------------------------------------------------------------------
+
+/**
+ * Wraps the Slack WebClient.prototype.apiCall to deobfuscate outbound message
+ * text before it hits the Slack API.  This is the universal fallback that works
+ * on ANY OpenClaw version — it doesn't depend on hook dispatch at all.
+ *
+ * The @slack/web-api package is CJS and already loaded by OpenClaw, so it lives
+ * in require.cache.  We find it there, wrap the prototype once, done.
+ */
+function installTransportInterceptor(
+  obfuscator: Obfuscator,
+  logger: PluginApi["logger"],
+): void {
+  try {
+    const esmRequire = createRequire(import.meta.url);
+    const cache = esmRequire.cache;
+    if (!cache) return;
+
+    for (const key of Object.keys(cache)) {
+      if (!key.includes("@slack/web-api")) continue;
+      const mod = cache[key];
+      const WebClient = mod?.exports?.WebClient;
+      if (typeof WebClient !== "function") continue;
+
+      const proto = WebClient.prototype;
+      if (typeof proto.apiCall !== "function") continue;
+      if ((proto as any).__shroudPatched) return; // already wrapped
+
+      const origApiCall = proto.apiCall;
+
+      proto.apiCall = async function shroudApiCall(
+        method: string,
+        options?: Record<string, unknown>,
+      ) {
+        if (
+          (method === "chat.postMessage" || method === "chat.update") &&
+          options
+        ) {
+          // Deobfuscate the plain-text fallback
+          if (typeof options.text === "string") {
+            const original = options.text as string;
+            const deobfuscated = obfuscator.deobfuscate(original);
+            if (deobfuscated !== original) {
+              options = { ...options, text: deobfuscated };
+              logger?.info(
+                `[shroud][transport] deobfuscated Slack ${method}`,
+              );
+            }
+          }
+          // Deobfuscate blocks (rich text) — walk all text elements
+          if (Array.isArray(options.blocks)) {
+            const json = JSON.stringify(options.blocks);
+            const deobJson = obfuscator.deobfuscate(json);
+            if (deobJson !== json) {
+              try {
+                options = { ...options, blocks: JSON.parse(deobJson) };
+              } catch {
+                // If JSON parse fails, leave blocks unchanged
+              }
+            }
+          }
+        }
+        return origApiCall.call(this, method, options);
+      };
+
+      (proto as any).__shroudPatched = true;
+      logger?.info(
+        "[shroud] Installed Slack transport interceptor (universal deobfuscation fallback)",
+      );
+      return;
+    }
+
+    logger?.info(
+      "[shroud] Slack WebClient not found in require.cache — transport interceptor not installed (hooks-only mode)",
+    );
+  } catch (err) {
+    logger?.warn(
+      `[shroud] Failed to install transport interceptor: ${String(err)}`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -471,4 +565,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   });
+
+  // -----------------------------------------------------------------------
+  // 7. Transport interceptor: universal deobfuscation fallback
+  //    Wraps Slack WebClient.apiCall so outbound messages are deobfuscated
+  //    regardless of which OpenClaw hooks fire (or don't).
+  // -----------------------------------------------------------------------
+  installTransportInterceptor(obfuscator, api.logger);
 }
