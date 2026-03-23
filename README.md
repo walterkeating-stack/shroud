@@ -32,33 +32,18 @@ openclaw plugins install shroud-privacy
 
 That's it. Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`.
 
-### NCG Agent
-
-```bash
-python agent.py plugin install shroud-privacy
-```
-
-Configure in `~/.ncg/ncg.json` under `plugins.entries."shroud-privacy".config`.
-
 ### From source (development)
 
 ```bash
 git clone https://github.com/walterkeating-stack/shroud.git
 cd shroud
 npm install && npm run build
-
 bash deploy-local.sh     # → OpenClaw (~/.openclaw/extensions/)
-bash deploy-ncg.sh       # → NCG (~/.ncg/extensions/)
 ```
 
 ## Configure
 
-Both OpenClaw and NCG store Shroud config in the same structure — only the file path differs:
-
-| Platform | Config file | Config path |
-|----------|-------------|-------------|
-| OpenClaw | `~/.openclaw/openclaw.json` | `plugins.entries."shroud-privacy".config` |
-| NCG | `~/.ncg/ncg.json` | `plugins.entries."shroud-privacy".config` |
+Edit `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`:
 
 ```jsonc
 "shroud-privacy": {
@@ -80,8 +65,7 @@ Both OpenClaw and NCG store Shroud config in the same structure — only the fil
 Restart the gateway after config changes:
 
 ```bash
-openclaw gateway restart                    # OpenClaw
-sudo systemctl restart ncg-gateway.service  # NCG
+openclaw gateway restart
 ```
 
 ### Safe defaults
@@ -196,7 +180,7 @@ Rules not listed keep their defaults. Overrides apply to both direct regex detec
 
 Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in three places:
 
-- **`shroud-stats` CLI** — run `node scripts/shroud-stats.mjs` to see all rules with status, confidence, and hit counts. Shows live cumulative stats from the running gateway (NCG or OpenClaw) via `/tmp/shroud-stats.json`. Use `--test "text with PII"` to test detection against sample input.
+- **`shroud-stats` CLI** — run `node scripts/shroud-stats.mjs` to see all rules with status, confidence, and hit counts. Shows live cumulative stats from the running OpenClaw gateway via `/tmp/shroud-stats.json`. Use `--test "text with PII"` to test detection against sample input.
 - **Audit log lines** — `byRule=regex:email:3,regex:ipv4:2,...` alongside the existing `byCat` field.
 - **`getStats()`** — the `ruleHits` object in the stats response, useful for programmatic access.
 
@@ -312,10 +296,7 @@ npm run lint      # type-check without emitting
 ```bash
 npm run build
 bash deploy-local.sh   # → OpenClaw (~/.openclaw/extensions/shroud-privacy/)
-bash deploy-ncg.sh     # → NCG (~/.ncg/extensions/shroud-privacy/)
-
-openclaw gateway restart                    # restart OpenClaw
-sudo systemctl restart ncg-gateway.service  # restart NCG
+openclaw gateway restart
 ```
 
 ## Release workflow

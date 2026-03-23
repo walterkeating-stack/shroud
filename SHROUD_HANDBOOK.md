@@ -1,6 +1,6 @@
 # Shroud Operations Handbook
 
-> Quick reference for every environment where Shroud is deployed — local OpenClaw, private agents (NCG), or custom integrations.
+> Quick reference for Shroud deployment and operations with OpenClaw.
 
 ---
 
@@ -42,7 +42,6 @@
 33. [Active Monitoring](#33-active-monitoring)
 34. [CLI Tools](#34-cli-tools)
 35. [Diagnostics & Troubleshooting](#35-diagnostics--troubleshooting)
-36. [Private Agent Integration (NCG)](#36-private-agent-integration-ncg)
 
 ---
 
@@ -66,18 +65,11 @@ The LLM never sees real sensitive data. All operations are synchronous and deter
 openclaw plugins install shroud-privacy
 ```
 
-### NCG Agent
-
-```bash
-python agent.py plugin install shroud-privacy
-```
-
 ### From Source (Development)
 
 ```bash
 cd shroud && npm install && npm run build
 bash deploy-local.sh     # → OpenClaw (~/.openclaw/extensions/)
-bash deploy-ncg.sh       # → NCG (~/.ncg/extensions/)
 ```
 
 ### Custom Integration
@@ -103,17 +95,10 @@ const real = obf.deobfuscate(llmResponse);
 
 ## Where Config Lives
 
-Both OpenClaw and NCG store Shroud config in the same JSON structure — only the file path differs:
-
-| Platform | Config file |
-|----------|-------------|
-| OpenClaw | `~/.openclaw/openclaw.json` |
-| NCG | `~/.ncg/ncg.json` |
-
-In both cases, Shroud's settings go inside `plugins.entries."shroud-privacy".config`:
+Shroud config lives in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`:
 
 ```jsonc
-// ~/.openclaw/openclaw.json  OR  ~/.ncg/ncg.json
+// ~/.openclaw/openclaw.json
 {
   "plugins": {
     "entries": {
@@ -679,72 +664,3 @@ Call `getStats()` for:
 - `replacementsByCategory`: How many actually replaced
 - `ruleHits`: Hit count per detector rule
 
----
-
-## 24. NCG Agent Integration
-
-### Install
-
-```bash
-python agent.py plugin install shroud-privacy
-```
-
-This installs to `~/.ncg/extensions/shroud-privacy/` and creates a default config entry in `~/.ncg/ncg.json`.
-
-### Plugin Management
-
-```bash
-python agent.py plugin list                    # list installed plugins
-python agent.py plugin enable shroud-privacy   # enable
-python agent.py plugin disable shroud-privacy  # disable
-python agent.py plugin uninstall shroud-privacy # remove
-```
-
-### Architecture
-
-NCG loads Shroud via a Python adapter (`ncg_adapter.py`) that manages a Node.js bridge subprocess (`shroud_bridge.mjs`):
-
-```
-User → NCG Agent → shroud.sanitize() → LLM
-LLM → shroud.desanitize() → NCG Agent → User
-```
-
-Both files ship in the npm package and are installed to the extensions directory automatically.
-
-### Features
-
-- Obfuscates outgoing messages (user prompts + tool results)
-- Deobfuscates incoming messages (LLM responses)
-- Residual detection: scans for leaked CGNAT (`100.64.x.x`) and ULA (`fd00::`) fakes
-- Writes stats to `/tmp/shroud-stats.json` for monitoring
-- Config from `~/.ncg/ncg.json` (same JSON structure as OpenClaw)
-- 4 runtime tools: `shroud_status`, `shroud_reset`, `shroud_activate`, `shroud_deactivate`
-
-### Configuration
-
-Edit `~/.ncg/ncg.json` → `plugins.entries."shroud-privacy".config`. Same keys as OpenClaw — see [Configuration Reference](#3-configuration-reference).
-
-### Verifying Deployment
-
-```bash
-# Check plugin is installed
-python agent.py plugin list
-
-# Check bridge is loaded
-journalctl -u ncg-gateway.service | grep shroud
-
-# Check version
-python agent.py plugin list | grep shroud-privacy
-
-# Check stats
-cat /tmp/shroud-stats.json
-```
-
-### Development Workflow
-
-```bash
-cd /path/to/shroud
-npm run build
-bash deploy-ncg.sh                              # install to ~/.ncg/extensions/
-sudo systemctl restart ncg-gateway.service       # pick up changes
-```

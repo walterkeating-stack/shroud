@@ -1,15 +1,13 @@
 {
   "name": "shroud-privacy",
   "version": "2.0.0",
-  "description": "Privacy obfuscation plugin for OpenClaw and NCG — deterministic fake values with deobfuscation",
+  "description": "Privacy obfuscation plugin for OpenClaw — detects sensitive data and replaces with deterministic fake values",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
     "dist/",
     "openclaw.plugin.json",
-    "ncg_adapter.py",
-    "shroud_bridge.mjs",
     "LICENSE",
     "NOTICE"
   ],
@@ -23,7 +21,6 @@
   "keywords": [
     "openclaw",
     "openclaw-plugin",
-    "ncg",
     "privacy",
     "pii",
     "obfuscation",
