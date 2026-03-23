@@ -6,9 +6,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { createRequire } from "node:module";
-import { execSync } from "node:child_process";
 import { resolveConfig } from "./config.js";
 import { Obfuscator } from "./obfuscator.js";
 import { registerHooks } from "./hooks.js";
@@ -40,21 +39,6 @@ function findEventStreamPath(logger: any): string | null {
       const root = key.slice(0, idx + "/openclaw/".length);
       const candidate = join(root, "node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js");
       if (existsSync(candidate)) return candidate;
-    }
-  } catch {}
-
-  // Fallback: resolve from the openclaw binary
-  try {
-    const bin = execSync("command -v openclaw", { encoding: "utf8" }).trim();
-    if (bin) {
-      const binDir = dirname(bin);
-      const candidates = [
-        join(binDir, "../lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js"),
-        join(binDir, "../node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js"),
-      ];
-      for (const c of candidates) {
-        if (existsSync(c)) return c;
-      }
     }
   } catch {}
 
