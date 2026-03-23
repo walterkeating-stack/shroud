@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.3] - 2026-03-23
+
+### Fixed
+- **Update script** — strip `plugins.allow` and `plugins.entries` before reinstall so OpenClaw config validation doesn't block the install.
+
 ## [2.0.2] - 2026-03-23
 
 ### Added
