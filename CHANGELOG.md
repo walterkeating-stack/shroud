@@ -8,6 +8,16 @@ All notable changes to this project will be documented in this file.
 - **Phone number format preservation** — fake phone numbers now preserve the original separator style. Numbers without separators (e.g. `+4366488643158`) produce compact fakes without spaces. Previously, spaces were always inserted, causing LLMs to strip them in tool call parameters and breaking `before_tool_call` deobfuscation — which caused WhatsApp sends via cron to fail with fake target numbers.
 - **Tool chain depth counter reset** — `_toolDepth` now resets at the start of each `before_llm_send` turn. Previously the counter never reset between turns, causing false "tool chain depth exceeds max" warnings after normal multi-tool conversations.
 
+### Performance
+- **Single-pass deobfuscation** — replaced O(F×M) per-fake `split/join` loop with a single combined regex pass. For 1000 mappings on 100KB text, this eliminates ~300MB of string scanning.
+- **Segment-based obfuscation replacement** — replaced right-to-left `slice+slice` per entity with a single forward pass collecting segments and joining once. Eliminates O(E×M) string copies.
+- **Proximity clustering O(n²) → O(n log n)** — replaced pairwise entity comparison with sorted two-pointer window scan.
+- **Batch hostname/denylist/learned-entity scanning** — replaced per-string `indexOf` loops with single combined regex pass per group. Reduces O(S×M) to O(M).
+- **Block splitting without re-scan** — `_splitBlocks` now uses `matchAll` to derive positions directly instead of `split` + `indexOf` re-scanning.
+- **Binary search for block lookup** — context boost now uses binary search over sorted blocks instead of linear `find`.
+- **Bounded wildcard cache** — capped at 500 entries with FIFO eviction to prevent unbounded memory growth.
+- **Efficient learned entity eviction** — in-place deletion instead of map rebuild when cap exceeded.
+
 ## [1.5.0] - 2026-03-23
 
 ### Added
