@@ -1,7 +1,7 @@
 {
   "name": "openclaw-shroud",
-  "version": "1.3.0",
-  "description": "Native privacy obfuscation plugin for OpenClaw — deterministic fake values with deobfuscation",
+  "version": "1.5.0",
+  "description": "Privacy obfuscation plugin for OpenClaw and NCG — deterministic fake values with deobfuscation",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -22,6 +22,7 @@
   "keywords": [
     "openclaw",
     "openclaw-plugin",
+    "ncg",
     "privacy",
     "pii",
     "obfuscation",
