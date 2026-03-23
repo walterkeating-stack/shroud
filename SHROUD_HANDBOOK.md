@@ -572,7 +572,7 @@ Use to bound memory in long-running sessions.
 | # | Hook | Timing | Sync? | Action |
 |---|------|--------|-------|--------|
 | 1 | `before_prompt_build` | User prompt ready | Async | Obfuscate user prompt |
-| 2 | `before_llm_send` | LLM payload ready | Async | Obfuscate all messages; install `transformResponse` to deobfuscate LLM output |
+| 2 | `before_message_write` | Message written to session | **Sync** | Obfuscate every message in the session transcript |
 | 3 | `before_tool_call` | Tool call starting | Async | Deobfuscate tool parameters |
 | 4 | `tool_result_persist` | Tool result ready | **Sync** | Obfuscate tool result |
 | 5 | `message_sending` | Outbound message | Async | Deobfuscate content (fallback) |
