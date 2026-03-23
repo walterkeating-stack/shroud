@@ -5,14 +5,121 @@
  * and deobfuscates responses before they reach the user.
  */
 
+import { existsSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { createRequire } from "node:module";
+import { execSync } from "node:child_process";
 import { resolveConfig } from "./config.js";
 import { Obfuscator } from "./obfuscator.js";
 import { registerHooks } from "./hooks.js";
+
+// ---------------------------------------------------------------------------
+// Runtime self-patch: ensure pi-ai's EventStream.push() has the
+// Shroud deobfuscation hook. Runs once on first load; subsequent loads
+// detect the patch and skip. If patching occurs, the user is told to restart.
+// ---------------------------------------------------------------------------
+const PATCH_MARKER = "__shroudStreamDeobfuscate";
+const PATCH_CODE = [
+  "        // Shroud deobfuscation hook (injected by shroud-privacy plugin)",
+  "        const deob = globalThis.__shroudStreamDeobfuscate;",
+  "        if (deob && event && typeof event === 'object') {",
+  "            event = deob(this, event);",
+  "        }",
+].join("\n");
+
+function findEventStreamPath(logger: any): string | null {
+  try {
+    const esmRequire = createRequire(import.meta.url);
+    const cache = esmRequire.cache;
+    if (!cache) return null;
+
+    // Find OpenClaw's install root from require.cache
+    for (const key of Object.keys(cache)) {
+      const idx = key.indexOf("/openclaw/");
+      if (idx === -1) continue;
+      const root = key.slice(0, idx + "/openclaw/".length);
+      const candidate = join(root, "node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js");
+      if (existsSync(candidate)) return candidate;
+    }
+  } catch {}
+
+  // Fallback: resolve from the openclaw binary
+  try {
+    const bin = execSync("command -v openclaw", { encoding: "utf8" }).trim();
+    if (bin) {
+      const binDir = dirname(bin);
+      const candidates = [
+        join(binDir, "../lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js"),
+        join(binDir, "../node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js"),
+      ];
+      for (const c of candidates) {
+        if (existsSync(c)) return c;
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+function ensureEventStreamPatched(logger: any): void {
+  const esPath = findEventStreamPath(logger);
+  if (!esPath) {
+    logger?.info("[shroud] Could not locate pi-ai event-stream.js — streaming deobfuscation unavailable");
+    return;
+  }
+
+  try {
+    const content = readFileSync(esPath, "utf8");
+
+    // Already patched
+    if (content.includes(PATCH_MARKER)) return;
+
+    // Back up original
+    const backupPath = esPath + ".shroud-backup";
+    if (!existsSync(backupPath)) {
+      copyFileSync(esPath, backupPath);
+    }
+
+    // Patch: insert hook after "push(event) {"
+    const target = "    push(event) {";
+    if (!content.includes(target)) {
+      logger?.warn("[shroud] Could not find push(event) in event-stream.js — patch skipped");
+      return;
+    }
+
+    const patched = content.replace(target, target + "\n" + PATCH_CODE);
+    writeFileSync(esPath, patched);
+
+    // Clear Node.js V8 compile cache
+    const cacheDir = process.env.NODE_COMPILE_CACHE || "/tmp/node-compile-cache";
+    if (existsSync(cacheDir)) {
+      try {
+        const uid = process.getuid?.() ?? "";
+        for (const entry of readdirSync(cacheDir)) {
+          const full = join(cacheDir, entry);
+          if (uid && entry.endsWith(`-${uid}`)) {
+            rmSync(full, { recursive: true, force: true });
+          }
+        }
+      } catch {}
+    }
+
+    logger?.warn(
+      "[shroud] Patched pi-ai EventStream for streaming deobfuscation. " +
+      "Restart OpenClaw to activate: openclaw gateway restart",
+    );
+  } catch (err) {
+    logger?.warn(`[shroud] Failed to patch event-stream.js: ${String(err)}`);
+  }
+}
 
 export default {
   id: "shroud-privacy",
   name: "Shroud",
   register(api: any) {
+    // Ensure pi-ai is patched for streaming deobfuscation
+    ensureEventStreamPatched(api.logger);
+
     const config = resolveConfig(api.pluginConfig);
     const obfuscator = new Obfuscator(config);
 
