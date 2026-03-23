@@ -378,6 +378,11 @@ export class Obfuscator {
     return this._toolDepth;
   }
 
+  /** Reset tool depth counter (called at the start of each LLM turn). */
+  resetToolDepth(): void {
+    this._toolDepth = 0;
+  }
+
   /**
    * Detect and replace all sensitive entities in text.
    *
