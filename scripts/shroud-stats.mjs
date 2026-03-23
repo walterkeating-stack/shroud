@@ -6,7 +6,7 @@
  *   node scripts/shroud-stats.mjs                    # live stats from running gateway
  *   node scripts/shroud-stats.mjs --test "some text"  # obfuscate text then show hits
  *
- * Reads live stats from /tmp/shroud-stats.json (written by shroud_bridge.mjs).
+ * Reads live stats from /tmp/shroud-stats.json (written by the Shroud plugin).
  * Falls back to a fresh instance if no stats file exists.
  */
 

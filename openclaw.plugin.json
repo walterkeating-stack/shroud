@@ -61,11 +61,6 @@
     "canaryEnabled": { "label": "Enable Canary Tokens", "help": "Inject tracking tokens to detect PII leakage" },
     "auditEnabled": { "label": "Enable Audit Log", "help": "Tamper-evident obfuscation event tracking" }
   },
-  "ncg": {
-    "adapter": "ncg_adapter.py",
-    "adapterClass": "ShroudPlugin",
-    "bridge": "shroud_bridge.mjs"
-  },
   "compatibility": {
     "minOpenClawVersion": "2026.3.0"
   }
