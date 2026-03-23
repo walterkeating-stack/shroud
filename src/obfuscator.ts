@@ -700,6 +700,15 @@ export class Obfuscator {
     }
   }
 
+  /** Return the max fake value length in the store (for streaming holdback). */
+  maxFakeLength(): number {
+    let max = 0;
+    for (const [, fake] of this._store.allMappings()) {
+      if (fake.length > max) max = fake.length;
+    }
+    return max;
+  }
+
   /** Return stats from audit logger and store. */
   getStats(): object {
     const storeSize = this._store.size();

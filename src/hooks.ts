@@ -1,25 +1,20 @@
 /**
  * OpenClaw lifecycle hooks for the Shroud privacy plugin.
  *
- * Registers 6 hooks + 1 transport interceptor (version-adaptive):
+ * Registers 5 hooks + 1 global streaming deobfuscation hook:
  * 1. before_prompt_build   (async) -- obfuscate user prompt via prependContext
- * 2. before_message_write  (SYNC)  -- obfuscate every message written to the session transcript
- * 3. before_llm_send       (async) -- obfuscate LLM messages + install transformResponse (>=2026.3.14)
- * 4. before_tool_call      (async) -- deobfuscate tool params (+ depth tracking)
- * 5. tool_result_persist   (SYNC)  -- obfuscate tool result message
- * 6. message_sending       (async) -- deobfuscate outbound message content
- * 7. Transport interceptor         -- wraps Slack WebClient.apiCall for universal deobfuscation
- *
- * The transport interceptor is the universal fallback: it deobfuscates Slack
- * messages at the API-call level, independent of which OpenClaw hooks fire.
- * On >=2026.3.14, transformResponse handles deobfuscation first (for ALL
- * channels); the transport interceptor is a no-op since the text is already
- * deobfuscated.  On older versions where message_sending doesn't fire for
- * Slack, the interceptor catches it.
+ * 2. before_message_write  (SYNC)  -- bidirectional: obfuscate non-assistant,
+ *                                     DEOBFUSCATE assistant messages
+ * 3. before_tool_call      (async) -- deobfuscate tool params (+ depth tracking)
+ * 4. tool_result_persist   (SYNC)  -- obfuscate tool result message
+ * 5. message_sending       (async) -- deobfuscate outbound message content
+ * 6. globalThis.__shroudStreamDeobfuscate -- global function called by pi-ai's
+ *                                     patched EventStream.push() to deobfuscate
+ *                                     streaming text_delta events from ALL LLM
+ *                                     providers before OpenClaw processes them
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { createRequire } from "node:module";
 import { writeFileSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
@@ -209,91 +204,6 @@ function walkStrings(
 }
 
 // ---------------------------------------------------------------------------
-// Transport-level deobfuscation interceptor (fallback for all versions)
-// ---------------------------------------------------------------------------
-
-/**
- * Wraps the Slack WebClient.prototype.apiCall to deobfuscate outbound message
- * text before it hits the Slack API.  This is the universal fallback that works
- * on ANY OpenClaw version — it doesn't depend on hook dispatch at all.
- *
- * The @slack/web-api package is CJS and already loaded by OpenClaw, so it lives
- * in require.cache.  We find it there, wrap the prototype once, done.
- */
-function installTransportInterceptor(
-  obfuscator: Obfuscator,
-  logger: PluginApi["logger"],
-): void {
-  try {
-    const esmRequire = createRequire(import.meta.url);
-    const cache = esmRequire.cache;
-    if (!cache) return;
-
-    for (const key of Object.keys(cache)) {
-      if (!key.includes("@slack/web-api")) continue;
-      const mod = cache[key];
-      const WebClient = mod?.exports?.WebClient;
-      if (typeof WebClient !== "function") continue;
-
-      const proto = WebClient.prototype;
-      if (typeof proto.apiCall !== "function") continue;
-      if ((proto as any).__shroudPatched) return; // already wrapped
-
-      const origApiCall = proto.apiCall;
-
-      proto.apiCall = async function shroudApiCall(
-        method: string,
-        options?: Record<string, unknown>,
-      ) {
-        if (
-          (method === "chat.postMessage" || method === "chat.update") &&
-          options
-        ) {
-          // Deobfuscate the plain-text fallback
-          if (typeof options.text === "string") {
-            const original = options.text as string;
-            const deobfuscated = obfuscator.deobfuscate(original);
-            if (deobfuscated !== original) {
-              options = { ...options, text: deobfuscated };
-              logger?.info(
-                `[shroud][transport] deobfuscated Slack ${method}`,
-              );
-            }
-          }
-          // Deobfuscate blocks (rich text) — walk all text elements
-          if (Array.isArray(options.blocks)) {
-            const json = JSON.stringify(options.blocks);
-            const deobJson = obfuscator.deobfuscate(json);
-            if (deobJson !== json) {
-              try {
-                options = { ...options, blocks: JSON.parse(deobJson) };
-              } catch {
-                // If JSON parse fails, leave blocks unchanged
-              }
-            }
-          }
-        }
-        return origApiCall.call(this, method, options);
-      };
-
-      (proto as any).__shroudPatched = true;
-      logger?.info(
-        "[shroud] Installed Slack transport interceptor (universal deobfuscation fallback)",
-      );
-      return;
-    }
-
-    logger?.info(
-      "[shroud] Slack WebClient not found in require.cache — transport interceptor not installed (hooks-only mode)",
-    );
-  } catch (err) {
-    logger?.warn(
-      `[shroud] Failed to install transport interceptor: ${String(err)}`,
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Hook registration
 // ---------------------------------------------------------------------------
 
@@ -305,6 +215,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // 1. before_prompt_build (async): obfuscate user prompt
   // -----------------------------------------------------------------------
   api.on("before_prompt_build", async (event: any) => {
+
     // Reset tool depth at the start of each turn — tool calls from the
     // previous turn are complete, so the counter should not carry over.
     if (obfuscator.toolDepth > 0) {
@@ -335,16 +246,52 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 2. before_message_write (SYNC): obfuscate every message written to session
-  //    This ensures the LLM always sees obfuscated history, even on platforms
-  //    that don't support before_llm_send.
+  // 2. before_message_write (SYNC): bidirectional privacy filter
+  //    - User/system messages: obfuscate (protect PII from LLM context)
+  //    - Assistant messages: deobfuscate (replace fakes with real values)
+  //
+  //    This is the universal deobfuscation point — OpenClaw delivers the
+  //    message returned by this hook to ALL channels (Slack, WhatsApp, etc.)
+  //    Tradeoff: deobfuscated assistant text is stored in the transcript.
+  //    On the next turn, before_message_write re-obfuscates when those
+  //    messages (now with real PII) are written back into context.
   // -----------------------------------------------------------------------
   api.on("before_message_write", (event: any) => {
     if (!event?.message || typeof event.message !== "object") return;
 
     const msg = event.message;
+    const role = msg.role ?? "";
 
-    // Obfuscate string content
+    // --- Assistant messages: DEOBFUSCATE (fakes → real values) ---
+    if (role === "assistant") {
+      if (typeof msg.content === "string") {
+        const deobfuscated = obfuscator.deobfuscate(msg.content);
+        if (deobfuscated === msg.content) return;
+        api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
+        dumpStatsFile(obfuscator);
+        return { message: { ...msg, content: deobfuscated } };
+      }
+      if (Array.isArray(msg.content)) {
+        let changed = false;
+        const newContent = msg.content.map((block: any) => {
+          if (block && typeof block === "object" && typeof block.text === "string") {
+            const deobfuscated = obfuscator.deobfuscate(block.text);
+            if (deobfuscated !== block.text) {
+              changed = true;
+              return { ...block, text: deobfuscated };
+            }
+          }
+          return block;
+        });
+        if (!changed) return;
+        api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
+        dumpStatsFile(obfuscator);
+        return { message: { ...msg, content: newContent } };
+      }
+      return;
+    }
+
+    // --- Non-assistant messages: OBFUSCATE (real values → fakes) ---
     if (typeof msg.content === "string") {
       const result = obfuscator.obfuscate(msg.content);
       if (result.entities.length === 0) return;
@@ -387,60 +334,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 3. before_llm_send (async): obfuscate LLM context + install transformResponse
-  //    Available on OpenClaw >=2026.3.14. Silently ignored on older versions.
-  //    This is the most reliable deobfuscation path — transformResponse catches
-  //    ALL LLM output text including streaming deltas.
-  // -----------------------------------------------------------------------
-  api.on("before_llm_send", async (event: any) => {
-    const messages = event?.messages;
-    if (!Array.isArray(messages)) return;
-
-    // Obfuscate all string content in the message array
-    let totalEntities = 0;
-    const obfuscatedMessages = messages.map((msg: any) => {
-      if (!msg || typeof msg !== "object") return msg;
-      const walked = walkStrings(msg.content, (s: string) => {
-        const result = obfuscator.obfuscate(s);
-        totalEntities += result.entities.length;
-        return result.obfuscated;
-      });
-      if (walked === msg.content) return msg;
-      return { ...msg, content: walked };
-    });
-
-    if (totalEntities > 0) {
-      dumpStatsFile(obfuscator);
-      api.logger?.info(
-        `[shroud] before_llm_send: obfuscated ${totalEntities} entities in ${messages.length} messages`,
-      );
-    }
-
-    // Install transformResponse — this deobfuscates LLM output text.
-    // It's a synchronous function called on every response chunk.
-    const requestId = randomBytes(8).toString("hex");
-    const transformResponse = (text: string): string => {
-      if (auditActive) {
-        const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(text);
-        if (deobfuscated !== text) {
-          try {
-            emitDeobfuscationAudit(api.logger, config, requestId, replacementCount);
-          } catch { /* best-effort */ }
-          dumpStatsFile(obfuscator);
-        }
-        return deobfuscated;
-      }
-      return obfuscator.deobfuscate(text);
-    };
-
-    return {
-      messages: totalEntities > 0 ? obfuscatedMessages : undefined,
-      transformResponse,
-    };
-  });
-
-  // -----------------------------------------------------------------------
-  // 4. before_tool_call (async): deobfuscate tool params + track depth
+  // 3. before_tool_call (async): deobfuscate tool params + track depth
   // -----------------------------------------------------------------------
   api.on("before_tool_call", async (event: any) => {
     if (!event?.params || typeof event.params !== "object") return;
@@ -475,7 +369,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 5. tool_result_persist (SYNC): obfuscate tool result message
+  // 4. tool_result_persist (SYNC): obfuscate tool result message
   // -----------------------------------------------------------------------
   api.on("tool_result_persist", (event: any) => {
     if (!event?.message) return;
@@ -493,8 +387,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 6. message_sending (async): deobfuscate outbound message content
-  //    Fallback for versions without before_llm_send/transformResponse.
+  // 5. message_sending (async): deobfuscate outbound message content
   // -----------------------------------------------------------------------
   api.on("message_sending", async (event: any) => {
     if (typeof event?.content !== "string") return;
@@ -567,9 +460,92 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   });
 
   // -----------------------------------------------------------------------
-  // 7. Transport interceptor: universal deobfuscation fallback
-  //    Wraps Slack WebClient.apiCall so outbound messages are deobfuscated
-  //    regardless of which OpenClaw hooks fire (or don't).
+  // 6. LLM response interceptor: global deobfuscation hook
+  //    Set a global function that pi-ai's EventStream.push() calls to
+  //    deobfuscate streaming text events. Uses buffered deobfuscation
+  //    (accumulates text per-stream, deobfuscates the buffer, emits delta).
+  //    Works for ALL LLM providers across ALL channels.
   // -----------------------------------------------------------------------
-  installTransportInterceptor(obfuscator, api.logger);
+  // Deobfuscation strategy: accumulate text_delta chunks per-stream.
+  // On each chunk, deobfuscate the full buffer and emit the delta between
+  // what was previously emitted and the current deobfuscated result.
+  // If deobfuscation makes text shorter (fake→real), emit empty for
+  // overflow chunks. Partial fakes may briefly appear during streaming
+  // but the final message will be correct.
+  const SHROUD_BUF = Symbol("shroudStreamBuf");
+
+  (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
+    const isTextDelta = event.type === "text_delta";
+    const isMessageUpdateTextDelta = event.type === "message_update" &&
+      event.assistantMessageEvent?.type === "text_delta";
+
+    if (isTextDelta || isMessageUpdateTextDelta) {
+      let buf = stream[SHROUD_BUF];
+      if (!buf) { buf = { raw: "", emitted: 0 }; stream[SHROUD_BUF] = buf; }
+
+      const src = isMessageUpdateTextDelta ? event.assistantMessageEvent : event;
+      const chunk = typeof src.delta === "string" ? src.delta
+        : typeof src.text === "string" ? src.text : "";
+      if (!chunk) return event;
+
+      buf.raw += chunk;
+      const deob = obfuscator.deobfuscate(buf.raw);
+
+      // Emit the new portion of the deobfuscated buffer
+      let newText: string;
+      if (deob.length > buf.emitted) {
+        newText = deob.slice(buf.emitted);
+        buf.emitted = deob.length;
+      } else {
+        // Deobfuscated text is shorter — fake was replaced with shorter real.
+        // Emit empty for this chunk; the accumulated delivery text already
+        // has some fake chars that will be corrected on message_end.
+        newText = "";
+        buf.emitted = deob.length;
+      }
+
+      if (newText !== chunk) {
+        if (isMessageUpdateTextDelta) {
+          const patched = { ...src, delta: newText };
+          if (typeof src.text === "string") patched.text = newText;
+          event = { ...event, assistantMessageEvent: patched };
+        } else {
+          event = { ...event, delta: newText };
+          if (typeof event.text === "string") event.text = newText;
+        }
+      }
+    }
+
+    // On message_end/done: deobfuscate the full content in the partial/message
+    // to correct any partial fakes from streaming
+    const isEnd = event.type === "done" || event.type === "message_end" ||
+      event.type === "error" || event.type === "agent_end" ||
+      (event.type === "message_update" && (
+        event.assistantMessageEvent?.type === "text_end"
+      ));
+
+    if (isEnd) {
+      // Deobfuscate content blocks in the event's message/partial
+      const targets = [
+        event.message, event.partial,
+        event.assistantMessageEvent?.partial,
+        event.assistantMessageEvent?.message,
+      ];
+      for (const target of targets) {
+        if (target?.content && Array.isArray(target.content)) {
+          for (const block of target.content) {
+            if (block?.type === "text" && typeof block.text === "string") {
+              const deob = obfuscator.deobfuscate(block.text);
+              if (deob !== block.text) block.text = deob;
+            }
+          }
+        }
+      }
+      delete stream[SHROUD_BUF];
+    }
+
+    return event;
+  };
+  api.logger?.info("[shroud] Installed global streaming deobfuscation hook");
 }
+
