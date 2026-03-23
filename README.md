@@ -164,6 +164,37 @@ Disable or tune individual detection rules by name. Rule names match the built-i
 
 Rules not listed keep their defaults. Overrides apply to both direct regex detection and code-aware detection.
 
+### Conversational tools
+
+Shroud registers tools that the LLM can call during conversations:
+
+| Tool | What it does |
+|------|-------------|
+| `shroud-stats` | Show all detection rules with status, confidence, hit counts, store size, and config summary |
+| `shroud_status` | Quick stats: entity counts, session info, audit status (JSON) |
+| `shroud_reset` | Clear all mappings and start a fresh privacy session |
+
+You can also run the stats CLI directly:
+
+```bash
+node scripts/shroud-stats.mjs              # live rule table from running gateway
+node scripts/shroud-stats.mjs --json       # machine-readable JSON output
+node scripts/shroud-stats.mjs --test "Contact john@acme.com"  # test detection
+```
+
+Stats are read from `/tmp/shroud-stats.json` (override with `SHROUD_STATS_FILE` env var).
+
+### Auto-patching on first install
+
+On first load, Shroud automatically patches pi-ai's `EventStream.push()` to enable streaming deobfuscation across all LLM providers and delivery channels. The patch:
+
+1. Backs up the original file (`.shroud-backup`)
+2. Injects a 4-line hook that calls `globalThis.__shroudStreamDeobfuscate`
+3. Clears the Node.js V8 compile cache
+4. Triggers a gateway restart via SIGUSR1
+
+On subsequent loads, the patch is detected and skipped. To revert: restore the `.shroud-backup` file and restart.
+
 ### Rule hit counters
 
 Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in three places:
