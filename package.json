@@ -8,6 +8,8 @@
   "files": [
     "dist/",
     "openclaw.plugin.json",
+    "ncg_adapter.py",
+    "shroud_bridge.mjs",
     "LICENSE"
   ],
   "scripts": {
