@@ -12,9 +12,8 @@
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
-import { ShroudConfig, ObfuscationResult, ComplianceReport } from "./types.js";
+import { ShroudConfig, ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
-import { SiemEventBuilder } from "./siem.js";
 
 const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
 
@@ -152,7 +151,7 @@ function obfuscateMessagesWithStats(
   messages: unknown[],
   obfuscator: Obfuscator,
   config: ShroudConfig,
-): { messages: unknown[]; stats: ObfuscationStats; complianceReport?: ComplianceReport } {
+): { messages: unknown[]; stats: ObfuscationStats } {
   const stats: ObfuscationStats = {
     totalEntities: 0,
     byCategory: {},
@@ -165,7 +164,6 @@ function obfuscateMessagesWithStats(
   };
 
   const maxFakes = config.auditMaxFakesSample;
-  let lastComplianceReport: ComplianceReport | undefined;
 
   const obfuscatedMessages = messages.map((msg: any) => {
     if (!msg || typeof msg !== "object") return msg;
@@ -174,7 +172,6 @@ function obfuscateMessagesWithStats(
       const result = obfuscator.obfuscate(msg.content);
       stats.inputChars += msg.content.length;
       stats.outputChars += result.obfuscated.length;
-      if (result.complianceReport) lastComplianceReport = result.complianceReport;
       if (result.entities.length > 0) {
         stats.messagesTouched++;
         stats.blocksTouched++;
@@ -191,7 +188,6 @@ function obfuscateMessagesWithStats(
           const result = obfuscator.obfuscate(block.text);
           stats.inputChars += block.text.length;
           stats.outputChars += result.obfuscated.length;
-          if (result.complianceReport) lastComplianceReport = result.complianceReport;
           if (result.entities.length > 0) {
             msgTouched = true;
             stats.blocksTouched++;
@@ -209,7 +205,7 @@ function obfuscateMessagesWithStats(
     return msg;
   });
 
-  return { messages: obfuscatedMessages, stats, complianceReport: lastComplianceReport };
+  return { messages: obfuscatedMessages, stats };
 }
 
 function accumulateStats(
@@ -243,7 +239,6 @@ function emitAuditLog(
   totalMessages: number,
   concatenatedOriginal: string,
   concatenatedObfuscated: string,
-  complianceReport?: ComplianceReport,
 ): void {
   const byCatStr = Object.entries(stats.byCategory)
     .map(([k, v]) => `${k}:${v}`)
@@ -291,9 +286,6 @@ function emitAuditLog(
     if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
       obj.fakesSample = stats.fakesSample;
     }
-    if (complianceReport) {
-      obj.compliance = complianceReport;
-    }
     logger?.info(JSON.stringify(obj));
   } else {
     const parts = [
@@ -311,9 +303,6 @@ function emitAuditLog(
     }
     if (config.auditMaxFakesSample > 0 && stats.fakesSample.length > 0) {
       parts.push(`fakes=[${stats.fakesSample.join("|")}]`);
-    }
-    if (complianceReport && !complianceReport.passed) {
-      parts.push(`COMPLIANCE_WARN=missing:[${complianceReport.missing.join(",")}]`);
     }
     logger?.info(parts.join(" | "));
   }
@@ -360,19 +349,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     const result = obfuscator.obfuscate(prompt);
     if (result.entities.length === 0) return;
 
-    // Feature 4: Compliance warnings
-    if (result.complianceReport && !result.complianceReport.passed) {
-      api.logger?.warn(
-        `[shroud][compliance] Missing locked categories: ${result.complianceReport.missing.join(", ")}`,
-      );
-    }
-
-    // Feature 5: Exposure alerts
-    const alerts = obfuscator.getExposureAlerts();
-    for (const alert of alerts) {
-      api.logger?.warn(`[shroud][exposure] ${alert.message}`);
-    }
-
     dumpStatsFile(obfuscator);
     api.logger?.info(
       `[shroud] before_prompt_build: obfuscated ${result.entities.length} entities`,
@@ -409,7 +385,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (auditActive) {
       requestId = randomBytes(8).toString("hex");
 
-      const { messages: msgs, stats, complianceReport } = obfuscateMessagesWithStats(
+      const { messages: msgs, stats } = obfuscateMessagesWithStats(
         event.messages,
         obfuscator,
         config,
@@ -448,53 +424,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           totalMessages,
           concatenatedOriginal,
           concatenatedObfuscated,
-          complianceReport,
         );
       } catch {
         // Logging is best-effort
-      }
-
-      // Feature 4: Compliance warnings
-      if (complianceReport && !complianceReport.passed) {
-        api.logger?.warn(
-          `[shroud][compliance] Missing locked categories: ${complianceReport.missing.join(", ")}`,
-        );
-      }
-
-      // Feature 5: Exposure alerts
-      const alerts = obfuscator.getExposureAlerts();
-      for (const alert of alerts) {
-        api.logger?.warn(`[shroud][exposure] ${alert.message}`);
-      }
-
-      // SIEM: emit events
-      const sink = obfuscator.siemSink;
-      if (sink) {
-        const src = config.tenantId || "default";
-        const sid = (obfuscator.getStats() as any).audit?.sessionId ?? "";
-        if (stats.totalEntities > 0) {
-          sink.emit(SiemEventBuilder.obfuscationSummary(src, sid, requestId, {
-            totalEntities: stats.totalEntities,
-            byCategory: stats.byCategory,
-            byRule: stats.byRule,
-            inputChars: stats.inputChars,
-            outputChars: stats.outputChars,
-          }));
-        }
-        if (complianceReport && !complianceReport.passed) {
-          sink.emit(SiemEventBuilder.complianceViolation(src, sid, requestId, {
-            missingCategories: complianceReport.missing,
-            foundCategories: complianceReport.found,
-          }));
-        }
-        for (const alert of alerts) {
-          sink.emit(SiemEventBuilder.exposureAlert(src, sid, requestId, {
-            category: alert.category ?? "global",
-            count: alert.count ?? 0,
-            threshold: alert.threshold ?? 0,
-            message: alert.message,
-          }));
-        }
       }
     } else {
       obfuscatedMessages = obfuscateMessages(event.messages, obfuscator);
@@ -524,12 +456,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 // best-effort
               }
             }
-            // SIEM: deobfuscation event
-            if (replacementCount > 0 && obfuscator.siemSink) {
-              const src = config.tenantId || "default";
-              const sid = (obfuscator.getStats() as any).audit?.sessionId ?? "";
-              obfuscator.siemSink.emit(SiemEventBuilder.deobfuscation(src, sid, capturedReqId, { replacementCount }));
-            }
             dumpStatsFile(obfuscator);
             return deobfuscated;
           } catch {
@@ -551,7 +477,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("before_tool_call", async (event: any) => {
     if (!event?.params || typeof event.params !== "object") return;
 
-    // Feature 3: Tool chain depth tracking
+    // Tool chain depth tracking
     const depth = obfuscator.enterToolCall();
     if (depth > config.maxToolDepth) {
       api.logger?.warn(
@@ -586,7 +512,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("tool_result_persist", (event: any) => {
     if (!event?.message) return;
 
-    // Feature 3: Exit tool depth
+    // Exit tool depth
     obfuscator.exitToolCall();
 
     const obfuscated = walkStrings(event.message, (s) => {
@@ -655,214 +581,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         `Store: ${obStats.storeMappings} active mappings`,
         `Audit: ${stats.auditEnabled || stats.verboseLogging ? "enabled" : "disabled"}`,
         `Redaction: ${stats.redactionLevel}`,
-        `Provenance: ${stats.provenanceTagging ? "on" : "off"}`,
-        `Tenant: ${stats.tenantId || "none"}`,
-        `Shared store: ${stats.sharedStorePath ? "yes" : "no"}`,
       ];
-
-      if (stats.lockedCategories.length > 0) {
-        lines.push(`Locked categories: ${stats.lockedCategories.join(", ")}`);
-      }
 
       return { content: [{ type: "text", text: lines.join("\n") }] };
     },
   });
-
-  // -----------------------------------------------------------------------
-  // Tool: shroud-session-export — export mapping table for handoff
-  // -----------------------------------------------------------------------
-  if (config.sessionHandoff) {
-    api.registerTool({
-      name: "shroud-session-export",
-      description: "Export Shroud mapping table as encrypted blob for session handoff.",
-      inputSchema: { type: "object", properties: {}, additionalProperties: false },
-      handler: async () => {
-        try {
-          const blob = obfuscator.exportSession();
-          return {
-            content: [{ type: "text", text: `Session exported (${blob.length} chars). Pass this to shroud-session-import in the new session:\n\n${blob}` }],
-          };
-        } catch (e: any) {
-          return {
-            content: [{ type: "text", text: `Export failed: ${e.message}` }],
-          };
-        }
-      },
-    });
-
-    api.registerTool({
-      name: "shroud-session-import",
-      description: "Import Shroud mapping table from encrypted blob for session continuity.",
-      inputSchema: {
-        type: "object",
-        properties: { blob: { type: "string", description: "Encrypted session blob" } },
-        required: ["blob"],
-        additionalProperties: false,
-      },
-      handler: async (input: { blob: string }) => {
-        try {
-          obfuscator.importSession(input.blob);
-          return {
-            content: [{ type: "text", text: "Session imported successfully. Deobfuscation will now work for values from the previous session." }],
-          };
-        } catch (e: any) {
-          return {
-            content: [{ type: "text", text: `Import failed: ${e.message}` }],
-          };
-        }
-      },
-    });
-  }
-
-  // -----------------------------------------------------------------------
-  // Tool: shroud-rotate-key — rotate the secret key
-  // -----------------------------------------------------------------------
-  api.registerTool({
-    name: "shroud-rotate-key",
-    description: "Rotate the Shroud secret key. Existing mappings remain valid. New obfuscations use the new key.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        key: { type: "string", description: "New secret key (min 16 chars). Auto-generated if omitted." },
-        expiresAt: { type: "string", description: "Optional ISO-8601 expiration for the new key." },
-      },
-      additionalProperties: false,
-    },
-    handler: async (input: { key?: string; expiresAt?: string }) => {
-      try {
-        const { randomBytes } = await import("node:crypto");
-        const newKey = input.key ?? randomBytes(32).toString("hex");
-        if (newKey.length < 16) {
-          return { content: [{ type: "text", text: "Key must be at least 16 characters." }] };
-        }
-        const vk = obfuscator.rotateKey(newKey, input.expiresAt);
-        const info = obfuscator.getKeyInfo();
-        return {
-          content: [{
-            type: "text",
-            text: `Key rotated successfully.\nNew version: ${vk.version}\nActive: v${info.active}\nTotal keys: ${info.versions.length}\nExpired: ${info.expired.length}\nRetired: ${info.retired.length}`,
-          }],
-        };
-      } catch (e: any) {
-        return { content: [{ type: "text", text: `Key rotation failed: ${e.message}` }] };
-      }
-    },
-  });
-
-  // -----------------------------------------------------------------------
-  // Tool: shroud-key-status — show key ring status
-  // -----------------------------------------------------------------------
-  api.registerTool({
-    name: "shroud-key-status",
-    description: "Show Shroud key ring status: active version, all versions, expired/retired keys.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
-    handler: async () => {
-      const info = obfuscator.getKeyInfo();
-      const ring = obfuscator.keyRing;
-      const lines = [
-        `Active key: v${info.active}`,
-        `Total keys: ${info.versions.length}`,
-        "",
-      ];
-      for (const vk of ring.allKeysRaw()) {
-        const flags = [];
-        if (vk.version === info.active) flags.push("ACTIVE");
-        if (vk.retired) flags.push("RETIRED");
-        if (info.expired.includes(vk.version)) flags.push("EXPIRED");
-        const expiry = vk.expiresAt ? ` expires=${vk.expiresAt}` : "";
-        lines.push(`  v${vk.version}: created=${vk.createdAt}${expiry} [${flags.join(", ") || "ok"}]`);
-      }
-      return { content: [{ type: "text", text: lines.join("\n") }] };
-    },
-  });
-
-  // -----------------------------------------------------------------------
-  // Tool: shroud-monitor — show monitor alerts and stats
-  // -----------------------------------------------------------------------
-  if (config.monitorEnabled) {
-    api.registerTool({
-      name: "shroud-monitor",
-      description: "Show Shroud active monitoring alerts and pipeline stats.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          unacknowledgedOnly: { type: "boolean", description: "Show only unacknowledged alerts." },
-        },
-        additionalProperties: false,
-      },
-      handler: async (input: { unacknowledgedOnly?: boolean }) => {
-        const monitor = obfuscator.monitor;
-        if (!monitor) {
-          return { content: [{ type: "text", text: "Monitoring is not enabled." }] };
-        }
-        const stats = monitor.getStats();
-        const alerts = monitor.getAlerts({ unacknowledgedOnly: input.unacknowledgedOnly });
-        const lines = [
-          `Monitor Pipeline Stats`,
-          `──────────────────────`,
-          `Total alerts: ${stats.totalAlerts}`,
-          `Unacknowledged: ${stats.unacknowledged}`,
-          `Current rate: ${stats.currentRate} entities/window`,
-          `Baseline: ${stats.baseline} entities/window`,
-          `Categories seen: ${stats.categoriesSeen.join(", ") || "none"}`,
-          ``,
-          `By type: ${Object.entries(stats.byType).map(([k, v]) => `${k}:${v}`).join(", ") || "none"}`,
-          ``,
-          `Recent alerts (${alerts.length}):`,
-        ];
-        for (const a of alerts.slice(-20)) {
-          lines.push(`  [${a.severity}] ${a.alertType}: ${a.message} ${a.acknowledged ? "(ack)" : ""}`);
-        }
-        return { content: [{ type: "text", text: lines.join("\n") }] };
-      },
-    });
-  }
-
-  // -----------------------------------------------------------------------
-  // Tool: shroud-sessions — manage per-session isolation
-  // -----------------------------------------------------------------------
-  if (config.sessionIsolation) {
-    api.registerTool({
-      name: "shroud-sessions",
-      description: "List, create, switch, or destroy isolated Shroud sessions.",
-      inputSchema: {
-        type: "object",
-        properties: {
-          action: { type: "string", enum: ["list", "create", "switch", "destroy"], description: "Action to perform." },
-          sessionId: { type: "string", description: "Session ID (for switch/destroy)." },
-        },
-        required: ["action"],
-        additionalProperties: false,
-      },
-      handler: async (input: { action: string; sessionId?: string }) => {
-        try {
-          if (input.action === "list") {
-            const sessions = obfuscator.sessionManager?.listSessions() ?? [];
-            if (sessions.length === 0) return { content: [{ type: "text", text: "No sessions." }] };
-            const lines = sessions.map((s) =>
-              `${s.active ? "→" : " "} ${s.id} (${s.storeSize} mappings, created ${s.createdAt})`,
-            );
-            return { content: [{ type: "text", text: lines.join("\n") }] };
-          }
-          if (input.action === "create") {
-            const id = obfuscator.createSession(input.sessionId);
-            return { content: [{ type: "text", text: `Created and switched to session: ${id}` }] };
-          }
-          if (input.action === "switch") {
-            if (!input.sessionId) return { content: [{ type: "text", text: "sessionId required for switch." }] };
-            obfuscator.switchSession(input.sessionId);
-            return { content: [{ type: "text", text: `Switched to session: ${input.sessionId}` }] };
-          }
-          if (input.action === "destroy") {
-            if (!input.sessionId) return { content: [{ type: "text", text: "sessionId required for destroy." }] };
-            obfuscator.destroySession(input.sessionId);
-            return { content: [{ type: "text", text: `Destroyed session: ${input.sessionId}` }] };
-          }
-          return { content: [{ type: "text", text: `Unknown action: ${input.action}` }] };
-        } catch (e: any) {
-          return { content: [{ type: "text", text: `Session error: ${e.message}` }] };
-        }
-      },
-    });
-  }
 }

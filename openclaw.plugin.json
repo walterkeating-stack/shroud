@@ -1,7 +1,7 @@
 {
   "id": "shroud-privacy",
   "name": "Shroud",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "Privacy obfuscation with deterministic fake values and deobfuscation — PII never reaches the LLM, tool calls still work",
   "configSchema": {
     "type": "object",
@@ -10,7 +10,7 @@
       "secretKey": { "type": "string", "description": "HMAC secret for deterministic mapping. Auto-generated if empty." },
       "persistentSalt": { "type": "string", "description": "Fixed salt for cross-session consistency. Empty = random per session." },
       "minConfidence": { "type": "number", "minimum": 0, "maximum": 1, "default": 0, "description": "Minimum detector confidence to obfuscate" },
-      "allowlist": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Values to never obfuscate" },
+      "allowlist": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Values to never obfuscate (supports * and ? wildcards)" },
       "denylist": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Values to always obfuscate" },
       "canaryEnabled": { "type": "boolean", "default": false, "description": "Inject tracking tokens to detect data leakage" },
       "canaryPrefix": { "type": "string", "default": "SHROUD-CANARY", "description": "Prefix for canary tokens" },
@@ -48,23 +48,10 @@
         "default": [],
         "description": "User-defined regex patterns for custom PII detection"
       },
-      "tenantId": { "type": "string", "default": "", "description": "Multi-tenant isolation: tenant ID for HMAC keying. Override with SHROUD_TENANT_ID env var." },
-      "lockedCategories": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Compliance mode: categories that MUST be detected — missing categories trigger warnings" },
       "maxToolDepth": { "type": "integer", "default": 10, "minimum": 1, "maximum": 100, "description": "Max nested tool call depth before warning" },
-      "exposureWindow": { "type": "integer", "default": 60000, "minimum": 1000, "description": "Sliding window (ms) for exposure rate tracking" },
-      "exposureThresholds": {
-        "type": "object",
-        "additionalProperties": { "type": "integer" },
-        "default": {},
-        "description": "Per-category max detections per window (e.g. {\"email\": 10, \"hostname\": 20})"
-      },
-      "exposureGlobalThreshold": { "type": "integer", "default": 100, "minimum": 1, "description": "Global max detections per exposure window" },
-      "policyFile": { "type": "string", "default": "", "description": "Path to external JSON policy file (allowlist/denylist with glob/regex support)" },
       "redactionLevel": { "type": "string", "enum": ["full", "masked", "stats"], "default": "full", "description": "Output mode: full (fake values), masked (partial masking), stats (category placeholders)" },
-      "sharedStorePath": { "type": "string", "default": "", "description": "File path for cross-agent shared mapping store. Override with SHROUD_SHARED_STORE env var." },
-      "sharedStoreTtlMs": { "type": "integer", "default": 5000, "minimum": 100, "description": "Cache TTL for shared store reads (ms)" },
-      "provenanceTagging": { "type": "boolean", "default": false, "description": "Embed «shroud:category:hash» markers in output for downstream audit trail" },
-      "sessionHandoff": { "type": "boolean", "default": false, "description": "Enable encrypted session export/import tools for cross-session continuity" }
+      "dryRun": { "type": "boolean", "default": false, "description": "Detect entities but don't replace — useful for testing detection rules" },
+      "maxStoreMappings": { "type": "integer", "default": 0, "minimum": 0, "description": "Max mapping store size; oldest entries evicted when exceeded. 0 = unlimited." }
     }
   },
   "uiHints": {

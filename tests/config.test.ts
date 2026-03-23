@@ -42,24 +42,4 @@ describe("Config validation (QW7)", () => {
     expect(issues.some((i) => i.field === "dryRun" && i.severity === "info")).toBe(true);
   });
 
-  test("sharedStorePath + tenantId conflict produces warning", () => {
-    const config = resolveConfig({ sharedStorePath: "/tmp/shared.json", tenantId: "t1" });
-    const issues = validateConfig(config);
-    expect(issues.some((i) => i.field === "sharedStorePath" && i.severity === "warning")).toBe(true);
-  });
-
-  test("missing policy file produces warning", () => {
-    const config = resolveConfig({ policyFile: "/nonexistent/policy.json" });
-    const issues = validateConfig(config);
-    expect(issues.some((i) => i.field === "policyFile" && i.severity === "warning")).toBe(true);
-  });
-
-  test("very short exposure window produces warning", () => {
-    const config = resolveConfig({
-      exposureWindow: 100,
-      exposureThresholds: { email: 5 },
-    });
-    const issues = validateConfig(config);
-    expect(issues.some((i) => i.field === "exposureWindow" && i.severity === "warning")).toBe(true);
-  });
 });

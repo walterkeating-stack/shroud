@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-03-23
+
+### Changed
+- **Community Edition release** — Shroud is now split into Community (open-source, npm) and Enterprise (licensed) editions. This release is the Community Edition with all core privacy features intact.
+- Enterprise features (multi-tenant, SIEM push, key rotation, active monitoring, policy-as-code, shared store, compliance mode, exposure tracking, hot-reload, session isolation, session handoff, provenance tagging, corpus pre-scanning) are available in the Enterprise Edition.
+
+### Community Edition includes
+- Full detection engine (27 categories, regex + context + code-aware + custom patterns)
+- Deterministic obfuscation/deobfuscation with HMAC-keyed fake values
+- All generators (IPs, names, emails, phones, MACs, hostnames, network infra)
+- Subnet-aware deobfuscation (CGNAT IPv4 + ULA IPv6 residual recovery)
+- Canary token injection for leak detection
+- Tamper-evident audit logging with proof hashes
+- Three redaction modes (full, masked, stats)
+- Allowlist/denylist with wildcard support
+- Custom regex patterns
+- Dry-run mode
+- Tool chain depth tracking
+- LRU store eviction
+- All performance optimizations from v1.5.1
+
 ## [1.5.1] - 2026-03-23
 
 ### Fixed
