@@ -105,9 +105,18 @@ function ensureEventStreamPatched(logger: any): void {
     }
 
     logger?.warn(
-      "[shroud] Patched pi-ai EventStream for streaming deobfuscation. " +
-      "Restart OpenClaw to activate: openclaw gateway restart",
+      "[shroud] Patched pi-ai EventStream for streaming deobfuscation. Restarting gateway...",
     );
+
+    // Auto-restart: send SIGUSR1 to self after a short delay.
+    // OpenClaw handles SIGUSR1 as a graceful restart signal.
+    setTimeout(() => {
+      try {
+        process.kill(process.pid, "SIGUSR1");
+      } catch {
+        logger?.warn("[shroud] Auto-restart failed. Run: openclaw gateway restart");
+      }
+    }, 3000);
   } catch (err) {
     logger?.warn(`[shroud] Failed to patch event-stream.js: ${String(err)}`);
   }
