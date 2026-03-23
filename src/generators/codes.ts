@@ -208,7 +208,7 @@ export class CodeGenerator implements BaseGenerator {
       const countryMatch = original.match(/^\+(\d{1,3})/);
       const cc = countryMatch ? countryMatch[1] : "1";
       if (!hasSep) {
-        // Original had no separators (e.g. +4366488643158) — keep it compact
+        // Original had no separators (e.g. +15551234567) — keep it compact
         return `+${cc}${area}${mid}${lastStr}`;
       }
       return `+${cc}${sep}${area}${sep}${mid}${sep}${lastStr}`;

@@ -3,5 +3,5 @@
 set -e
 cd "$(dirname "$0")"
 npm run build
-python3 /home/ka/ncg/agent.py plugin install .
+python3 "$HOME/ncg/agent.py" plugin install .
 echo "Deployed. Restart NCG agent to pick up changes."

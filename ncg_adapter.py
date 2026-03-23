@@ -38,7 +38,7 @@ from plugins.base import NCGPlugin
 log = logging.getLogger("ncg.shroud")
 
 # Legacy defaults — used only for backward-compat direct instantiation
-_DEFAULT_SHROUD_PATH = "/home/ka/shroud/dist"
+_DEFAULT_SHROUD_PATH = str(Path(__file__).resolve().parent / "dist")
 _LEGACY_BRIDGE_SCRIPT = Path(__file__).parent / "shroud_bridge.mjs"
 _LEGACY_CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "shroud.yaml"
 

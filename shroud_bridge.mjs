@@ -29,8 +29,11 @@ import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 import { writeFileSync } from "node:fs";
 
-// Shroud dist path passed as first CLI arg (default: /home/ka/shroud/dist)
-const shroudDist = process.argv[2] || "/home/ka/shroud/dist";
+// Shroud dist path passed as first CLI arg (default: ./dist relative to this script)
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const shroudDist = process.argv[2] || resolve(__dirname, "dist");
 
 // Dynamically import the Obfuscator and config resolver
 const { Obfuscator } = await import(

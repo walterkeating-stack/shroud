@@ -26,7 +26,7 @@ All notable changes to this project will be documented in this file.
 ## [1.5.1] - 2026-03-23
 
 ### Fixed
-- **Phone number format preservation** — fake phone numbers now preserve the original separator style. Numbers without separators (e.g. `+4366488643158`) produce compact fakes without spaces. Previously, spaces were always inserted, causing LLMs to strip them in tool call parameters and breaking `before_tool_call` deobfuscation — which caused WhatsApp sends via cron to fail with fake target numbers.
+- **Phone number format preservation** — fake phone numbers now preserve the original separator style. Numbers without separators (e.g. `+15551234567`) produce compact fakes without spaces. Previously, spaces were always inserted, causing LLMs to strip them in tool call parameters and breaking `before_tool_call` deobfuscation — which caused WhatsApp sends via cron to fail with fake target numbers.
 - **Tool chain depth counter reset** — `_toolDepth` now resets at the start of each `before_llm_send` turn. Previously the counter never reset between turns, causing false "tool chain depth exceeds max" warnings after normal multi-tool conversations.
 
 ### Performance
