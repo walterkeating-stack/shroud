@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-shroud",
+  "name": "shroud-privacy",
   "version": "1.5.1",
   "description": "Privacy obfuscation plugin for OpenClaw and NCG — deterministic fake values with deobfuscation",
   "type": "module",

@@ -26,7 +26,7 @@ let pluginConfig = {};
 try {
   const configPath = resolve(process.env.HOME || "~", ".openclaw", "openclaw.json");
   const raw = JSON.parse(readFileSync(configPath, "utf-8"));
-  const entry = raw?.plugins?.entries?.["openclaw-shroud"];
+  const entry = raw?.plugins?.entries?.["shroud-privacy"];
   if (entry?.config) pluginConfig = entry.config;
 } catch {
   // skip

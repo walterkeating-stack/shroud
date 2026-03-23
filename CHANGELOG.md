@@ -21,7 +21,7 @@ All notable changes to this project will be documented in this file.
 ## [1.5.0] - 2026-03-23
 
 ### Added
-- **NCG plugin system support** — Shroud now ships with `ncg_adapter.py` (Python bridge adapter) and `shroud_bridge.mjs` (Node.js JSON-RPC bridge) in the npm package. NCG agents can install Shroud with `python agent.py plugin install openclaw-shroud`, matching OpenClaw's `openclaw plugins install` UX.
+- **NCG plugin system support** — Shroud now ships with `ncg_adapter.py` (Python bridge adapter) and `shroud_bridge.mjs` (Node.js JSON-RPC bridge) in the npm package. NCG agents can install Shroud with `python agent.py plugin install shroud-privacy`, matching OpenClaw's `openclaw plugins install` UX.
 - **`ncg` manifest field** — `openclaw.plugin.json` now includes an `ncg` block declaring the adapter, adapter class, and bridge file for automatic plugin discovery.
 - **`compatibility` manifest field** — `minOpenClawVersion` in `openclaw.plugin.json` for version compatibility checks.
 - **`deploy-ncg.sh`** — Local development deploy script for NCG (builds and installs to `~/.ncg/extensions/`).
