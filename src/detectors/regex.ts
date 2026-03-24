@@ -989,6 +989,144 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.85,
   },
 
+  // --- VXLAN / VNI ---
+  {
+    // "vni 10100", "member vni 50000", "vxlan vni 10100"
+    name: "vxlan_vni",
+    pattern: /(?:(?:member\s+)?vni\s+|vxlan\s+vni\s+)(\d+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.90,
+  },
+
+  // --- Juniper VLAN ---
+  {
+    // "set vlans SERVERVLAN vlan-id 100"
+    name: "juniper_vlan_name",
+    pattern: /(?:set\s+vlans\s+)(\S+)/g,
+    category: Category.VLAN_ID,
+    confidence: 0.90,
+  },
+  {
+    // "vlan-id 100" (Juniper style)
+    name: "juniper_vlan_id",
+    pattern: /(?:vlan-id\s+)(\d+)/g,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+  {
+    // "vlan members SERVERVLAN" (Juniper interface vlan member reference)
+    name: "juniper_vlan_members",
+    pattern: /(?:vlan\s+members\s+)(\S+)/g,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- Standalone VLAN ID ---
+  {
+    // "switchport access vlan 100", "switchport trunk native vlan 100"
+    // Only match switchport context to avoid false positives on prose like "move to VLAN 100"
+    name: "switchport_vlan_id",
+    pattern: /(?:switchport\s+(?:access|trunk\s+native)\s+vlan\s+)(\d+)\b/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+  {
+    // "vlan 100" at start of line (config context, not prose)
+    name: "vlan_config_id",
+    pattern: /(?:^|\n)\s*vlan\s+(\d+)\s*$/gm,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- L2VPN VPN ID ---
+  {
+    // "vpn id 200"
+    name: "l2vpn_vpn_id",
+    pattern: /(?:vpn\s+id\s+)(\d+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- Cisco EIGRP AS ---
+  {
+    // "router eigrp 100"
+    name: "eigrp_as",
+    pattern: /(?:router\s+eigrp\s+)(\d+)/gi,
+    category: Category.BGP_ASN,
+    confidence: 0.90,
+  },
+
+  // --- MPLS label range ---
+  {
+    // "mpls label range 100 199"
+    name: "mpls_label_range",
+    pattern: /(?:mpls\s+label\s+range\s+)(\d+\s+\d+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- Cisco banner ---
+  {
+    // "banner motd ^C ... ^C" or "banner login ^C ... ^C"
+    // Captures content between delimiter characters
+    name: "cisco_banner",
+    pattern: /(?:banner\s+(?:motd|login|exec)\s+(\S))\s*([\s\S]*?)\1/gm,
+    category: Category.ORG_NAME,
+    confidence: 0.85,
+  },
+
+  // --- NTP trusted key ---
+  {
+    // "ntp trusted-key 1" — the key ID reveals NTP infra
+    name: "ntp_trusted_key",
+    pattern: /(?:ntp\s+trusted-key\s+)(\d+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.80,
+  },
+
+  // --- Cisco line password (console/aux/vty without type number) ---
+  {
+    // "password VALUE" (without a type number prefix, i.e. not "password 7 XXX")
+    // Appears under "line con 0", "line aux 0", "line vty 0 15"
+    name: "cisco_line_password",
+    pattern: /(?:^\s*password\s+)(?![057]\s)(\S+)/gm,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+
+  // --- RADIUS/TACACS server name ---
+  {
+    // "tacacs server TAC-PRI", "radius server RAD-01"
+    name: "tacacs_server_name",
+    pattern: /(?:tacacs\s+server\s+)(\S+)/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.85,
+  },
+  {
+    name: "radius_server_name",
+    pattern: /(?:radius\s+server\s+)(\S+)/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.85,
+  },
+
+  // --- Juniper firewall filter name ---
+  {
+    // "set firewall family inet filter FILTER-NAME"
+    name: "juniper_firewall_filter",
+    pattern: /(?:set\s+firewall\s+family\s+\S+\s+filter\s+)(\S+)/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
+  },
+
+  // --- Palo Alto service group ---
+  {
+    // "set service-group SG-NAME"
+    name: "panos_service_group",
+    pattern: /(?:set\s+service-group\s+)(\S+)/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
+  },
+
 ];
 
 /** Check if two spans overlap. */
