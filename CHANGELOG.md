@@ -2,6 +2,59 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.18] - 2026-03-24
+
+### Fixed
+- **CGNAT deobfuscation overhaul** — complete rewrite of the CGNAT fake IP cleanup pipeline:
+  - **Subnet overlap bug** — `SubnetMapper` now uses byte-offset allocation with proper alignment, preventing /28 subnets from landing inside /24 ranges
+  - **Wrong subnet match** — residual deobfuscation now uses longest-prefix match instead of first match, fixing IPs mapping to wrong real subnets
+  - **Invalid octets** — input validation rejects IPs with octets > 255 before processing (prevents `10.16.26.352` corruption)
+  - **`deobfuscateWithStats()` missing range cleanup** — the NCG bridge code path skipped CGNAT range description cleanup entirely, causing all `100.64.x.x/xx` patterns to leak through
+  - **Hyphenated range notation** — LLM-generated ranges like `100.64.16-19.0/24` now matched and replaced
+  - **3-octet short forms** — patterns like `100.64.8-14` (no fourth octet) now caught
+  - **Range handler fallback** — CGNAT IPs with no subnet mapping no longer fall through both handlers
+- **Tool call display** — NCG agent now shows real device names in tool call output (was showing fake SITE-X-Y-NN names)
+
+### Added
+- **Deobfuscation corruption test suite** — 5 new unit tests covering subnet overlap, wrong match, invalid octets, and end-to-end multi-subnet scenarios
+- **Multi-subnet integration tests** — 5 new test harness scenarios for NCG-style network inventories with mixed prefix lengths
+- **OpenClaw integration tests (Phase 2)** — 11 tests running real OpenClaw agent with Shroud plugin inside sandbox
+
+## [2.0.17] - 2026-03-24
+
+### Fixed
+- VRF detection (6 new patterns: vrf_name_classic, vrf_definition, vrf_forwarding, vrf_junos, route_distinguisher, route_target)
+- Infrastructure hostname detection (PROD-DB-01, AMS-CORE-SW-01 style)
+- CGNAT range description leaks in LLM summaries
+- CGNAT CIDR suffix `/10` preserved incorrectly after deobfuscation
+- Doc hostname prefix exclusions (TEST-NET-*, EXAMPLE-*, DEMO-*)
+
+## [2.0.16] - 2026-03-24
+
+### Fixed
+- VRF detection, hostname patterns, CGNAT range fixes (cherry-picked from feat/agent-protocol)
+
+## [2.0.15] - 2026-03-24
+
+### Fixed
+- CGNAT range description leaks in deobfuscation output
+
+## [2.0.14] - 2026-03-24
+
+### Fixed
+- Stats CLI docs for npm
+
+## [2.0.8] – 2.0.13 - 2026-03-23
+
+### Added
+- `shroud-stats` CLI tool with rulebase view and hit counters
+- APP server (Agent Privacy Protocol reference implementation)
+- APP client (Python SDK, 542 lines)
+- NCG adapter via APP protocol
+
+### Fixed
+- Various stats CLI path and documentation fixes
+
 ## [2.0.7] - 2026-03-23
 
 ### Added
