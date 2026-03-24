@@ -734,8 +734,9 @@ export class Obfuscator {
 
     let count = 0;
     const result = text.replace(CGNAT_RANGE_DESC_RE, (match) => {
-      // Don't replace if it's a standard CGNAT IP (handled by _deobfuscateResidualCgnat)
-      if (/^\d+\.\d+\.\d+\.\d+$/.test(match)) return match;
+      // Skip bare IPs without CIDR/range notation ONLY if they were already
+      // handled by _deobfuscateResidualCgnat (i.e., no longer contain 100.64)
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(match) && !match.startsWith("100.")) return match;
 
       // For range descriptions, try to find the best real prefix.
       // First try exact third-octet match, then fall back to best prefix.
