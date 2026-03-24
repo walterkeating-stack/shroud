@@ -678,16 +678,28 @@ export class Obfuscator {
       }
     }
 
-    // Also build a specific mapping: for each fake subnet's first two octets,
-    // map to the real subnet's first two octets
-    const fakeToRealOctetMap = new Map<string, string>();
+    // Build mapping: fake subnet prefix → {realPrefix, realPrefixLen}
+    const fakeToRealMap = new Map<string, { prefix: string; prefixLen: number }>();
+    let mostCommonPrefixLen = 24; // default
+    const prefixLenCounts = new Map<number, number>();
     for (const [fakeNetInt, key] of mapper.subnetRev) {
       const fakeIp = intToIp(fakeNetInt);
       const fakePrefix = fakeIp.split(".").slice(0, 2).join(".");
-      const [realNetStr] = key.split(",");
+      const [realNetStr, prefixLenStr] = key.split(",");
       const realIp = intToIp(parseInt(realNetStr, 10));
       const realPrefix = realIp.split(".").slice(0, 2).join(".");
-      fakeToRealOctetMap.set(fakePrefix, realPrefix);
+      const prefixLen = parseInt(prefixLenStr, 10);
+      fakeToRealMap.set(fakePrefix, { prefix: realPrefix, prefixLen });
+      prefixLenCounts.set(prefixLen, (prefixLenCounts.get(prefixLen) ?? 0) + 1);
+    }
+
+    // Find most common prefix length
+    let bestPrefixLenCount = 0;
+    for (const [pLen, cnt] of prefixLenCounts) {
+      if (cnt > bestPrefixLenCount) {
+        mostCommonPrefixLen = pLen;
+        bestPrefixLenCount = cnt;
+      }
     }
 
     let count = 0;
@@ -699,14 +711,29 @@ export class Obfuscator {
       const parts = match.split(".");
       if (parts.length >= 2) {
         const fakePrefix = parts[0] + "." + parts[1];
-        const realPrefix = fakeToRealOctetMap.get(fakePrefix) || bestPrefix;
+        const mapping = fakeToRealMap.get(fakePrefix);
+        const realPrefix = mapping?.prefix || bestPrefix;
+        const realPrefixLen = mapping?.prefixLen || mostCommonPrefixLen;
         count++;
-        // Replace CGNAT octets with real octets, preserve the rest (x, /xx, etc.)
-        return match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, realPrefix);
+
+        // Replace CGNAT octets with real octets
+        let replaced = match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, realPrefix);
+
+        // Fix CIDR suffix: if the match has /NN where NN is a CGNAT-range prefix length
+        // (like /10 from 100.64.0.0/10), replace with the real prefix length
+        replaced = replaced.replace(/\/10\b/, `/${realPrefixLen}`);
+
+        // Also fix generic /xx notation
+        replaced = replaced.replace(/\/xx\b/, `/${realPrefixLen}`);
+
+        return replaced;
       }
 
       count++;
-      return match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, bestPrefix);
+      let replaced = match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, bestPrefix);
+      replaced = replaced.replace(/\/10\b/, `/${mostCommonPrefixLen}`);
+      replaced = replaced.replace(/\/xx\b/, `/${mostCommonPrefixLen}`);
+      return replaced;
     });
 
     return { text: result, count };

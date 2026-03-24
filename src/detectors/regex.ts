@@ -36,6 +36,12 @@ const DOC_HOSTNAMES = new Set([
   "YOUR_HOST", "YOURHOST", "hostname", "example",
 ]);
 
+/** Hostname prefixes that are documentation/example labels, not real devices. */
+const DOC_HOSTNAME_PREFIXES = [
+  "TEST-NET-", "TEST-", "RFC-", "EXAMPLE-", "SAMPLE-", "DEMO-", "DUMMY-",
+  "PLACEHOLDER-", "CHANGEME-", "TODO-",
+];
+
 /** IPv6 documentation/reserved prefixes that should not be obfuscated. */
 const DOC_IPV6_PREFIXES = [
   "2001:db8:",    // RFC 3849 documentation prefix
@@ -83,7 +89,11 @@ export function isDocExample(value: string, category: Category): boolean {
       return false;
 
     case Category.HOSTNAME:
-      return DOC_HOSTNAMES.has(value) || DOC_HOSTNAMES.has(value.toUpperCase());
+      if (DOC_HOSTNAMES.has(value) || DOC_HOSTNAMES.has(value.toUpperCase())) return true;
+      for (const pfx of DOC_HOSTNAME_PREFIXES) {
+        if (value.toUpperCase().startsWith(pfx)) return true;
+      }
+      return false;
 
     default:
       return false;
@@ -340,6 +350,49 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
   },
+  // --- VRF ---
+  {
+    // "ip vrf VRF-NAME" (IOS classic) — exclude "forwarding" and "context"
+    name: "vrf_name_classic",
+    pattern: /(?:ip\s+vrf\s+)(?!forwarding\b|context\b)(\S+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.95,
+  },
+  {
+    // "vrf definition VRF-NAME" (IOS-XE / IOS-XR)
+    name: "vrf_definition",
+    pattern: /(?:vrf\s+definition\s+)(\S+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.95,
+  },
+  {
+    // "vrf forwarding VRF-NAME" or "ip vrf forwarding VRF-NAME" (interface binding)
+    name: "vrf_forwarding",
+    pattern: /(?:(?:ip\s+)?vrf\s+forwarding\s+)(\S+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.95,
+  },
+  {
+    // "vrf VRF-NAME" in Junos / NX-OS (standalone)
+    name: "vrf_junos",
+    pattern: /(?:^|\n)\s*vrf\s+(\S+)\s*$/gm,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+  {
+    // Route distinguisher: "rd 65001:100"
+    name: "route_distinguisher",
+    pattern: /(?:rd\s+)(\d+:\d+)/g,
+    category: Category.VLAN_ID,
+    confidence: 0.90,
+  },
+  {
+    // Route target: "route-target export 65001:100"
+    name: "route_target",
+    pattern: /(?:route-target\s+(?:export|import|both)\s+)(\d+:\d+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.90,
+  },
   // --- VLAN ---
   {
     name: "vlan_name",
@@ -411,6 +464,14 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     pattern: /\b([a-z]{1,6}(?:-[a-z]{1,8}){2,5}[a-z]?\d{1,3})\b/gi,
     category: Category.HOSTNAME,
     confidence: 0.70,
+  },
+  {
+    // Uppercase infrastructure hostnames: PROD-DB-01, AMS-CORE-SW-01, FRA-EDGE-FW-01
+    // Pattern: 2-5 uppercase segments separated by hyphens, ending with digits
+    name: "device_name_infra",
+    pattern: /\b([A-Z][A-Z0-9]{1,10}(?:-[A-Z][A-Z0-9]{0,10}){1,5}-\d{1,3})\b/g,
+    category: Category.HOSTNAME,
+    confidence: 0.80,
   },
 
   // --- Syslog / monitoring (#5) ---
