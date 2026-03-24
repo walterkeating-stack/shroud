@@ -1,6 +1,6 @@
 {
   "name": "shroud-privacy",
-  "version": "2.0.16",
+  "version": "2.0.17",
   "description": "Privacy obfuscation plugin for OpenClaw — detects sensitive data and replaces with deterministic fake values",
   "type": "module",
   "main": "dist/index.js",
