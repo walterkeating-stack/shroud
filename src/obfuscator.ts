@@ -421,21 +421,44 @@ export class Obfuscator {
 
         // Check if we already have a mapping for this exact value
         let fake = this._store.getFake(entity.value);
-        if (fake === undefined) {
-          fake = this._mapping.mapValue(entity.value, entity.category);
+        if (!fake) {
+          let newFake = this._mapping.mapValue(entity.value, entity.category);
+          // Collision avoidance: if this fake is already mapped to a different
+          // real value, offset the fake to make it unique. This happens when
+          // subnet-preserving IP mapping allocates the same CGNAT address for
+          // two different real IPs with identical host bits in different subnets.
+          let collisionAttempt = 0;
+          let existingReal = this._store.getReal(newFake);
+          while (existingReal !== undefined &&
+                 existingReal !== entity.value &&
+                 collisionAttempt < 50) {
+            collisionAttempt++;
+            // For IPs: offset the last octet; for others: append suffix
+            if (entity.category === "ip_address" && /^\d+\.\d+\.\d+\.\d+$/.test(newFake)) {
+              const parts = newFake.split(".");
+              parts[3] = String((parseInt(parts[3], 10) + 1) % 256);
+              newFake = parts.join(".");
+            } else {
+              newFake = this._mapping.mapValue(
+                entity.value + `\x00${collisionAttempt}`, entity.category,
+              );
+            }
+            existingReal = this._store.getReal(newFake);
+          }
+          fake = newFake;
           this._store.put(entity.value, fake, entity.category);
         }
 
-        // Apply redaction level
+        const fakeValue = fake;
         const replacement = this._redactionFormatter.format(
           entity.value,
-          fake,
+          fakeValue,
           entity.category,
           level,
         );
 
         segments.push(replacement);
-        mappingsUsed[entity.value] = fake;
+        mappingsUsed[entity.value] = fakeValue;
         cursor = entity.end;
 
         // Per-category replacement count

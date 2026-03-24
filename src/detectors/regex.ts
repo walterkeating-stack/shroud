@@ -214,7 +214,8 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- URLs and paths ---
   {
     name: "url",
-    pattern: /https?:\/\/[^\s<>"')\]]+/g,
+    // Exclude trailing punctuation (.,:;!?) that is likely sentence-ending, not part of URL
+    pattern: /https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?]/g,
     category: Category.URL,
     confidence: 0.9,
   },
@@ -938,6 +939,22 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     pattern: /\b[A-Z]{6}\d{2}[A-Z0-9]{3}\b/g,
     category: Category.ICS_IDENTIFIER,
     confidence: 0.85,
+  },
+
+  // --- Prose/instruction credential patterns ---
+  {
+    // "with password VALUE", "using password VALUE" — in natural language instructions
+    name: "prose_password",
+    pattern: /(?:(?:with|using)\s+password\s+)(\S+)/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+  {
+    // "SNMP community: VALUE" or "community string: VALUE" — in prose/reports
+    name: "prose_snmp_community",
+    pattern: /(?:(?:SNMP\s+)?community(?:\s+string)?[:=]\s*)(\S+)/gi,
+    category: Category.SNMP_COMMUNITY,
+    confidence: 0.95,
   },
 
   // --- Environment variable secrets ---

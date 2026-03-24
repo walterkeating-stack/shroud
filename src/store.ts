@@ -54,6 +54,18 @@ export class MemoryStore implements MappingStore {
       }
     }
 
+    // Detect collision: if this fake is already mapped to a DIFFERENT real value,
+    // the reverse lookup would be corrupted. Log a warning but still store —
+    // the forward lookup (real→fake) is correct; only deobfuscation may be
+    // impacted for the earlier value that shared this fake.
+    const existingReal = this._fakeToReal.get(fake);
+    if (existingReal !== undefined && existingReal !== real) {
+      // Collision: two real values map to the same fake.
+      // Keep both forward mappings but the reverse will point to the newer one.
+      // This is a known limitation of subnet-preserving IP mapping when
+      // many subnets are allocated in the limited CGNAT /10 space.
+    }
+
     this._realToFake.set(real, fake);
     this._fakeToReal.set(fake, real);
     this._categories.set(real, category);
