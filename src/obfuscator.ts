@@ -35,7 +35,9 @@ const CGNAT_IP_RE = /\b(100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3
  *   - "100.64.0.0/10" (the CGNAT range itself)
  *   - "100.64.x.x" (wildcard notation)
  */
-const CGNAT_RANGE_DESC_RE = /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.[\dx]+\.[\dx]+(?:\/[\dx]+)?\b/gi;
+// Match CGNAT range descriptions including hyphenated ranges like "100.64.16-19.0/24"
+// and wildcard forms like "100.64.x.x/xx"
+const CGNAT_RANGE_DESC_RE = /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.[\dx]+(?:-[\dx]+)?\.[\dx]+(?:-[\dx]+)?(?:\/[\dx]+(?:-[\dx]+)?)?\b/gi;
 
 /** Regex to find fd00::/8 ULA IPv6 addresses (Shroud fake range) in text. */
 const ULA_IPV6_RE = /(?:^|(?<=[\s,;=(\[]))fd00(?::[0-9a-fA-F]{1,4}){0,7}(?:::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?)?(?=$|[\s,;)\]\/])/gi;
@@ -589,6 +591,13 @@ export class Obfuscator {
     if (residualV6.count > 0) {
       result = residualV6.text;
       replacementCount += residualV6.count;
+    }
+
+    // CGNAT range description cleanup (same as in deobfuscate)
+    const rangeCleanup = this._deobfuscateCgnatRangeDescriptions(result);
+    if (rangeCleanup.count > 0) {
+      result = rangeCleanup.text;
+      replacementCount += rangeCleanup.count;
     }
 
     if (this._audit && replacementCount > 0) {
