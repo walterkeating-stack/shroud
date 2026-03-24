@@ -612,12 +612,18 @@ export class Obfuscator {
       if (knownFakes.has(match)) return match;
 
       try {
+        // Validate all octets are 0-255 before processing
+        const octets = match.split(".").map(s => parseInt(s, 10));
+        if (octets.some(o => o > 255 || o < 0 || isNaN(o))) return match;
+
         const fakeInt = ipToInt(match);
 
         // Check if this IP is in CGNAT range
         if ((fakeInt & CGNAT_MASK_10) !== CGNAT_BASE) return match;
 
-        // Try each known fake subnet to find which one this IP belongs to
+        // Try each known fake subnet — use longest-prefix match to avoid
+        // broader subnets incorrectly claiming IPs from narrower ones.
+        let bestMatch: { realIp: string; prefixLen: number } | null = null;
         for (const [fakeNetInt, key] of mapper.subnetRev) {
           const [realNetStr, prefixLenStr] = key.split(",");
           const prefixLen = parseInt(prefixLenStr, 10);
@@ -625,12 +631,24 @@ export class Obfuscator {
 
           // Check if this fake IP is in this fake subnet
           if (((fakeInt & mask) >>> 0) === fakeNetInt) {
-            const hostBits = (fakeInt & (~mask >>> 0)) >>> 0;
-            const realNetInt = parseInt(realNetStr, 10);
-            const realIp = intToIp((realNetInt | hostBits) >>> 0);
-            count++;
-            return realIp;
+            if (!bestMatch || prefixLen > bestMatch.prefixLen) {
+              const hostBits = (fakeInt & (~mask >>> 0)) >>> 0;
+              const realNetInt = parseInt(realNetStr, 10);
+              const combined = (realNetInt | hostBits) >>> 0;
+              // Validate: all octets must be 0-255
+              const o1 = (combined >>> 24) & 0xff;
+              const o2 = (combined >>> 16) & 0xff;
+              const o3 = (combined >>> 8) & 0xff;
+              const o4 = combined & 0xff;
+              if (o1 <= 255 && o2 <= 255 && o3 <= 255 && o4 <= 255) {
+                bestMatch = { realIp: `${o1}.${o2}.${o3}.${o4}`, prefixLen };
+              }
+            }
           }
+        }
+        if (bestMatch) {
+          count++;
+          return bestMatch.realIp;
         }
       } catch {
         // skip invalid
@@ -678,18 +696,18 @@ export class Obfuscator {
       }
     }
 
-    // Build mapping: fake subnet prefix → {realPrefix, realPrefixLen}
-    const fakeToRealMap = new Map<string, { prefix: string; prefixLen: number }>();
-    let mostCommonPrefixLen = 24; // default
+    // Build mapping: full fake network IP → {realIp, prefixLen}
+    // Key on the full IP (not just 2 octets) to avoid collisions — all
+    // CGNAT subnets start with 100.64, so 2-octet keys overwrite each other.
+    const fakeToRealMap = new Map<string, { realIp: string; prefixLen: number }>();
+    let mostCommonPrefixLen = 24;
     const prefixLenCounts = new Map<number, number>();
     for (const [fakeNetInt, key] of mapper.subnetRev) {
       const fakeIp = intToIp(fakeNetInt);
-      const fakePrefix = fakeIp.split(".").slice(0, 2).join(".");
       const [realNetStr, prefixLenStr] = key.split(",");
       const realIp = intToIp(parseInt(realNetStr, 10));
-      const realPrefix = realIp.split(".").slice(0, 2).join(".");
       const prefixLen = parseInt(prefixLenStr, 10);
-      fakeToRealMap.set(fakePrefix, { prefix: realPrefix, prefixLen });
+      fakeToRealMap.set(fakeIp, { realIp, prefixLen });
       prefixLenCounts.set(prefixLen, (prefixLenCounts.get(prefixLen) ?? 0) + 1);
     }
 
@@ -707,32 +725,51 @@ export class Obfuscator {
       // Don't replace if it's a standard CGNAT IP (handled by _deobfuscateResidualCgnat)
       if (/^\d+\.\d+\.\d+\.\d+$/.test(match)) return match;
 
-      // Extract the first two octets of the fake range
-      const parts = match.split(".");
-      if (parts.length >= 2) {
-        const fakePrefix = parts[0] + "." + parts[1];
-        const mapping = fakeToRealMap.get(fakePrefix);
-        const realPrefix = mapping?.prefix || bestPrefix;
-        const realPrefixLen = mapping?.prefixLen || mostCommonPrefixLen;
-        count++;
-
-        // Replace CGNAT octets with real octets
-        let replaced = match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, realPrefix);
-
-        // Fix CIDR suffix: if the match has /NN where NN is a CGNAT-range prefix length
-        // (like /10 from 100.64.0.0/10), replace with the real prefix length
-        replaced = replaced.replace(/\/10\b/, `/${realPrefixLen}`);
-
-        // Also fix generic /xx notation
-        replaced = replaced.replace(/\/xx\b/, `/${realPrefixLen}`);
-
-        return replaced;
+      // Try to find a matching fake network by extracting the IP-like portion
+      // and looking up each known fake network
+      let matchedReal: { realIp: string; prefixLen: number } | null = null;
+      for (const [fakeIp, info] of fakeToRealMap) {
+        // Check if this range description starts with the fake network's octets
+        const fakeOctets = fakeIp.split(".");
+        const matchOctets = match.split(".");
+        let isMatch = true;
+        for (let i = 0; i < Math.min(fakeOctets.length, matchOctets.length); i++) {
+          const fo = parseInt(fakeOctets[i], 10);
+          const mo = parseInt(matchOctets[i], 10);
+          if (!isNaN(fo) && !isNaN(mo) && fo !== mo) { isMatch = false; break; }
+          if (isNaN(mo)) break; // wildcard or non-numeric part
+        }
+        if (isMatch) {
+          matchedReal = info;
+          break;
+        }
       }
 
+      const realPrefix = matchedReal
+        ? matchedReal.realIp.split(".").slice(0, 2).join(".")
+        : bestPrefix;
+      const realPrefixLen = matchedReal?.prefixLen || mostCommonPrefixLen;
       count++;
-      let replaced = match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, bestPrefix);
-      replaced = replaced.replace(/\/10\b/, `/${mostCommonPrefixLen}`);
-      replaced = replaced.replace(/\/xx\b/, `/${mostCommonPrefixLen}`);
+
+      // Replace CGNAT octets with real octets
+      let replaced = match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, realPrefix);
+
+      // Fix CIDR suffix
+      replaced = replaced.replace(/\/10\b/, `/${realPrefixLen}`);
+      replaced = replaced.replace(/\/xx\b/, `/${realPrefixLen}`);
+
+      // Validate: check all octets in result are 0-255
+      const octets = replaced.match(/\d+/g);
+      if (octets) {
+        for (let i = 0; i < Math.min(octets.length, 4); i++) {
+          if (parseInt(octets[i], 10) > 255) {
+            // Invalid octet — return original match unmodified
+            count--;
+            return match;
+          }
+        }
+      }
+
       return replaced;
     });
 
