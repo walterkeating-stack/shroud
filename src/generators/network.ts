@@ -370,7 +370,7 @@ export class NetworkGenerator implements BaseGenerator {
     } else if (category === Category.BGP_ASN) {
       return this._fakeAsn(seed, original);
     } else if (category === Category.SNMP_COMMUNITY) {
-      return this._fakeSnmpCommunity(seed);
+      return this._fakeSnmpCommunity(seed, original);
     } else if (category === Category.NETWORK_CREDENTIAL) {
       return this._fakeNetworkCredential(seed, original);
     } else if (category === Category.HOSTNAME) {
@@ -535,11 +535,15 @@ export class NetworkGenerator implements BaseGenerator {
         domainPool[Math.floor(seed / pool.length) % domainPool.length];
     }
 
-    // Preserve dots in local part (e.g., "john.doe" -> "dev.ops")
+    // Preserve dot-separated structure in local part
+    // e.g., "john.smith" -> "dev.ops", "a.b.c" -> "x.y.z"
     if (origLocal && origLocal.includes(".")) {
-      const extra =
-        EMAIL_PREFIXES[Math.floor(seed / 7) % EMAIL_PREFIXES.length];
-      prefix = `${prefix}.${extra}`;
+      const localParts = origLocal.split(".");
+      const fakeParts: string[] = [];
+      for (let i = 0; i < localParts.length; i++) {
+        fakeParts.push(EMAIL_PREFIXES[(seed + i) % EMAIL_PREFIXES.length]);
+      }
+      prefix = fakeParts.join(".");
     }
 
     const num =
@@ -557,11 +561,52 @@ export class NetworkGenerator implements BaseGenerator {
   _fakeUrl(seed: number, original: string): string {
     let domain: string;
 
-    // Try to extract org domain for consistency
+    // Detect original protocol (http vs https)
+    let protocol = "https";
+    if (original && original.startsWith("http://")) {
+      protocol = "http";
+    }
+
+    // Detect port
+    let port = "";
+    if (original) {
+      const portMatch = original.match(/:(\d+)(\/|$)/);
+      if (portMatch) {
+        port = `:${portMatch[1]}`;
+      }
+    }
+
+    // Extract host and detect subdomain structure
+    let subdomainPrefix = "";
     if (original) {
       const hostMatch = original.match(/https?:\/\/([^/:]+)/);
       if (hostMatch) {
         const origHost = hostMatch[1];
+        const hostParts = origHost.split(".");
+
+        // If there are subdomains (more than just org.tld), preserve count
+        // e.g., "admin.internal.acme.com" has 2 subdomains before "acme.com"
+        if (hostParts.length > 2) {
+          // Preserve subdomain labels that are structural/role-like
+          const SUBDOMAIN_ROLES = new Set([
+            "admin", "api", "app", "auth", "cdn", "cms", "dash", "dashboard",
+            "dev", "docs", "ftp", "git", "internal", "intranet", "mail",
+            "mgmt", "monitor", "portal", "prod", "staging", "status", "test",
+            "web", "www",
+          ]);
+          const subdomains = hostParts.slice(0, hostParts.length - 2);
+          const fakeSubdomains: string[] = [];
+          for (let i = 0; i < subdomains.length; i++) {
+            const lower = subdomains[i].toLowerCase();
+            if (SUBDOMAIN_ROLES.has(lower)) {
+              fakeSubdomains.push(subdomains[i]); // Preserve structural subdomains
+            } else {
+              fakeSubdomains.push(PATH_SEGMENTS[(seed + i) % PATH_SEGMENTS.length]);
+            }
+          }
+          subdomainPrefix = fakeSubdomains.join(".") + ".";
+        }
+
         const orgKey = this._extractOrgDomain(origHost);
         if (orgKey && orgKey.length > 2) {
           const fakeOrg = this._mapOrgDomain(orgKey, seed);
@@ -579,8 +624,11 @@ export class NetworkGenerator implements BaseGenerator {
       domain = DOMAINS[seed % DOMAINS.length];
     }
 
+    const fullHost = `${subdomainPrefix}${domain}${port}`;
+
     // Preserve URL path depth
     if (original) {
+      // Strip protocol, host, and port to get path
       const pathMatch = original.match(/https?:\/\/[^/]+(.*)/);
       if (pathMatch) {
         const origPath = pathMatch[1];
@@ -592,16 +640,17 @@ export class NetworkGenerator implements BaseGenerator {
           );
         }
         if (fakeSegments.length > 0) {
-          return `https://${domain}/${fakeSegments.join("/")}`;
+          return `${protocol}://${fullHost}/${fakeSegments.join("/")}`;
         }
       }
+      return `${protocol}://${fullHost}`;
     }
 
     const path =
       PATH_SEGMENTS[
         Math.floor(seed / DOMAINS.length) % PATH_SEGMENTS.length
       ];
-    return `https://${domain}/${path}`;
+    return `${protocol}://${fullHost}/${path}`;
   }
 
   /** Generate a fake MAC address preserving format (colon, dash, or Cisco dot). */
@@ -685,8 +734,34 @@ export class NetworkGenerator implements BaseGenerator {
     return String(base + (seed % 1023));
   }
 
-  /** Replace SNMP community strings with generic names. */
-  _fakeSnmpCommunity(seed: number): string {
+  /** Replace SNMP community strings preserving RO/RW/READ/WRITE hints. */
+  _fakeSnmpCommunity(seed: number, original = ""): string {
+    if (!original) {
+      return SNMP_COMMUNITIES[seed % SNMP_COMMUNITIES.length];
+    }
+
+    const upper = original.toUpperCase();
+
+    // Detect access-level suffix or embedded hint
+    let accessSuffix = "";
+    if (/[-_]?RW$/i.test(upper) || /WRITE/i.test(upper)) {
+      accessSuffix = "-RW";
+    } else if (/[-_]?RO$/i.test(upper) || /[-_]?R0$/i.test(upper) || /READ/i.test(upper)) {
+      accessSuffix = "-RO";
+    }
+
+    // Generate a deterministic fake base name
+    const SNMP_BASES = [
+      "COMMUNITY", "SNMP_STR", "NET_MON", "MGMT_NET",
+      "MON_STRING", "NET_ACCESS", "SYS_MON", "POLL_STR",
+    ];
+    const base = SNMP_BASES[seed % SNMP_BASES.length];
+
+    if (accessSuffix) {
+      return `${base}${accessSuffix}`;
+    }
+
+    // No access hint detected — use pool as before
     return SNMP_COMMUNITIES[seed % SNMP_COMMUNITIES.length];
   }
 
@@ -983,10 +1058,31 @@ export class NetworkGenerator implements BaseGenerator {
     return result.join(".");
   }
 
-  /** Fake VLAN ID/name or VRF name. Preserves the keyword structure. */
+  /** Fake VLAN ID/name or VRF name. Preserves semantic prefixes. */
   _fakeVlanId(seed: number, original: string): string {
+    // Semantic prefixes that should be preserved verbatim
+    const SEMANTIC_PREFIXES = ["CUST-", "MGMT-", "SVC-", "PROD-", "DEV-", "DMZ-", "WAN-", "LAN-", "GUEST-", "IOT-"];
+    const upper = original.toUpperCase();
+
+    // Check for semantic prefix in VRF or VLAN names
+    for (const prefix of SEMANTIC_PREFIXES) {
+      if (upper.startsWith(prefix)) {
+        // Preserve the prefix, replace only the identifier part
+        const sep = original[prefix.length - 1]; // The separator char (- or _)
+        const actualPrefix = original.slice(0, prefix.length);
+        const fakeId = VLAN_NAMES[seed % VLAN_NAMES.length];
+        return `${actualPrefix}${fakeId}`;
+      }
+    }
+
     // VRF names: VRF-VOICE, VRF-EUROCAT_E, VRF_OPS_DATA, etc.
-    if (/^VRF[-_]/i.test(original) || /^[A-Z][A-Z_]{2,}$/i.test(original)) {
+    // Preserve the VRF- prefix and replace the rest
+    if (/^VRF[-_]/i.test(original)) {
+      const separator = original[3]; // '-' or '_'
+      const fakeBody = VLAN_NAMES[seed % VLAN_NAMES.length];
+      return `VRF${separator}${fakeBody}`;
+    }
+    if (/^[A-Z][A-Z_]{2,}$/i.test(original)) {
       return VRF_NAMES[seed % VRF_NAMES.length];
     }
     // Route distinguisher / route target: 65001:100
@@ -1159,8 +1255,68 @@ export class NetworkGenerator implements BaseGenerator {
     return fakeId;
   }
 
-  /** Fake ACL name. */
-  _fakeAclName(seed: number, _original: string): string {
-    return ACL_NAMES[seed % ACL_NAMES.length];
+  /** Fake ACL name preserving prefix and purpose keywords. */
+  _fakeAclName(seed: number, original: string): string {
+    if (!original) {
+      return ACL_NAMES[seed % ACL_NAMES.length];
+    }
+
+    const upper = original.toUpperCase();
+    const parts = upper.split(/[-_]/);
+    const sep = original.includes("_") ? "_" : "-";
+
+    // Known prefixes to preserve
+    const ACL_PREFIX_KEYWORDS = new Set(["ACL", "AL", "ACCESS"]);
+    // Purpose keywords to preserve
+    const PURPOSE_KEYWORDS = new Set([
+      "WAN", "LAN", "MGMT", "VTY", "FIREWALL", "DMZ", "OUTSIDE", "INSIDE",
+      "EDGE", "CORE", "SERVERS", "USERS", "VPN", "MONITOR", "DENY", "PERMIT",
+      "RFC1918", "BOGON", "INBOUND", "OUTBOUND", "IN", "OUT",
+    ]);
+
+    const result: string[] = [];
+    const toReplace: number[] = [];
+
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      if (ACL_PREFIX_KEYWORDS.has(p)) {
+        result.push(p);
+      } else if (PURPOSE_KEYWORDS.has(p)) {
+        result.push(p);
+      } else if (/^\d+$/.test(p)) {
+        // Preserve numeric IDs (e.g., ACL-100)
+        result.push(String(100 + (seed % 900)));
+      } else {
+        // Unknown — mark for replacement
+        result.push(p);
+        toReplace.push(i);
+      }
+    }
+
+    // Replace unknown parts with generic purpose words
+    const FAKE_PURPOSES = ["FILTER", "POLICY", "RESTRICT", "GUARD", "SHIELD", "BLOCK", "ALLOW", "GATE"];
+    for (const idx of toReplace) {
+      result[idx] = FAKE_PURPOSES[(seed + idx) % FAKE_PURPOSES.length];
+    }
+
+    // If nothing was replaced (all parts are known keywords), we must still
+    // obfuscate to avoid leaking the real name. Replace the first non-prefix
+    // purpose keyword with a fake purpose word.
+    if (toReplace.length === 0) {
+      let replaced = false;
+      for (let i = 0; i < result.length; i++) {
+        if (!ACL_PREFIX_KEYWORDS.has(result[i])) {
+          result[i] = FAKE_PURPOSES[(seed + i) % FAKE_PURPOSES.length];
+          replaced = true;
+          break;
+        }
+      }
+      // If still nothing replaced (only prefix keywords?), append a fake
+      if (!replaced) {
+        result.push(FAKE_PURPOSES[seed % FAKE_PURPOSES.length]);
+      }
+    }
+
+    return result.join(sep);
   }
 }
