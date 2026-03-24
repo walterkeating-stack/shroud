@@ -1,5 +1,8 @@
 /**
  * Fake network entity generators: IPs, emails, URLs, domains, MACs, BGP ASNs.
+ *
+ * Design principle: "obfuscate identity, preserve structure — change WHO and
+ * WHERE, keep WHAT and HOW."
  */
 
 import { createHash } from "node:crypto";
@@ -54,12 +57,58 @@ export const HOSTNAME_ROLES = [
   "SW", "RTR", "FW", "AP", "SRV", "LB", "DC", "NAS",
 ];
 
-export const HOSTNAME_SITES = [
-  "SITE-A", "SITE-B", "SITE-C", "SITE-D", "SITE-E",
+// ---------------------------------------------------------------------------
+// Geographic site codes — realistic 3-letter airport/city codes
+// ---------------------------------------------------------------------------
+
+export const FAKE_SITES = [
+  "DEN", "SFO", "ATL", "SEA", "BOS", "MIA", "DFW", "ORD", "PHX", "PDX",
+  "IAD", "LAX", "JFK", "MSP", "DTW", "CLT", "TPA", "SAN", "SLC", "PIT",
 ];
+
+// Legacy pool kept for backward compat in non-structured hostnames
+export const HOSTNAME_SITES = FAKE_SITES;
+
+// ---------------------------------------------------------------------------
+// Role-preserving hostname constants
+// ---------------------------------------------------------------------------
+
+/** Roles that should be preserved verbatim in structured hostnames. */
+const HOSTNAME_ROLE_KEYWORDS = new Set([
+  "RTR", "SW", "FW", "AP", "SRV", "LB", "DC", "NAS",
+  "PE", "CE", "P", "RR", "GW", "WLC", "MX", "QFX", "EX",
+]);
+
+/** Tier/function keywords preserved verbatim. */
+const HOSTNAME_TIER_KEYWORDS = new Set([
+  "CORE", "DIST", "ACC", "EDGE", "MGMT", "DMZ", "WAN", "LAN",
+  "SPINE", "LEAF", "BORDER", "TRANSIT",
+]);
+
+/** Detect 2-4 uppercase letter site codes (e.g. CHI, NYC, FRA). */
+const SITE_CODE_RE = /^[A-Z]{2,4}$/;
 
 export const PATH_SEGMENTS = [
   "app", "api", "docs", "dashboard", "portal", "v2", "status", "health",
+];
+
+// ---------------------------------------------------------------------------
+// Topology keywords for description preservation
+// ---------------------------------------------------------------------------
+
+const TOPOLOGY_KEYWORDS = new Set([
+  "UPLINK", "DOWNLINK", "PEER", "TRANSIT", "LINK", "CONN",
+  "WAN", "LAN", "MGMT", "OOB", "BACKUP", "PRIMARY",
+  "TO", "FROM", "VIA", "SECONDARY", "TERTIARY",
+]);
+
+// ---------------------------------------------------------------------------
+// Provider names for route-map semantic generation
+// ---------------------------------------------------------------------------
+
+const FAKE_PROVIDERS = [
+  "LUMEN", "ZAYO", "TELIA", "GTT", "NTT", "PCCW", "COLT",
+  "CENTURYLINK", "ARELION", "SEABORN", "RETN", "SPARKLE",
 ];
 
 // ---------------------------------------------------------------------------
@@ -282,6 +331,29 @@ export class NetworkGenerator implements BaseGenerator {
 
   private readonly subnetMapper: SubnetMapper;
 
+  /**
+   * Session-level domain mapping for cross-entity consistency.
+   * Maps the core org part of a domain (e.g. "acme-corp") to a fake
+   * replacement so that emails and hostnames sharing a domain get the
+   * same fake domain.
+   */
+  private _domainMap: Map<string, string> = new Map();
+
+  /**
+   * Session-level site code mapping for deterministic site replacement.
+   * Maps real site codes (e.g. "CHI") to fake ones (e.g. "DEN").
+   */
+  private _siteMap: Map<string, string> = new Map();
+  private _nextSiteIdx = 0;
+
+  /**
+   * Session-level ASN mapping for relationship-preserving replacement.
+   * Maps real ASN numbers to fake ones.
+   */
+  private _asnMap: Map<number, number> = new Map();
+  private _nextPrivateAsn = 64512;
+  private _nextPublicAsn = 10000;
+
   constructor(subnetMapper: SubnetMapper) {
     this.subnetMapper = subnetMapper;
   }
@@ -296,13 +368,13 @@ export class NetworkGenerator implements BaseGenerator {
     } else if (category === Category.MAC_ADDRESS) {
       return this._fakeMac(seed, original);
     } else if (category === Category.BGP_ASN) {
-      return this._fakeAsn(seed);
+      return this._fakeAsn(seed, original);
     } else if (category === Category.SNMP_COMMUNITY) {
       return this._fakeSnmpCommunity(seed);
     } else if (category === Category.NETWORK_CREDENTIAL) {
       return this._fakeNetworkCredential(seed, original);
     } else if (category === Category.HOSTNAME) {
-      return this._fakeHostname(seed);
+      return this._fakeHostname(seed, original);
     } else if (category === Category.VLAN_ID) {
       return this._fakeVlanId(seed, original);
     } else if (category === Category.INTERFACE_DESC) {
@@ -316,6 +388,58 @@ export class NetworkGenerator implements BaseGenerator {
     }
     return `net-${String(seed % 10000).padStart(4, "0")}`;
   }
+
+  // -------------------------------------------------------------------------
+  // Domain consistency helpers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Extract the "org" portion of a domain. Given "acme-corp.com" returns
+   * "acme-corp".  Given "mail.acme-corp.co.uk" returns "acme-corp".
+   */
+  private _extractOrgDomain(domain: string): string {
+    // Strip known compound TLDs first
+    let d = domain.toLowerCase();
+    const compoundTlds = [".co.uk", ".co.jp", ".co.nz", ".com.au", ".com.br"];
+    for (const ct of compoundTlds) {
+      if (d.endsWith(ct)) {
+        d = d.slice(0, -ct.length);
+        break;
+      }
+    }
+    // Strip single TLD
+    const dotIdx = d.lastIndexOf(".");
+    if (dotIdx > 0) d = d.slice(0, dotIdx);
+    // Take the last label (the org name)
+    const lastDot = d.lastIndexOf(".");
+    if (lastDot >= 0) d = d.slice(lastDot + 1);
+    return d;
+  }
+
+  /** Get or create a consistent fake domain name for an org domain key. */
+  private _mapOrgDomain(orgKey: string, seed: number): string {
+    const existing = this._domainMap.get(orgKey);
+    if (existing) return existing;
+    // Pick a fake domain base name from DOMAINS pool
+    const base = DOMAINS[seed % DOMAINS.length].split(".")[0];
+    this._domainMap.set(orgKey, base);
+    return base;
+  }
+
+  /** Map a real site code to a fake one deterministically. */
+  private _mapSite(realSite: string): string {
+    const key = realSite.toUpperCase();
+    const existing = this._siteMap.get(key);
+    if (existing) return existing;
+    const fake = FAKE_SITES[this._nextSiteIdx % FAKE_SITES.length];
+    this._nextSiteIdx++;
+    this._siteMap.set(key, fake);
+    return fake;
+  }
+
+  // -------------------------------------------------------------------------
+  // IP
+  // -------------------------------------------------------------------------
 
   /**
    * Subnet-preserving IP obfuscation for any prefix length.
@@ -359,10 +483,15 @@ export class NetworkGenerator implements BaseGenerator {
     return intToIp((CGNAT_BASE + (seed & 0x3fffff)) >>> 0);
   }
 
+  // -------------------------------------------------------------------------
+  // Email — with cross-entity domain consistency
+  // -------------------------------------------------------------------------
+
   _fakeEmail(seed: number, original: string): string {
     // Analyze original structure
     let origLocal = "";
     let origTld = "";
+    let origOrgDomain = "";
 
     if (original && original.includes("@")) {
       const atIdx = original.lastIndexOf("@");
@@ -371,6 +500,7 @@ export class NetworkGenerator implements BaseGenerator {
       if (origDomainFull.includes(".")) {
         const dotIdx = origDomainFull.lastIndexOf(".");
         origTld = origDomainFull.slice(dotIdx + 1);
+        origOrgDomain = this._extractOrgDomain(origDomainFull);
       }
     }
 
@@ -386,15 +516,24 @@ export class NetworkGenerator implements BaseGenerator {
 
     let prefix = pool[seed % pool.length];
 
-    // Try to match TLD
-    let domainPool: string[];
-    if (origTld && DOMAINS_BY_TLD[origTld]) {
-      domainPool = DOMAINS_BY_TLD[origTld];
+    // Use consistent domain mapping if we have an org domain
+    let domain: string;
+    if (origOrgDomain) {
+      const fakeOrg = this._mapOrgDomain(origOrgDomain, seed);
+      // Preserve TLD if possible
+      const tld = origTld || "com";
+      domain = `${fakeOrg}.${tld}`;
     } else {
-      domainPool = DOMAINS;
+      // Try to match TLD
+      let domainPool: string[];
+      if (origTld && DOMAINS_BY_TLD[origTld]) {
+        domainPool = DOMAINS_BY_TLD[origTld];
+      } else {
+        domainPool = DOMAINS;
+      }
+      domain =
+        domainPool[Math.floor(seed / pool.length) % domainPool.length];
     }
-    const domain =
-      domainPool[Math.floor(seed / pool.length) % domainPool.length];
 
     // Preserve dots in local part (e.g., "john.doe" -> "dev.ops")
     if (origLocal && origLocal.includes(".")) {
@@ -404,15 +543,41 @@ export class NetworkGenerator implements BaseGenerator {
     }
 
     const num =
-      Math.floor(seed / (pool.length * domainPool.length)) % 100;
+      Math.floor(seed / (pool.length * DOMAINS.length)) % 100;
     if (num > 0) {
       return `${prefix}${num}@${domain}`;
     }
     return `${prefix}@${domain}`;
   }
 
+  // -------------------------------------------------------------------------
+  // URL — with cross-entity domain consistency
+  // -------------------------------------------------------------------------
+
   _fakeUrl(seed: number, original: string): string {
-    const domain = DOMAINS[seed % DOMAINS.length];
+    let domain: string;
+
+    // Try to extract org domain for consistency
+    if (original) {
+      const hostMatch = original.match(/https?:\/\/([^/:]+)/);
+      if (hostMatch) {
+        const origHost = hostMatch[1];
+        const orgKey = this._extractOrgDomain(origHost);
+        if (orgKey && orgKey.length > 2) {
+          const fakeOrg = this._mapOrgDomain(orgKey, seed);
+          // Preserve TLD
+          const tldMatch = origHost.match(/\.([a-z]{2,})$/i);
+          const tld = tldMatch ? tldMatch[1] : "com";
+          domain = `${fakeOrg}.${tld}`;
+        } else {
+          domain = DOMAINS[seed % DOMAINS.length];
+        }
+      } else {
+        domain = DOMAINS[seed % DOMAINS.length];
+      }
+    } else {
+      domain = DOMAINS[seed % DOMAINS.length];
+    }
 
     // Preserve URL path depth
     if (original) {
@@ -468,8 +633,54 @@ export class NetworkGenerator implements BaseGenerator {
     return octets.join(":");
   }
 
-  /** Map BGP AS numbers to the private AS range (64512-65534). */
-  _fakeAsn(seed: number): string {
+  // -------------------------------------------------------------------------
+  // BGP ASN — relationship-preserving
+  // -------------------------------------------------------------------------
+
+  /**
+   * Map BGP AS numbers preserving private/public ranges and sequential
+   * relationships. If AS X and AS X+1 both appear, their fakes are also
+   * sequential.
+   */
+  _fakeAsn(seed: number, original = ""): string {
+    const realAsn = parseInt(original, 10);
+    if (!isNaN(realAsn) && realAsn > 0) {
+      const existing = this._asnMap.get(realAsn);
+      if (existing !== undefined) return String(existing);
+
+      const isPrivate = realAsn >= 64512 && realAsn <= 65534;
+
+      // Check if realAsn-1 is already mapped (sequential relationship)
+      const prevMapping = this._asnMap.get(realAsn - 1);
+      if (prevMapping !== undefined) {
+        const fakeAsn = prevMapping + 1;
+        this._asnMap.set(realAsn, fakeAsn);
+        return String(fakeAsn);
+      }
+      // Check if realAsn+1 is already mapped
+      const nextMapping = this._asnMap.get(realAsn + 1);
+      if (nextMapping !== undefined) {
+        const fakeAsn = nextMapping - 1;
+        this._asnMap.set(realAsn, fakeAsn);
+        return String(fakeAsn);
+      }
+
+      let fakeAsn: number;
+      if (isPrivate) {
+        fakeAsn = this._nextPrivateAsn;
+        this._nextPrivateAsn++;
+        if (this._nextPrivateAsn > 65534) this._nextPrivateAsn = 64512;
+      } else {
+        // Public ASN range: map to plausible public ASNs
+        fakeAsn = this._nextPublicAsn;
+        this._nextPublicAsn += 7; // spread them out
+        if (this._nextPublicAsn > 63999) this._nextPublicAsn = 10000;
+      }
+      this._asnMap.set(realAsn, fakeAsn);
+      return String(fakeAsn);
+    }
+
+    // Fallback: no original or non-numeric
     const base = 64512;
     return String(base + (seed % 1023));
   }
@@ -479,36 +690,297 @@ export class NetworkGenerator implements BaseGenerator {
     return SNMP_COMMUNITIES[seed % SNMP_COMMUNITIES.length];
   }
 
-  /** Replace network credentials with seed-derived unique fake values. */
+  // -------------------------------------------------------------------------
+  // Network credentials — type-preserving
+  // -------------------------------------------------------------------------
+
+  /** Replace network credentials preserving hash/encoding format. */
   _fakeNetworkCredential(seed: number, original: string): string {
     const buf = Buffer.alloc(8);
     buf.writeUInt32BE(seed >>> 0, 0);
     buf.writeUInt32BE(((seed >>> 16) ^ 0xdeadbeef) >>> 0, 4);
     const h = createHash("sha256").update(buf).digest("hex");
 
-    // Preserve hash type prefix for structure hints
-    const hashPrefixMatch = original.match(/^(\$\d\$)/);
+    // Cisco type-5 ($1$salt$hash) — generate proper format
+    if (/^\$1\$/.test(original)) {
+      const fakeSalt = h.slice(0, 4);
+      // Type-5 hash body is 22 chars of base64-like chars
+      const hashBody = this._toBase64ish(h.slice(4, 26), 22);
+      return `$1$${fakeSalt}$${hashBody}`;
+    }
+
+    // Cisco type-8 ($8$salt$hash)
+    if (/^\$8\$/.test(original)) {
+      const fakeSalt = h.slice(0, 14);
+      const fakeHash = h.slice(14, 57);
+      return `$8$${fakeSalt}$${fakeHash}`;
+    }
+
+    // Cisco type-9 ($9$salt$hash)
+    if (/^\$9\$/.test(original)) {
+      const fakeSalt = h.slice(0, 14);
+      const fakeHash = h.slice(14, 57);
+      return `$9$${fakeSalt}$${fakeHash}`;
+    }
+
+    // Junos $9$ encoded strings
+    if (/^\$9\$/.test(original)) {
+      const fakeBody = h.slice(0, Math.max(8, original.length - 3));
+      return `$9$${fakeBody}`;
+    }
+
+    // Generic $N$ hash prefix
+    const hashPrefixMatch = original.match(/^(\$\d+\$)/);
     if (hashPrefixMatch) {
-      // e.g. $1$salt$hash → $1$fakesalt$fakehash
       return `${hashPrefixMatch[1]}${h.slice(0, 8)}$${h.slice(8, 30)}`;
     }
-    // Cisco type 7 hex strings
-    if (/^[0-9A-Fa-f]{4,}$/.test(original)) {
-      return h.slice(0, original.length).toUpperCase();
+
+    // Cisco type-7 hex strings: even-length hex, first two chars are salt
+    // byte 00-15 (i.e., "00" through "15" in decimal representation, but
+    // actually hex 00-0F). Type-7 salt is a two-digit decimal 00-15.
+    if (/^[0-9A-Fa-f]{4,}$/.test(original) && original.length % 2 === 0) {
+      // Generate valid-looking type-7: start with salt byte (00-15 decimal)
+      const salt = String(seed % 16).padStart(2, "0");
+      // Rest is hex pairs
+      const bodyLen = original.length - 2;
+      const body = h.slice(0, bodyLen).toUpperCase();
+      return salt + body;
     }
-    // Generic credential
+
+    // Generic credential: preserve length and complexity pattern
+    if (original.length > 0) {
+      return this._similarComplexity(original, h);
+    }
+
     return `REDACTED_${h.slice(0, 16)}`;
   }
 
-  /** Generate a fake hostname preserving structure. */
-  _fakeHostname(seed: number): string {
+  /** Generate a base64-ish string of given length from hex source. */
+  private _toBase64ish(hex: string, len: number): string {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789./";
+    let result = "";
+    for (let i = 0; i < len; i++) {
+      const idx = parseInt(hex.slice((i * 2) % hex.length, (i * 2) % hex.length + 2) || "00", 16);
+      result += chars[idx % chars.length];
+    }
+    return result;
+  }
+
+  /** Generate a string with similar complexity patterns (length, has-digit, has-special). */
+  private _similarComplexity(original: string, hex: string): string {
+    const hasDigit = /\d/.test(original);
+    const hasSpecial = /[^a-zA-Z0-9]/.test(original);
+    const hasUpper = /[A-Z]/.test(original);
+    const hasLower = /[a-z]/.test(original);
+    const len = original.length;
+
+    // Build from hex, then inject complexity markers
+    let result = hex.slice(0, len);
+
+    if (hasUpper && hasLower) {
+      // Mix case
+      result = result.split("").map((c, i) =>
+        i % 3 === 0 ? c.toUpperCase() : c.toLowerCase()
+      ).join("");
+    } else if (hasUpper) {
+      result = result.toUpperCase();
+    }
+
+    if (hasSpecial) {
+      // Replace a couple chars with special chars matching original's specials
+      const specials = original.replace(/[a-zA-Z0-9]/g, "");
+      if (specials.length > 0 && result.length > 2) {
+        const chars = result.split("");
+        for (let i = 0; i < Math.min(specials.length, 3); i++) {
+          const pos = Math.min(2 + i * 3, chars.length - 1);
+          chars[pos] = specials[i % specials.length];
+        }
+        result = chars.join("");
+      }
+    }
+
+    if (hasDigit && !/\d/.test(result)) {
+      // Ensure at least one digit
+      const chars = result.split("");
+      chars[chars.length - 1] = "7";
+      result = chars.join("");
+    }
+
+    // Ensure exact length
+    if (result.length > len) result = result.slice(0, len);
+    while (result.length < len) result += "x";
+
+    return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // Hostname — role-preserving with geographic site codes
+  // -------------------------------------------------------------------------
+
+  /**
+   * Generate a fake hostname preserving role, tier, and structure.
+   *
+   * Structured hostnames like CHI-CORE-RTR-01 are parsed into components:
+   * site code is swapped from the geographic pool, role and tier are kept,
+   * and the ID number is randomized.
+   *
+   * DNS-style hostnames like web-01.prod.acme.net preserve hierarchy:
+   * env labels (prod/staging/dev) and TLD are kept, org is replaced.
+   */
+  _fakeHostname(seed: number, original = ""): string {
+    if (!original) {
+      // No original: generate simple structured hostname
+      const role = HOSTNAME_ROLES[seed % HOSTNAME_ROLES.length];
+      const site = FAKE_SITES[Math.floor(seed / HOSTNAME_ROLES.length) % FAKE_SITES.length];
+      const num = (seed % 99) + 1;
+      return `${site}-${role}-${String(num).padStart(2, "0")}`;
+    }
+
+    // Try DNS-style parsing: role-id.env.org.tld
+    if (original.includes(".")) {
+      return this._fakeDnsHostname(seed, original);
+    }
+
+    // Try structured hostname parsing: SITE-TIER-ROLE-NUM
+    const parts = original.split("-");
+    if (parts.length >= 2) {
+      return this._fakeStructuredHostname(seed, original, parts);
+    }
+
+    // Fallback: simple replacement
     const role = HOSTNAME_ROLES[seed % HOSTNAME_ROLES.length];
-    const site =
-      HOSTNAME_SITES[
-        Math.floor(seed / HOSTNAME_ROLES.length) % HOSTNAME_SITES.length
-      ];
+    const site = FAKE_SITES[Math.floor(seed / HOSTNAME_ROLES.length) % FAKE_SITES.length];
     const num = (seed % 99) + 1;
     return `${site}-${role}-${String(num).padStart(2, "0")}`;
+  }
+
+  /** Parse and rebuild a structured hostname like CHI-CORE-RTR-01. */
+  private _fakeStructuredHostname(seed: number, _original: string, parts: string[]): string {
+    const result: string[] = [];
+    let foundRole = false;
+    let foundTier = false;
+    let foundSite = false;
+
+    for (const part of parts) {
+      const upper = part.toUpperCase();
+
+      // Check if it's a role keyword
+      if (HOSTNAME_ROLE_KEYWORDS.has(upper)) {
+        result.push(upper);
+        foundRole = true;
+        continue;
+      }
+
+      // Check if it's a tier keyword
+      if (HOSTNAME_TIER_KEYWORDS.has(upper)) {
+        result.push(upper);
+        foundTier = true;
+        continue;
+      }
+
+      // Check if it's a numeric ID (with or without leading zeros)
+      if (/^\d+$/.test(part)) {
+        // Randomize but preserve format (e.g., "01" stays 2-digit zero-padded)
+        const newNum = (seed % 99) + 1;
+        result.push(String(newNum).padStart(part.length, "0"));
+        continue;
+      }
+
+      // Check if it's a site code (2-4 uppercase letters)
+      if (SITE_CODE_RE.test(upper) && !foundSite) {
+        result.push(this._mapSite(upper));
+        foundSite = true;
+        continue;
+      }
+
+      // Unknown component — replace with a fake site or generic label
+      if (!foundSite && upper.length >= 2 && upper.length <= 6) {
+        result.push(this._mapSite(upper));
+        foundSite = true;
+      } else {
+        // Keep as-is if it looks structural, otherwise replace
+        result.push(FAKE_SITES[(seed + result.length) % FAKE_SITES.length]);
+      }
+    }
+
+    // If we found no role, inject one for structural validity
+    if (!foundRole && !foundTier) {
+      // This didn't match the structured pattern well — use fallback
+      const role = HOSTNAME_ROLES[seed % HOSTNAME_ROLES.length];
+      const site = FAKE_SITES[Math.floor(seed / HOSTNAME_ROLES.length) % FAKE_SITES.length];
+      const num = (seed % 99) + 1;
+      return `${site}-${role}-${String(num).padStart(2, "0")}`;
+    }
+
+    return result.join("-");
+  }
+
+  /**
+   * Parse and rebuild a DNS-style hostname like web-01.prod.acme.net.
+   * Preserves: env labels (prod/staging/dev), TLD, segment count.
+   * Replaces: role name, org name.
+   */
+  private _fakeDnsHostname(seed: number, original: string): string {
+    const segments = original.split(".");
+    if (segments.length < 2) {
+      // Not really DNS — fallback
+      const role = HOSTNAME_ROLES[seed % HOSTNAME_ROLES.length];
+      const site = FAKE_SITES[seed % FAKE_SITES.length];
+      return `${site}-${role}`;
+    }
+
+    const ENV_LABELS = new Set(["prod", "staging", "dev", "test", "qa", "uat", "preprod", "stg", "prd"]);
+    const KNOWN_TLDS = new Set(["com", "net", "org", "io", "dev", "co", "tech", "edu", "gov"]);
+
+    const result: string[] = [];
+    const tld = segments[segments.length - 1].toLowerCase();
+    const hasTld = KNOWN_TLDS.has(tld);
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const lower = seg.toLowerCase();
+
+      if (i === segments.length - 1 && hasTld) {
+        // Preserve TLD
+        result.push(seg);
+      } else if (ENV_LABELS.has(lower)) {
+        // Preserve environment label
+        result.push(seg);
+      } else if (i === 0) {
+        // First segment is typically role-id (e.g., "web-01", "core-rtr-01")
+        // Try to preserve role within it
+        const subParts = seg.split("-");
+        const fakeSubParts: string[] = [];
+        for (const sp of subParts) {
+          const upper = sp.toUpperCase();
+          if (HOSTNAME_ROLE_KEYWORDS.has(upper) || HOSTNAME_TIER_KEYWORDS.has(upper)) {
+            fakeSubParts.push(sp); // preserve role/tier
+          } else if (/^\d+$/.test(sp)) {
+            const newNum = (seed % 99) + 1;
+            fakeSubParts.push(String(newNum).padStart(sp.length, "0"));
+          } else {
+            // Replace non-role part
+            fakeSubParts.push(HOSTNAME_ROLES[seed % HOSTNAME_ROLES.length].toLowerCase());
+          }
+        }
+        result.push(fakeSubParts.join("-"));
+      } else if (i === segments.length - 2 && hasTld) {
+        // Second-to-last before TLD is the org domain — use consistent mapping
+        const orgKey = this._extractOrgDomain(original);
+        const fakeOrg = this._mapOrgDomain(orgKey, seed);
+        result.push(fakeOrg);
+      } else {
+        // Middle segments — check if env label, otherwise replace
+        if (lower.startsWith("dc-") || lower.startsWith("dc")) {
+          result.push(seg); // data center label
+        } else {
+          const fakeOrg = this._mapOrgDomain(lower, seed);
+          result.push(fakeOrg);
+        }
+      }
+    }
+
+    return result.join(".");
   }
 
   /** Fake VLAN ID/name or VRF name. Preserves the keyword structure. */
@@ -543,14 +1015,136 @@ export class NetworkGenerator implements BaseGenerator {
     return String(100 + (seed % 3900));
   }
 
-  /** Fake interface description. */
-  _fakeInterfaceDesc(seed: number, _original: string): string {
-    return INTERFACE_DESCS[seed % INTERFACE_DESCS.length];
+  // -------------------------------------------------------------------------
+  // Interface description — topology-aware
+  // -------------------------------------------------------------------------
+
+  /**
+   * Fake interface description preserving topology keywords.
+   *
+   * UPLINK, DOWNLINK, PEER, TRANSIT, TO, FROM, etc. survive obfuscation.
+   * Device names, site codes, circuit IDs, and customer names are replaced.
+   */
+  _fakeInterfaceDesc(seed: number, original: string): string {
+    if (!original) {
+      return INTERFACE_DESCS[seed % INTERFACE_DESCS.length];
+    }
+
+    // Split by whitespace and underscores (descriptions use both)
+    const sep = original.includes("_") ? "_" : " ";
+    const tokens = original.split(/[\s_]+/);
+
+    if (tokens.length < 2) {
+      return INTERFACE_DESCS[seed % INTERFACE_DESCS.length];
+    }
+
+    const result: string[] = [];
+    let replacementIdx = 0;
+
+    for (const token of tokens) {
+      const upper = token.toUpperCase();
+      // Preserve topology keywords
+      if (TOPOLOGY_KEYWORDS.has(upper)) {
+        result.push(token);
+        continue;
+      }
+      // Preserve if it looks like a known structural keyword (interface type etc.)
+      if (/^(Gi|Te|Ge|Eth|Fa|Po|Lo)\d/.test(token)) {
+        result.push(token);
+        continue;
+      }
+      // If it looks like a hostname (has dashes and letters), replace it
+      if (/[A-Z].*-.*[A-Z0-9]/i.test(token) || SITE_CODE_RE.test(upper)) {
+        // Try to parse as structured hostname
+        const subParts = token.split("-");
+        const fakeSubParts: string[] = [];
+        for (const sp of subParts) {
+          const spUpper = sp.toUpperCase();
+          if (HOSTNAME_ROLE_KEYWORDS.has(spUpper) || HOSTNAME_TIER_KEYWORDS.has(spUpper)) {
+            fakeSubParts.push(sp);
+          } else if (/^\d+$/.test(sp)) {
+            fakeSubParts.push(String((seed % 99) + 1).padStart(sp.length, "0"));
+          } else if (SITE_CODE_RE.test(spUpper)) {
+            fakeSubParts.push(this._mapSite(spUpper));
+          } else {
+            fakeSubParts.push(FAKE_SITES[(seed + replacementIdx) % FAKE_SITES.length]);
+            replacementIdx++;
+          }
+        }
+        result.push(fakeSubParts.join("-"));
+        continue;
+      }
+      // Circuit IDs, customer names — replace
+      if (/^[A-Z]{2,}$/i.test(token) && token.length <= 4) {
+        result.push(this._mapSite(token.toUpperCase()));
+      } else {
+        result.push(INTERFACE_DESCS[seed % INTERFACE_DESCS.length].split(" ")[replacementIdx % 3] || "Link");
+        replacementIdx++;
+      }
+    }
+
+    return result.join(sep);
   }
 
-  /** Fake route-map or prefix-list name. */
-  _fakeRouteMap(seed: number, _original: string): string {
-    return ROUTE_MAP_NAMES[seed % ROUTE_MAP_NAMES.length];
+  // -------------------------------------------------------------------------
+  // Route-map — semantic-preserving
+  // -------------------------------------------------------------------------
+
+  /**
+   * Fake route-map or prefix-list name preserving policy semantics.
+   *
+   * Pattern: RM-<POLICY>-<PROVIDER>-<DIRECTION>
+   * Preserves: RM/PL prefix, policy type (TRANSIT/PEER/CUSTOMER/DEFAULT),
+   *            IN/OUT direction. Replaces: provider/customer name.
+   */
+  _fakeRouteMap(seed: number, original: string): string {
+    if (!original) {
+      return ROUTE_MAP_NAMES[seed % ROUTE_MAP_NAMES.length];
+    }
+
+    const upper = original.toUpperCase();
+    const parts = upper.split("-");
+
+    if (parts.length < 2) {
+      return ROUTE_MAP_NAMES[seed % ROUTE_MAP_NAMES.length];
+    }
+
+    // Known prefixes
+    const KNOWN_PREFIXES = new Set(["RM", "PL", "RMAP", "RPL"]);
+    // Known policy types
+    const POLICY_TYPES = new Set(["TRANSIT", "PEER", "CUSTOMER", "CUST", "DEFAULT", "LOCAL", "EXPORT", "IMPORT", "REDISTRIBUTE", "FILTER", "PRIMARY", "SECONDARY", "BACKUP"]);
+    // Known directions
+    const DIRECTIONS = new Set(["IN", "OUT", "INBOUND", "OUTBOUND"]);
+
+    const result: string[] = [];
+    const toReplace: number[] = [];
+
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      if (KNOWN_PREFIXES.has(p)) {
+        result.push(p);
+      } else if (POLICY_TYPES.has(p)) {
+        result.push(p);
+      } else if (DIRECTIONS.has(p)) {
+        result.push(p);
+      } else {
+        // This is a provider/customer name — mark for replacement
+        result.push(p); // placeholder
+        toReplace.push(i);
+      }
+    }
+
+    // Replace provider/customer names with fake providers
+    for (const idx of toReplace) {
+      result[idx] = FAKE_PROVIDERS[(seed + idx) % FAKE_PROVIDERS.length];
+    }
+
+    // If nothing was replaced, just use the fallback
+    if (toReplace.length === 0 && parts.length > 2) {
+      return ROUTE_MAP_NAMES[seed % ROUTE_MAP_NAMES.length];
+    }
+
+    return result.join("-");
   }
 
   /** Fake OSPF identifiers (router-id or area). */
