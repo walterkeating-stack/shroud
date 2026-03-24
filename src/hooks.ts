@@ -233,6 +233,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       `[shroud] before_prompt_build: obfuscated ${result.entities.length} entities`,
     );
 
+    // NOTE: OpenClaw's hook API only supports prependContext (not prompt
+    // replacement). The raw user text still reaches the LLM alongside
+    // the obfuscated version. This is a known limitation tracked as a
+    // feature request for OpenClaw's before_prompt_build hook.
     return {
       prependContext: [
         "--- SHROUD PRIVACY LAYER ---",
