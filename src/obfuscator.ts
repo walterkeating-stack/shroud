@@ -136,6 +136,63 @@ function buildCombinedFakeRegex(fakes: string[]): RegExp | null {
 }
 
 /**
+ * Multi-pass deobfuscation that protects already-replaced regions.
+ *
+ * Uses placeholder sentinels: each replacement is temporarily stored as a
+ * unique placeholder (U+FFFF-based) that cannot match any fake value regex.
+ * After all passes complete, placeholders are swapped back to their real
+ * values. This prevents cascading replacements when a real value contains
+ * a substring that is also a fake value (e.g., fake "ACL-MGMT" maps to
+ * real "ACL-MGMT-FILTER" — without protection, later passes would find
+ * "ACL-MGMT" inside the restored value and replace it again).
+ */
+function multiPassDeobfuscate(
+  text: string,
+  combinedRe: RegExp | null,
+  reverse: Map<string, string>,
+  knownFakeSet: Set<string>,
+  maxPasses: number,
+): { text: string; replacements: number } {
+  if (!combinedRe) return { text, replacements: 0 };
+
+  let result = text;
+  let totalReplacements = 0;
+
+  // Map placeholder ID -> real value.  Placeholders use \uFFFF + index
+  // which cannot appear in fake values (they are printable ASCII).
+  const placeholders: string[] = [];
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    let passReplacements = 0;
+    combinedRe.lastIndex = 0;
+    result = result.replace(combinedRe, (match) => {
+      const real = reverse.get(match);
+      if (real !== undefined) {
+        passReplacements++;
+        knownFakeSet.delete(match);
+        // Store real value behind a placeholder to protect it from
+        // subsequent passes matching substrings within it.
+        const idx = placeholders.length;
+        placeholders.push(real);
+        return `\uFFFF${idx}\uFFFF`;
+      }
+      return match;
+    });
+    totalReplacements += passReplacements;
+    if (passReplacements === 0) break;
+  }
+
+  // Swap placeholders back to real values
+  if (placeholders.length > 0) {
+    result = result.replace(/\uFFFF(\d+)\uFFFF/g, (_m, idxStr) => {
+      return placeholders[parseInt(idxStr, 10)] ?? _m;
+    });
+  }
+
+  return { text: result, replacements: totalReplacements };
+}
+
+/**
  * Convert a simple wildcard pattern (* and ?) to a RegExp.
  * Caches compiled patterns for reuse. Bounded to 500 entries.
  */
@@ -465,34 +522,17 @@ export class Obfuscator {
     // Build a single combined regex for all fakes (longest-match-first).
     const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
 
-    // Recursive deobfuscation — multiple passes for nested structures
-    let result = text;
-    let totalReplacements = 0;
-    const MAX_PASSES = 3;
-
     // Collect known fakes that were NOT replaced (for residual pass)
     const knownFakeSet = new Set(fakes);
 
     // Build combined regex: escape each fake, join with alternation
     const combinedRe = buildCombinedFakeRegex(fakes);
 
-    for (let pass = 0; pass < MAX_PASSES; pass++) {
-      let passReplacements = 0;
-      if (combinedRe) {
-        combinedRe.lastIndex = 0;
-        result = result.replace(combinedRe, (match) => {
-          const real = reverse.get(match);
-          if (real !== undefined) {
-            passReplacements++;
-            knownFakeSet.delete(match);
-            return real;
-          }
-          return match;
-        });
-      }
-      totalReplacements += passReplacements;
-      if (passReplacements === 0) break; // No more replacements possible
-    }
+    // Multi-pass deobfuscation with protection against cascading replacements
+    const MAX_PASSES = 3;
+    const deobResult = multiPassDeobfuscate(text, combinedRe, reverse, knownFakeSet, MAX_PASSES);
+    let result = deobResult.text;
+    let totalReplacements = deobResult.replacements;
 
     // Subnet-aware deobfuscation: reverse-map CGNAT IPs the LLM derived
     const residual = this._deobfuscateResidualCgnat(result, knownFakeSet);
@@ -555,32 +595,14 @@ export class Obfuscator {
     }
 
     const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
-
-    // Recursive deobfuscation
-    let result = text;
-    let replacementCount = 0;
-    const MAX_PASSES = 3;
     const knownFakeSet = new Set(fakes);
-
     const combinedRe = buildCombinedFakeRegex(fakes);
 
-    for (let pass = 0; pass < MAX_PASSES; pass++) {
-      let passReplacements = 0;
-      if (combinedRe) {
-        combinedRe.lastIndex = 0;
-        result = result.replace(combinedRe, (match) => {
-          const real = reverse.get(match);
-          if (real !== undefined) {
-            passReplacements++;
-            knownFakeSet.delete(match);
-            return real;
-          }
-          return match;
-        });
-      }
-      replacementCount += passReplacements;
-      if (passReplacements === 0) break;
-    }
+    // Multi-pass deobfuscation with protection against cascading replacements
+    const MAX_PASSES = 3;
+    const deobResult = multiPassDeobfuscate(text, combinedRe, reverse, knownFakeSet, MAX_PASSES);
+    let result = deobResult.text;
+    let replacementCount = deobResult.replacements;
 
     // Subnet-aware deobfuscation for LLM-derived CGNAT IPs
     const residual = this._deobfuscateResidualCgnat(result, knownFakeSet);

@@ -41,33 +41,98 @@ fi
 if [ ! -f "$EVENT_STREAM" ]; then
   echo "Warning: event-stream.js not found — skipping EventStream patch."
   echo "  Looked at: $EVENT_STREAM"
-  exit 0
+  NEED_ES_PATCH=0
 fi
 
 # Idempotency check: don't re-patch if already patched
+NEED_ES_PATCH=1
 if grep -q '__shroudStreamDeobfuscate' "$EVENT_STREAM"; then
   echo "EventStream already patched — skipping."
-  echo "Restart OpenClaw to pick up changes."
-  exit 0
+  NEED_ES_PATCH=0
 fi
 
-# Back up the original if not already backed up
-if [ ! -f "${EVENT_STREAM}.shroud-backup" ]; then
-  cp "$EVENT_STREAM" "${EVENT_STREAM}.shroud-backup"
-  echo "Backed up original event-stream.js to ${EVENT_STREAM}.shroud-backup"
+if [ "$NEED_ES_PATCH" = "1" ]; then
+  # Back up the original if not already backed up
+  if [ ! -f "${EVENT_STREAM}.shroud-backup" ]; then
+    cp "$EVENT_STREAM" "${EVENT_STREAM}.shroud-backup"
+    echo "Backed up original event-stream.js to ${EVENT_STREAM}.shroud-backup"
+  fi
+
+  # Patch: inject the deobfuscation hook into push(event) {
+  # We look for "push(event) {" or "push(event){" and add the hook after the opening brace.
+  sed -i.tmp '/push(event)\s*{/a\
+          // Shroud deobfuscation hook\
+          const deob = globalThis.__shroudStreamDeobfuscate;\
+          if (deob \&\& event \&\& typeof event === '\''object'\'') {\
+              event = deob(this, event);\
+          }' "$EVENT_STREAM"
+  rm -f "${EVENT_STREAM}.tmp"
+
+  echo "Patched EventStream.push() with Shroud deobfuscation hook."
 fi
 
-# Patch: inject the deobfuscation hook into push(event) {
-# We look for "push(event) {" or "push(event){" and add the hook after the opening brace.
-sed -i.tmp '/push(event)\s*{/a\
-        // Shroud deobfuscation hook\
-        const deob = globalThis.__shroudStreamDeobfuscate;\
-        if (deob \&\& event \&\& typeof event === '\''object'\'') {\
-            event = deob(this, event);\
-        }' "$EVENT_STREAM"
-rm -f "${EVENT_STREAM}.tmp"
+# ---------------------------------------------------------------------------
+# Patch before_prompt_build to support { prompt } return (prompt replacement)
+#
+# Without this patch, OpenClaw ALWAYS sends the raw user prompt to the LLM
+# alongside the obfuscated prependContext — defeating Shroud's privacy guarantee.
+#
+# The patch:
+#   1. resolvePromptBuildHookResult() — pass through the `prompt` field
+#   2. effectivePrompt assignment — use hookResult.prompt when present
+# ---------------------------------------------------------------------------
+OPENCLAW_DIST=""
+if [ -n "$EVENT_STREAM" ] && [ -f "$EVENT_STREAM" ]; then
+  OPENCLAW_DIST="$(readlink -f "$(dirname "$EVENT_STREAM")/../../../../..")/dist"  # up from pi-ai/dist/utils/ → openclaw/dist/
+fi
+if [ ! -d "$OPENCLAW_DIST" ]; then
+  # Fallback: find via openclaw bin
+  if [ -n "$OPENCLAW_BIN_DIR" ]; then
+    OPENCLAW_DIST="$OPENCLAW_BIN_DIR/../lib/node_modules/openclaw/dist"
+  else
+    OPENCLAW_DIST="$HOME/.npm-global/lib/node_modules/openclaw/dist"
+  fi
+fi
 
-echo "Patched EventStream.push() with Shroud deobfuscation hook."
+PATCHED_PROMPT=0
+for PI_EMBEDDED in "$OPENCLAW_DIST"/pi-embedded-*.js; do
+  [ -f "$PI_EMBEDDED" ] || continue
+
+  # Idempotency: skip if already patched
+  if grep -q 'hookResult\.prompt' "$PI_EMBEDDED" 2>/dev/null; then
+    echo "  $(basename "$PI_EMBEDDED"): prompt override already patched — skipping."
+    PATCHED_PROMPT=1
+    continue
+  fi
+
+  # Back up
+  if [ ! -f "${PI_EMBEDDED}.shroud-backup" ]; then
+    cp "$PI_EMBEDDED" "${PI_EMBEDDED}.shroud-backup"
+  fi
+
+  # Patch 1: resolvePromptBuildHookResult — add prompt field to return object
+  # Before: return { systemPrompt: promptBuildResult?.systemPrompt ...
+  # After:  return { prompt: ..., systemPrompt: ...
+  sed -i.tmp 's/systemPrompt: promptBuildResult?.systemPrompt/prompt: promptBuildResult?.prompt ?? legacyResult?.prompt, systemPrompt: promptBuildResult?.systemPrompt/' "$PI_EMBEDDED"
+
+  # Patch 2: effectivePrompt — use hookResult.prompt when present
+  # Before: if (hookResult?.prependContext) { effectivePrompt = `${hookResult.prependContext}\n\n${params.prompt}`;
+  # After:  if (hookResult?.prompt) { effectivePrompt = hookResult.prompt; } else if (hookResult?.prependContext) { ...
+  sed -i.tmp 's/if (hookResult?.prependContext) {/if (hookResult?.prompt) { effectivePrompt = hookResult.prompt; } else if (hookResult?.prependContext) {/g' "$PI_EMBEDDED"
+
+  rm -f "${PI_EMBEDDED}.tmp"
+
+  if grep -q 'hookResult\.prompt' "$PI_EMBEDDED" 2>/dev/null; then
+    echo "  $(basename "$PI_EMBEDDED"): patched prompt override ✓"
+    PATCHED_PROMPT=1
+  else
+    echo "  WARNING: $(basename "$PI_EMBEDDED"): prompt override patch FAILED — review manually"
+  fi
+done
+
+if [ "$PATCHED_PROMPT" = "0" ]; then
+  echo "Warning: No pi-embedded files found or patched for prompt override."
+fi
 
 # ---------------------------------------------------------------------------
 # Clear Node.js V8 compile cache so the patched file is loaded from disk.

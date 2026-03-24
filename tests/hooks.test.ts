@@ -63,7 +63,7 @@ function createMockApi() {
 }
 
 describe("hooks - before_prompt_build", () => {
-  test("obfuscates user prompt and returns prependContext", async () => {
+  test("obfuscates user prompt and returns prompt replacement", async () => {
     const obf = new Obfuscator(testConfig);
     const { api, handlers } = createMockApi();
     registerHooks(api, obf);
@@ -71,10 +71,9 @@ describe("hooks - before_prompt_build", () => {
     const event = { prompt: "Contact john@acme.com please" };
     const result = await handlers["before_prompt_build"](event);
     expect(result).toBeDefined();
-    expect(result.prependContext).toBeDefined();
-    expect(result.prependContext).not.toContain("john@acme.com");
-    expect(result.prependContext).toContain("@"); // fake email present
-    expect(result.prependContext).toContain("SHROUD");
+    expect(result.prompt).toBeDefined();
+    expect(result.prompt).not.toContain("john@acme.com");
+    expect(result.prompt).toContain("@"); // fake email present
   });
 
   test("returns nothing when no PII detected", async () => {
@@ -276,7 +275,7 @@ describe("hooks - full flow", () => {
     const step1 = await handlers["before_prompt_build"]({
       prompt: "Look up john@acme.com",
     });
-    expect(step1.prependContext).not.toContain("john@acme.com");
+    expect(step1.prompt).not.toContain("john@acme.com");
 
     // Get the fake email from the mapping
     const fakeEmail = obf.obfuscate("john@acme.com").mappingsUsed["john@acme.com"];

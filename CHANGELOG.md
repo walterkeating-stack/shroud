@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.19] - 2026-03-24
+
+### Fixed
+- **Prompt privacy — raw PII no longer reaches LLM** — `before_prompt_build` hook now returns `{ prompt: obfuscatedText }` which fully replaces the user prompt. Previously returned `{ prependContext }` which OpenClaw appended alongside the raw prompt, sending all PII verbatim to the LLM. `deploy-local.sh` patches OpenClaw to support the `prompt` return field.
+- **ACL name deobfuscation corruption** — multi-pass deobfuscation now uses sentinel placeholders to prevent cascading replacements when a real value contains a substring matching another fake value (e.g., `ACL-MGMT-FILTER` → `ACL-MGMT-FILTER-FILTER-FILTER`)
+- **Tool result content block handling** — `before_message_write` hook now obfuscates/deobfuscates `block.content` (string and nested array forms) in addition to `block.text`, fixing PII leaks in Anthropic API tool_result blocks
+
+### Changed
+- `deploy-local.sh` — no longer exits early after EventStream patch; applies prompt override patch to all `pi-embedded-*.js` files independently
+
 ## [2.0.18] - 2026-03-24
 
 ### Fixed
