@@ -233,19 +233,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       `[shroud] before_prompt_build: obfuscated ${result.entities.length} entities`,
     );
 
-    // NOTE: OpenClaw's hook API only supports prependContext (not prompt
-    // replacement). The raw user text still reaches the LLM alongside
-    // the obfuscated version. This is a known limitation tracked as a
-    // feature request for OpenClaw's before_prompt_build hook.
+    // Return the obfuscated prompt as a full replacement.
+    // OpenClaw's deploy-local.sh patches before_prompt_build to support
+    // the `prompt` field, which replaces params.prompt entirely so that
+    // raw PII never reaches the LLM.
     return {
-      prependContext: [
-        "--- SHROUD PRIVACY LAYER ---",
-        "The following user message has been privacy-filtered.",
-        "Use ONLY the sanitized version below. Do NOT reference the original values.",
-        "",
-        result.obfuscated,
-        "--- END SHROUD ---",
-      ].join("\n"),
+      prompt: result.obfuscated,
     };
   });
 
@@ -278,11 +271,40 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (Array.isArray(msg.content)) {
         let changed = false;
         const newContent = msg.content.map((block: any) => {
-          if (block && typeof block === "object" && typeof block.text === "string") {
-            const deobfuscated = obfuscator.deobfuscate(block.text);
-            if (deobfuscated !== block.text) {
-              changed = true;
-              return { ...block, text: deobfuscated };
+          if (block && typeof block === "object") {
+            // Handle blocks with .text (text content blocks)
+            if (typeof block.text === "string") {
+              const deobfuscated = obfuscator.deobfuscate(block.text);
+              if (deobfuscated !== block.text) {
+                changed = true;
+                return { ...block, text: deobfuscated };
+              }
+            }
+            // Handle blocks with .content as string (tool_result blocks)
+            if (typeof block.content === "string") {
+              const deobfuscated = obfuscator.deobfuscate(block.content);
+              if (deobfuscated !== block.content) {
+                changed = true;
+                return { ...block, content: deobfuscated };
+              }
+            }
+            // Handle blocks with .content as array (nested content blocks)
+            if (Array.isArray(block.content)) {
+              let innerChanged = false;
+              const newInner = block.content.map((inner: any) => {
+                if (inner && typeof inner === "object" && typeof inner.text === "string") {
+                  const deobfuscated = obfuscator.deobfuscate(inner.text);
+                  if (deobfuscated !== inner.text) {
+                    innerChanged = true;
+                    return { ...inner, text: deobfuscated };
+                  }
+                }
+                return inner;
+              });
+              if (innerChanged) {
+                changed = true;
+                return { ...block, content: newInner };
+              }
             }
           }
           return block;
@@ -313,12 +335,45 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       let changed = false;
       const allResults: ObfuscationResult[] = [];
       const newContent = msg.content.map((block: any) => {
-        if (block && typeof block === "object" && typeof block.text === "string") {
-          const result = obfuscator.obfuscate(block.text);
-          if (result.entities.length > 0) {
-            changed = true;
-            allResults.push(result);
-            return { ...block, text: result.obfuscated };
+        if (block && typeof block === "object") {
+          // Handle blocks with .text (text content blocks)
+          if (typeof block.text === "string") {
+            const result = obfuscator.obfuscate(block.text);
+            if (result.entities.length > 0) {
+              changed = true;
+              allResults.push(result);
+              return { ...block, text: result.obfuscated };
+            }
+          }
+          // Handle blocks with .content as string (tool_result blocks)
+          if (typeof block.content === "string") {
+            const result = obfuscator.obfuscate(block.content);
+            if (result.entities.length > 0) {
+              changed = true;
+              allResults.push(result);
+              return { ...block, content: result.obfuscated };
+            }
+          }
+          // Handle blocks with .content as array (nested content blocks)
+          if (Array.isArray(block.content)) {
+            let innerChanged = false;
+            const innerResults: ObfuscationResult[] = [];
+            const newInner = block.content.map((inner: any) => {
+              if (inner && typeof inner === "object" && typeof inner.text === "string") {
+                const result = obfuscator.obfuscate(inner.text);
+                if (result.entities.length > 0) {
+                  innerChanged = true;
+                  innerResults.push(result);
+                  return { ...inner, text: result.obfuscated };
+                }
+              }
+              return inner;
+            });
+            if (innerChanged) {
+              changed = true;
+              allResults.push(...innerResults);
+              return { ...block, content: newInner };
+            }
           }
         }
         return block;
