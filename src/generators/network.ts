@@ -230,6 +230,13 @@ export const VLAN_NAMES = [
   "DMZ", "BACKUP", "IOT", "SECURITY", "WIRELESS", "STORAGE",
 ];
 
+export const VRF_NAMES = [
+  "VRF-TRANSIT", "VRF-SERVICES", "VRF-INTERNAL", "VRF-EXTERNAL",
+  "VRF-MGMT", "VRF-BACKUP", "VRF-GUEST", "VRF-DMZ",
+  "VRF-CORE", "VRF-EDGE", "VRF-INFRA", "VRF-MONITOR",
+  "VRF-VOICE", "VRF-DATA", "VRF-IOT", "VRF-SECURE",
+];
+
 export const INTERFACE_DESCS = [
   "Uplink to Core", "Server Farm Link", "WAN Circuit", "Management VLAN",
   "User Access Port", "Trunk to Distribution", "Backup Link", "DMZ Segment",
@@ -496,8 +503,18 @@ export class NetworkGenerator implements BaseGenerator {
     return `${site}-${role}-${String(num).padStart(2, "0")}`;
   }
 
-  /** Fake VLAN ID/name. Preserves the keyword structure. */
+  /** Fake VLAN ID/name or VRF name. Preserves the keyword structure. */
   _fakeVlanId(seed: number, original: string): string {
+    // VRF names: VRF-VOICE, VRF-EUROCAT_E, VRF_OPS_DATA, etc.
+    if (/^VRF[-_]/i.test(original) || /^[A-Z][A-Z_]{2,}$/i.test(original)) {
+      return VRF_NAMES[seed % VRF_NAMES.length];
+    }
+    // Route distinguisher / route target: 65001:100
+    if (/^\d+:\d+$/.test(original)) {
+      const asn = 64512 + (seed % 1023);
+      const id = 100 + (seed % 900);
+      return `${asn}:${id}`;
+    }
     // If the original is a "vlan <id>" or just a number in a vlan context,
     // the detector captures the full match. Preserve surrounding keywords.
     const nameMatch = original.match(/name\s+(.+)/i);
