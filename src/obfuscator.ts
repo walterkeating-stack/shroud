@@ -27,6 +27,16 @@ import { RedactionFormatter, RedactionLevel } from "./redaction.js";
 /** Regex to find CGNAT IPs (100.64.0.0/10) in text. */
 const CGNAT_IP_RE = /\b(100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})\b/g;
 
+/**
+ * Regex to find CGNAT range descriptions that LLMs generate when summarizing
+ * fake networks. Catches patterns like:
+ *   - "100.64.x.x/xx" or "100.64.0.x/24"
+ *   - "100.64.x.x space" or "within 100.64.x.x"
+ *   - "100.64.0.0/10" (the CGNAT range itself)
+ *   - "100.64.x.x" (wildcard notation)
+ */
+const CGNAT_RANGE_DESC_RE = /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.[\dx]+\.[\dx]+(?:\/[\dx]+)?\b/gi;
+
 /** Regex to find fd00::/8 ULA IPv6 addresses (Shroud fake range) in text. */
 const ULA_IPV6_RE = /(?:^|(?<=[\s,;=(\[]))fd00(?::[0-9a-fA-F]{1,4}){0,7}(?:::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?)?(?=$|[\s,;)\]\/])/gi;
 
@@ -493,6 +503,15 @@ export class Obfuscator {
       totalReplacements += residualV6.count;
     }
 
+    // CGNAT range description cleanup: catch LLM-generated summaries like
+    // "100.64.x.x/xx" or "100.64.0.x/24" that indicate the LLM learned
+    // Shroud's fake range and is describing it generically.
+    const rangeCleanup = this._deobfuscateCgnatRangeDescriptions(result);
+    if (rangeCleanup.count > 0) {
+      result = rangeCleanup.text;
+      totalReplacements += rangeCleanup.count;
+    }
+
     // Audit log
     if (this._audit && totalReplacements > 0) {
       const elapsed = Date.now() - startTime;
@@ -617,6 +636,77 @@ export class Obfuscator {
         // skip invalid
       }
       return match;
+    });
+
+    return { text: result, count };
+  }
+
+  /**
+   * Clean up CGNAT range descriptions that LLMs generate when summarizing
+   * fake networks. The LLM sees multiple 100.64.x.y addresses and writes
+   * summaries like "100.64.x.x/xx" or "within 100.64.x.x space".
+   *
+   * Strategy: find the most common real network prefix from the store
+   * mappings and replace CGNAT range descriptions with the real prefix.
+   */
+  private _deobfuscateCgnatRangeDescriptions(text: string): { text: string; count: number } {
+    const mapper = this._subnetMapper;
+    if (mapper.subnetRev.size === 0) return { text, count: 0 };
+
+    // Find the most common real network prefix to use as replacement
+    // Build a map of real network prefixes and their frequency
+    const realPrefixCounts = new Map<string, number>();
+    for (const [, key] of mapper.subnetRev) {
+      const [realNetStr, prefixLenStr] = key.split(",");
+      const realNetInt = parseInt(realNetStr, 10);
+      const prefixLen = parseInt(prefixLenStr, 10);
+      const realIp = intToIp(realNetInt);
+      // Extract first two octets as the prefix
+      const prefix = realIp.split(".").slice(0, 2).join(".");
+      realPrefixCounts.set(prefix, (realPrefixCounts.get(prefix) ?? 0) + 1);
+    }
+
+    if (realPrefixCounts.size === 0) return { text, count: 0 };
+
+    // Find the most common real prefix
+    let bestPrefix = "10.0";
+    let bestCount = 0;
+    for (const [prefix, count] of realPrefixCounts) {
+      if (count > bestCount) {
+        bestPrefix = prefix;
+        bestCount = count;
+      }
+    }
+
+    // Also build a specific mapping: for each fake subnet's first two octets,
+    // map to the real subnet's first two octets
+    const fakeToRealOctetMap = new Map<string, string>();
+    for (const [fakeNetInt, key] of mapper.subnetRev) {
+      const fakeIp = intToIp(fakeNetInt);
+      const fakePrefix = fakeIp.split(".").slice(0, 2).join(".");
+      const [realNetStr] = key.split(",");
+      const realIp = intToIp(parseInt(realNetStr, 10));
+      const realPrefix = realIp.split(".").slice(0, 2).join(".");
+      fakeToRealOctetMap.set(fakePrefix, realPrefix);
+    }
+
+    let count = 0;
+    const result = text.replace(CGNAT_RANGE_DESC_RE, (match) => {
+      // Don't replace if it's a standard CGNAT IP (handled by _deobfuscateResidualCgnat)
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(match)) return match;
+
+      // Extract the first two octets of the fake range
+      const parts = match.split(".");
+      if (parts.length >= 2) {
+        const fakePrefix = parts[0] + "." + parts[1];
+        const realPrefix = fakeToRealOctetMap.get(fakePrefix) || bestPrefix;
+        count++;
+        // Replace CGNAT octets with real octets, preserve the rest (x, /xx, etc.)
+        return match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, realPrefix);
+      }
+
+      count++;
+      return match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, bestPrefix);
     });
 
     return { text: result, count };
