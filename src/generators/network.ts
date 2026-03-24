@@ -193,17 +193,22 @@ export class SubnetMapper {
     const existing = this.subnetFwd.get(key);
     if (existing !== undefined) return existing;
 
-    // Allocate a slot in CGNAT space, aligned to the subnet size
+    // Allocate in CGNAT space using a byte offset (not a slot counter).
+    // Each allocation advances the offset by the actual subnet size,
+    // aligned to the subnet boundary, to prevent overlapping subnets.
     const hostBits = 32 - prefixLen;
     const subnetSize = 1 << hostBits;
 
-    // Place fake networks sequentially in CGNAT space
-    let fakeNet = (CGNAT_BASE + this.subnetNextSlot * subnetSize) >>> 0;
-    this.subnetNextSlot += 1;
+    // Align the current offset up to the subnet boundary
+    const alignedOffset = (this.subnetNextSlot + subnetSize - 1) & ~(subnetSize - 1);
+    let fakeNet = (CGNAT_BASE + alignedOffset) >>> 0;
+
+    // Advance offset past this allocation
+    this.subnetNextSlot = alignedOffset + subnetSize;
 
     // Wrap around if we exceed CGNAT space
     if ((fakeNet + subnetSize) >>> 0 > (CGNAT_BASE + CGNAT_SIZE) >>> 0) {
-      this.subnetNextSlot = 0;
+      this.subnetNextSlot = subnetSize;
       fakeNet = CGNAT_BASE;
     }
 
