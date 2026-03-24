@@ -583,6 +583,110 @@ describe("LRU eviction via obfuscator (QW10)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// EXIT TEST: Incomplete config / direct instantiation (OpenClaw bug report)
+// ---------------------------------------------------------------------------
+
+describe("Exit test: direct instantiation without resolveConfig", () => {
+  test("missing redactionLevel defaults to full mode (replacements not dropped)", () => {
+    // Simulates how OpenClaw tested: new Obfuscator({ secretKey, ... }) without resolveConfig
+    const obf = new Obfuscator({
+      ...testConfig,
+      redactionLevel: undefined as any,
+    });
+    const result = obf.obfuscate("Call me at +436648563582 please");
+    // The phone must be replaced with a fake, not dropped
+    expect(result.obfuscated).not.toContain("+436648563582");
+    expect(result.obfuscated.length).toBeGreaterThan("Call me at  please".length);
+    expect(Object.keys(result.mappingsUsed).length).toBe(1);
+    // The fake number should actually appear in the output
+    const fakePhone = result.mappingsUsed["+436648563582"];
+    expect(result.obfuscated).toContain(fakePhone);
+  });
+
+  test("minimal config with only required fields still obfuscates", () => {
+    // The exact constructor call from the OpenClaw bug report
+    const obf = new Obfuscator({
+      secretKey: "testkey123",
+      customPatterns: [],
+      allowlist: [],
+      denylist: [],
+    } as any);
+    const result = obf.obfuscate("Server at 10.0.0.1");
+    expect(result.obfuscated).not.toContain("10.0.0.1");
+    expect(result.entities.length).toBeGreaterThan(0);
+    // Fake IP must be present in output, not empty
+    const fakeIp = Object.values(result.mappingsUsed)[0];
+    expect(fakeIp).toBeTruthy();
+    expect(result.obfuscated).toContain(fakeIp);
+  });
+
+  test("full OpenClaw test scenario: phones, email@example.com, hex ID", () => {
+    const obf = new Obfuscator({
+      secretKey: "testkey123",
+      customPatterns: [],
+      allowlist: [],
+      denylist: [],
+    } as any);
+    const input = [
+      "From: Walter (+436648563582)",
+      "Gateway phone: +436704096353",
+      "Message-ID: 3A868CF298C17E9E7EC0",
+      "Email: walter@example.com",
+    ].join("\n");
+    const result = obf.obfuscate(input);
+
+    // Both phones must be detected and replaced with real fake values
+    expect(result.obfuscated).not.toContain("+436648563582");
+    expect(result.obfuscated).not.toContain("+436704096353");
+    const phone1Fake = result.mappingsUsed["+436648563582"];
+    const phone2Fake = result.mappingsUsed["+436704096353"];
+    expect(phone1Fake).toBeTruthy();
+    expect(phone2Fake).toBeTruthy();
+    expect(result.obfuscated).toContain(phone1Fake);
+    expect(result.obfuscated).toContain(phone2Fake);
+
+    // example.com email correctly filtered as RFC 2606 doc domain (not a bug)
+    expect(result.obfuscated).toContain("walter@example.com");
+
+    // Hex message ID has no detector — should pass through unchanged
+    expect(result.obfuscated).toContain("3A868CF298C17E9E7EC0");
+
+    // Roundtrip: deobfuscation restores original phones
+    const restored = obf.deobfuscate(result.obfuscated);
+    expect(restored).toContain("+436648563582");
+    expect(restored).toContain("+436704096353");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EXIT TEST: Documentation domain filtering
+// ---------------------------------------------------------------------------
+
+describe("Exit test: RFC 2606 doc domain filtering", () => {
+  test("example.com email is filtered (not obfuscated)", () => {
+    const obf = makeObfuscator();
+    const result = obf.obfuscate("Contact user@example.com");
+    expect(result.obfuscated).toContain("user@example.com");
+    expect(result.entities.length).toBe(0); // filtered before reaching entities
+  });
+
+  test("real domain email IS obfuscated", () => {
+    const obf = makeObfuscator();
+    const result = obf.obfuscate("Contact walter@realcompany.at");
+    expect(result.obfuscated).not.toContain("walter@realcompany.at");
+    expect(result.entities.length).toBeGreaterThan(0);
+  });
+
+  test("example.org and example.net also filtered", () => {
+    const obf = makeObfuscator();
+    const r1 = obf.obfuscate("a@example.org");
+    const r2 = obf.obfuscate("b@example.net");
+    expect(r1.obfuscated).toContain("a@example.org");
+    expect(r2.obfuscated).toContain("b@example.net");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // CGNAT range description deobfuscation
 // ---------------------------------------------------------------------------
 
