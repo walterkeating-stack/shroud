@@ -124,7 +124,10 @@ export class SubnetMapper {
     while ((m = cidrRe.exec(text)) !== null) {
       try {
         const prefixLen = parseInt(m[2], 10);
-        if (prefixLen < 0 || prefixLen > 32) continue;
+        // Skip default routes (/0-/7) and host routes (/31-/32) — they are
+        // not real subnet boundaries.  /0 is especially dangerous: it matches
+        // every IP, so all 32 host bits leak through the fake mapping.
+        if (prefixLen < 8 || prefixLen > 30) continue;
         const ipInt = ipToInt(m[1]);
         const mask = prefixLen === 0 ? 0 : ((0xffffffff << (32 - prefixLen)) >>> 0);
         const netInt = (ipInt & mask) >>> 0;
