@@ -734,45 +734,39 @@ export class Obfuscator {
       // Don't replace if it's a standard CGNAT IP (handled by _deobfuscateResidualCgnat)
       if (/^\d+\.\d+\.\d+\.\d+$/.test(match)) return match;
 
-      // Try to find a matching fake network by extracting the IP-like portion
-      // and looking up each known fake network
-      let matchedReal: { realIp: string; prefixLen: number } | null = null;
-      for (const [fakeIp, info] of fakeToRealMap) {
-        // Check if this range description starts with the fake network's octets
-        const fakeOctets = fakeIp.split(".");
-        const matchOctets = match.split(".");
-        let isMatch = true;
-        for (let i = 0; i < Math.min(fakeOctets.length, matchOctets.length); i++) {
-          const fo = parseInt(fakeOctets[i], 10);
-          const mo = parseInt(matchOctets[i], 10);
-          if (!isNaN(fo) && !isNaN(mo) && fo !== mo) { isMatch = false; break; }
-          if (isNaN(mo)) break; // wildcard or non-numeric part
-        }
-        if (isMatch) {
-          matchedReal = info;
-          break;
+      // For range descriptions, try to find the best real prefix.
+      // First try exact third-octet match, then fall back to best prefix.
+      const matchOctets = match.split(".");
+      const thirdOctet = parseInt(matchOctets[2], 10);
+      let realPrefix = bestPrefix;
+      let realPrefixLen = mostCommonPrefixLen;
+
+      if (!isNaN(thirdOctet)) {
+        // Try to find a fake subnet whose third octet matches
+        for (const [fakeIp, info] of fakeToRealMap) {
+          const fakeOctets = fakeIp.split(".");
+          if (parseInt(fakeOctets[2], 10) === thirdOctet) {
+            realPrefix = info.realIp.split(".").slice(0, 2).join(".");
+            realPrefixLen = info.prefixLen;
+            break;
+          }
         }
       }
 
-      const realPrefix = matchedReal
-        ? matchedReal.realIp.split(".").slice(0, 2).join(".")
-        : bestPrefix;
-      const realPrefixLen = matchedReal?.prefixLen || mostCommonPrefixLen;
       count++;
 
-      // Replace CGNAT octets with real octets
+      // Replace CGNAT first two octets with real prefix
       let replaced = match.replace(/^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])/, realPrefix);
 
       // Fix CIDR suffix
       replaced = replaced.replace(/\/10\b/, `/${realPrefixLen}`);
       replaced = replaced.replace(/\/xx\b/, `/${realPrefixLen}`);
 
-      // Validate: check all octets in result are 0-255
-      const octets = replaced.match(/\d+/g);
-      if (octets) {
-        for (let i = 0; i < Math.min(octets.length, 4); i++) {
-          if (parseInt(octets[i], 10) > 255) {
-            // Invalid octet — return original match unmodified
+      // Validate: check all numeric octets in result are 0-255
+      const numericOctets = replaced.match(/\b\d{1,3}\b/g);
+      if (numericOctets) {
+        for (let i = 0; i < Math.min(numericOctets.length, 4); i++) {
+          if (parseInt(numericOctets[i], 10) > 255) {
             count--;
             return match;
           }
