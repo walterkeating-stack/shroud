@@ -581,3 +581,51 @@ describe("LRU eviction via obfuscator (QW10)", () => {
     expect(stats.storeMappings).toBeLessThanOrEqual(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CGNAT range description deobfuscation
+// ---------------------------------------------------------------------------
+
+describe("CGNAT range description cleanup", () => {
+  test("deobfuscates wildcard CGNAT range descriptions (100.64.x.x/xx)", () => {
+    const obf = makeObfuscator();
+    // Obfuscate real IPs to teach the subnet mapper
+    const result = obf.obfuscate("ip address 10.1.0.1 255.255.255.0\nip address 10.1.0.2 255.255.255.0");
+    expect(result.entities.length).toBeGreaterThan(0);
+
+    // Simulate LLM writing a CGNAT range description
+    const deob = obf.deobfuscate("The VRF uses 100.64.x.x/xx range");
+    expect(deob).not.toContain("100.64");
+  });
+
+  test("deobfuscates CGNAT range with wildcard octets", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("ip address 10.50.0.1 255.255.255.0");
+
+    const deob = obf.deobfuscate("Allocations within 100.64.0.x/24 space");
+    expect(deob).not.toContain("100.64");
+  });
+
+  test("does not break normal CGNAT IP deobfuscation", () => {
+    const obf = makeObfuscator();
+    const result = obf.obfuscate("Server at 10.1.0.1 is down");
+    // Extract the fake IP
+    const fakeIp = result.obfuscated.match(/100\.\d+\.\d+\.\d+/)?.[0];
+    expect(fakeIp).toBeTruthy();
+
+    // Normal deobfuscation should still work
+    const deob = obf.deobfuscate(`Check ${fakeIp}`);
+    expect(deob).toContain("10.1.0.1");
+    expect(deob).not.toContain("100.64");
+  });
+
+  test("handles LLM summary with multiple CGNAT ranges", () => {
+    const obf = makeObfuscator();
+    obf.obfuscate("VRF-A: 10.1.0.0/24\nVRF-B: 10.2.0.0/24\nVRF-C: 10.3.0.0/24");
+
+    const deob = obf.deobfuscate(
+      "VRF-A: 100.64.0.x/24\nVRF-B: 100.64.1.x/24\nVRF-C: 100.64.x.x/xx"
+    );
+    expect(deob).not.toContain("100.64");
+  });
+});
