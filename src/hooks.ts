@@ -583,7 +583,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     if (isTextDelta || isMessageUpdateTextDelta) {
       let buf = stream[SHROUD_BUF];
-      if (!buf) { buf = { raw: "", emitted: 0 }; stream[SHROUD_BUF] = buf; }
+      if (!buf) { buf = { raw: "", emitted: 0, deobCount: 0 }; stream[SHROUD_BUF] = buf; }
 
       const src = isMessageUpdateTextDelta ? event.assistantMessageEvent : event;
       const chunk = typeof src.delta === "string" ? src.delta
@@ -591,7 +591,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (!chunk) return event;
 
       buf.raw += chunk;
-      const deob = obfuscator.deobfuscate(buf.raw);
+      const { text: deob, replacementCount } = obfuscator.deobfuscateWithStats(buf.raw);
+      buf.deobCount = replacementCount; // track cumulative replacements
 
       // Emit the new portion of the deobfuscated buffer
       let newText: string;
@@ -628,7 +629,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     if (isEnd) {
       // Deobfuscate content blocks in the event's message/partial
-      let streamDeobCount = 0;
+      // (corrects any partial fakes left from streaming)
       const targets = [
         event.message, event.partial,
         event.assistantMessageEvent?.partial,
@@ -638,17 +639,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (target?.content && Array.isArray(target.content)) {
           for (const block of target.content) {
             if (block?.type === "text" && typeof block.text === "string") {
-              const { text: deob, replacementCount } = obfuscator.deobfuscateWithStats(block.text);
-              if (deob !== block.text) {
-                block.text = deob;
-                streamDeobCount += replacementCount;
-              }
+              const deob = obfuscator.deobfuscate(block.text);
+              if (deob !== block.text) block.text = deob;
             }
           }
         }
       }
 
-      // Audit: count streaming deobfuscations
+      // Audit: use the replacement count accumulated during streaming
+      const buf = stream[SHROUD_BUF];
+      const streamDeobCount = buf?.deobCount ?? 0;
       if (streamDeobCount > 0 && auditActive) {
         try {
           emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), streamDeobCount);
