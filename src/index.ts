@@ -114,9 +114,16 @@ export default {
     ensureEventStreamPatched(api.logger);
 
     const config = resolveConfig(api.pluginConfig);
-    const obfuscator = new Obfuscator(config);
+    let obfuscator = new Obfuscator(config);
 
     registerHooks(api, obfuscator);
+
+    // After registerHooks, the shared global obfuscator may have replaced ours.
+    // All tools must use the same instance that the hooks use.
+    const g = globalThis as any;
+    if (g.__shroudObfuscator) {
+      obfuscator = g.__shroudObfuscator;
+    }
 
     // Register shroud_status tool
     api.registerTool({
