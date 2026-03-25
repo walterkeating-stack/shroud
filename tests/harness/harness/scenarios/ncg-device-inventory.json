@@ -1,0 +1,60 @@
+{
+  "name": "NCG Device Inventory Queries",
+  "tests": [
+    {
+      "name": "List interfaces with IPs and descriptions on core router",
+      "input": "List all interfaces on CHICAGO-CORE-RTR-01 with their IPs and descriptions.\n\n--- Device Config: CHICAGO-CORE-RTR-01 ---\nhostname CHICAGO-CORE-RTR-01\n!\ninterface Loopback0\n description MGMT-Loopback\n ip address 10.255.0.1 255.255.255.255\n!\ninterface GigabitEthernet0/0/0\n description UPLINK_TO_CHI-DIST-SW-01_Gi1/0/1\n ip address 10.1.0.1 255.255.255.252\n no shutdown\n!\ninterface GigabitEthernet0/0/1\n description WAN_CID:LUMEN-CHI-0044827_TO_NYC-CORE-RTR-01\n ip address 198.51.100.2 255.255.255.252\n ip access-group ACL-WAN-IN in\n no shutdown\n!\ninterface GigabitEthernet0/0/2\n description PEERING_IX_CHI-IX_RS1\n ip address 206.108.34.17 255.255.255.252\n no shutdown\n!\ninterface GigabitEthernet0/0/3.100\n description CUST_ACME-CORP_CID:ACME-CHI-001\n encapsulation dot1Q 100\n ip vrf forwarding CUST-ACME\n ip address 10.100.0.1 255.255.255.252\n!\ninterface GigabitEthernet0/0/3.200\n description CUST_GLOBEX-INC_CID:GLOB-CHI-042\n encapsulation dot1Q 200\n ip vrf forwarding CUST-GLOBEX\n ip address 10.100.1.1 255.255.255.252",
+      "assertions": {
+        "llm_must_not_see": ["10.255.0.1", "10.1.0.1", "198.51.100.2", "206.108.34.17", "10.100.0.1", "10.100.1.1"],
+        "user_must_see": ["10.255.0.1", "10.1.0.1", "198.51.100.2", "206.108.34.17", "10.100.0.1", "10.100.1.1"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "BGP neighbors on PE routers in Frankfurt",
+      "input": "Show me all BGP neighbors on the PE routers in Frankfurt.\n\n--- show ip bgp summary — FRA-MPLS-PE-01 ---\nhostname FRA-MPLS-PE-01\nBGP router identifier 10.255.1.10, local AS number 65000\nNeighbor        V  AS    MsgRcvd  MsgSent  TblVer  Up/Down  State/PfxRcd\n10.255.1.1      4  65000  142876   138291   48291   4w2d     312\n10.255.1.2      4  65000  139472   135012   48291   4w2d     312\n172.16.40.2     4  65100   28491    27103   48291   2w5d     47\n172.16.40.6     4  65200   15832    14291   48291   1w3d     23\n\n--- show ip bgp summary — FRA-MPLS-PE-02 ---\nhostname FRA-MPLS-PE-02\nBGP router identifier 10.255.1.11, local AS number 65000\nNeighbor        V  AS    MsgRcvd  MsgSent  TblVer  Up/Down  State/PfxRcd\n10.255.1.1      4  65000  142901   138310   48295   4w2d     312\n10.255.1.2      4  65000  139501   135041   48295   4w2d     312\n172.16.41.2     4  65300    9271     8812   48295   3d       12\n172.16.41.6     4  65400   31204    29801   48295   3w1d     89",
+      "assertions": {
+        "llm_must_not_see": ["10.255.1.10", "10.255.1.11", "172.16.40.2", "172.16.40.6", "172.16.41.2", "172.16.41.6"],
+        "user_must_see": ["10.255.1.10", "10.255.1.11", "172.16.40.2", "172.16.40.6", "172.16.41.2", "172.16.41.6"],
+        "entity_count_min": 8,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "VRF list on MPLS PE router",
+      "input": "What VRFs are configured on MPLS-PE-AMS-01?\n\n--- show ip vrf — MPLS-PE-AMS-01 ---\nhostname MPLS-PE-AMS-01\nName                 Default RD       Interfaces\nCUST-ACME            65000:100        Gi0/0/2.100\nCUST-GLOBEX          65000:200        Gi0/0/2.200\nCUST-INITECH         65000:300        Gi0/0/2.300\nCUST-UMBRELLA        65000:400        Gi0/0/3.100\nMGMT-OOB             65000:999        Gi0/0/4\n!\nip vrf CUST-ACME\n rd 65000:100\n route-target export 65000:100\n route-target import 65000:100\n!\nip vrf CUST-GLOBEX\n rd 65000:200\n route-target export 65000:200\n route-target import 65000:200\n route-target import 65000:100\n!\nip vrf CUST-INITECH\n rd 65000:300\n route-target export 65000:300\n route-target import 65000:300\n!\nip vrf CUST-UMBRELLA\n rd 65000:400\n route-target export 65000:400\n route-target import 65000:400",
+      "assertions": {
+        "llm_must_not_see": ["MPLS-PE-AMS-01"],
+        "user_must_see": ["MPLS-PE-AMS-01"],
+        "entity_count_min": 1,
+        "categories": ["hostname"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Routing table for customer VRF",
+      "input": "Get the routing table for VRF CUSTOMER-A on NYC-PE-02.\n\n--- show ip route vrf CUSTOMER-A — NYC-PE-02 ---\nhostname NYC-PE-02\nRouting Table: CUSTOMER-A\nGateway of last resort is not set\n\nB     10.50.0.0/16 [200/0] via 10.255.2.1, 2w3d\nB     10.51.0.0/16 [200/0] via 10.255.2.1, 2w3d\nC     10.60.0.0/30 is directly connected, GigabitEthernet0/0/1.500\nL     10.60.0.1/32 is directly connected, GigabitEthernet0/0/1.500\nB     172.20.0.0/16 [20/0] via 10.60.0.2, 1w5d\nB     172.21.0.0/16 [20/0] via 10.60.0.2, 1w5d\nS     192.168.100.0/24 [1/0] via 10.60.0.2\nB     192.168.200.0/24 [200/0] via 10.255.2.3, 3d",
+      "assertions": {
+        "llm_must_not_see": ["10.255.2.1", "10.60.0.1", "10.60.0.2", "172.20.0.0", "192.168.100.0", "192.168.200.0"],
+        "user_must_see": ["10.255.2.1", "10.60.0.1", "10.60.0.2", "172.20.0.0", "192.168.100.0", "192.168.200.0"],
+        "entity_count_min": 8,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Multi-device interface inventory with circuit IDs and customer names",
+      "input": "Show all customer-facing interfaces across the Chicago POP.\n\n--- CHICAGO-PE-01 ---\ninterface GigabitEthernet0/0/0.100\n description CID:LUMEN-42891 CUST:Acme_Corp CONTACT:netops@acme-corp.com +1-312-555-0147\n ip vrf forwarding VRF-ACME\n ip address 10.100.0.1 255.255.255.252\n!\ninterface GigabitEthernet0/0/0.200\n description CID:ZAYO-88213 CUST:Globex_International CONTACT:noc@globex.net +1-312-555-0293\n ip vrf forwarding VRF-GLOBEX\n ip address 10.100.1.1 255.255.255.252\n!\ninterface GigabitEthernet0/0/1.300\n description CID:GTT-10042 CUST:Initech_LLC CONTACT:it-infra@initech.com +1-312-555-0381\n ip vrf forwarding VRF-INITECH\n ip address 10.100.2.1 255.255.255.252\n\n--- CHICAGO-PE-02 ---\ninterface GigabitEthernet0/0/0.100\n description CID:LUMEN-42892 CUST:Acme_Corp_Backup CONTACT:netops@acme-corp.com +1-312-555-0147\n ip vrf forwarding VRF-ACME\n ip address 10.100.0.5 255.255.255.252\n!\ninterface GigabitEthernet0/0/0.400\n description CID:CROWN-77104 CUST:Umbrella_Industries CONTACT:network@umbrella-ind.com +1-312-555-0512\n ip vrf forwarding VRF-UMBRELLA\n ip address 10.100.3.1 255.255.255.252",
+      "assertions": {
+        "llm_must_not_see": ["10.100.0.1", "10.100.1.1", "10.100.2.1", "10.100.0.5", "10.100.3.1", "netops@acme-corp.com", "noc@globex.net"],
+        "user_must_see": ["10.100.0.1", "10.100.1.1", "10.100.2.1", "10.100.0.5", "10.100.3.1", "netops@acme-corp.com", "noc@globex.net"],
+        "entity_count_min": 10,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

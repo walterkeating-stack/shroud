@@ -1,0 +1,54 @@
+{
+  "name": "Multi-Subnet Deobfuscation",
+  "tests": [
+    {
+      "name": "Multiple subnets with different prefix lengths",
+      "input": "Core network:\n10.1.2.0/24 - backbone P2P\n10.99.32.0/24 - management VLAN\n10.50.0.0/27 - VoIP network\n10.16.26.0/28 - sensor network\n10.200.20.0/24 - NAV network",
+      "assertions": {
+        "llm_must_not_see": ["10.1.2.0", "10.99.32.0", "10.50.0.0", "10.16.26.0", "10.200.20.0"],
+        "user_must_see": ["10.1.2.0", "10.99.32.0", "10.50.0.0", "10.16.26.0", "10.200.20.0"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Multiple IPs from same /24 subnet",
+      "input": "Router loopbacks:\n172.16.3.21 - SKLCNETR1\n172.16.3.22 - RABCNETR1\n172.16.3.24 - PANCNETR1\n172.16.3.25 - PATCNETR1\n172.16.3.35 - INNCNETR1\n172.16.3.47 - ATOCNETR1",
+      "assertions": {
+        "llm_must_not_see": ["172.16.3.21", "172.16.3.22", "172.16.3.24"],
+        "user_must_see": ["172.16.3.21", "172.16.3.22", "172.16.3.24"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Point-to-point /30 links mixed with /24 subnets",
+      "input": "Backbone:\n10.1.2.32/30 - ANNCNETR1 to raucnetr1\n10.1.2.36/30 - ANNCNETR1 to anncnetr2\n10.1.2.0/24 - core address space\n10.99.32.0/24 - MGMT VLAN (VRRP: 10.99.32.1)",
+      "assertions": {
+        "llm_must_not_see": ["10.1.2.32", "10.1.2.36", "10.99.32.0", "10.99.32.1"],
+        "user_must_see": ["10.1.2.32", "10.1.2.36", "10.99.32.0"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "VRF with IPs from different subnets",
+      "input": "ip vrf CUSTOMER-VRF\n rd 65111:100\ninterface BDI3001\n ip vrf forwarding CUSTOMER-VRF\n ip address 10.0.0.128 255.255.255.128\ninterface BDI3002\n ip vrf forwarding CUSTOMER-VRF\n ip address 10.99.32.0 255.255.255.0",
+      "assertions": {
+        "llm_must_not_see": ["CUSTOMER-VRF", "10.0.0.128", "10.99.32.0"],
+        "user_must_see": ["10.0.0.128", "10.99.32.0"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Large network inventory (NCG-style output)",
+      "input": "CNET Networks:\n10.1.2.0/24 backbone\n172.16.3.0/24 loopbacks\n10.99.32.0/24 MGMT\n10.50.0.128/25 VoIP-A\n10.50.1.192/27 VoIP-B\n10.16.26.32/27 AWAM\n10.200.20.0/24 NAV\n10.127.8.0/27 CCS\n10.0.0.208/28 access control\n10.60.225.0/25 guest",
+      "assertions": {
+        "llm_must_not_see": ["10.1.2.0", "172.16.3.0", "10.99.32.0", "10.50.0.128"],
+        "user_must_see": ["10.1.2.0", "172.16.3.0", "10.99.32.0", "10.50.0.128"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "name": "Channel Edge Cases",
+  "tests": [
+    {
+      "name": "Slack mrkdwn with bold IPs",
+      "input": "Alert: the switch at *10.1.0.1* is down and *10.1.0.2* is flapping. Check immediately.",
+      "assertions": {
+        "llm_must_not_see": ["10.1.0.1", "10.1.0.2"],
+        "user_must_see": ["10.1.0.1", "10.1.0.2"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Slack code block with config containing IP",
+      "input": "Here is the config snippet:\n```\nhostname PROD-CORE-01\ninterface Gi0/1\n ip address 10.1.0.1 255.255.255.0\nsnmp-server community S3cr3tRO RO\n```\nPlease review.",
+      "assertions": {
+        "llm_must_not_see": ["10.1.0.1", "PROD-CORE-01", "S3cr3tRO"],
+        "user_must_see": ["10.1.0.1", "PROD-CORE-01"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Slack inline code with IP",
+      "input": "Run `ping 10.1.0.1` and check if `traceroute 10.1.0.2` shows the path.",
+      "assertions": {
+        "llm_must_not_see": ["10.1.0.1", "10.1.0.2"],
+        "user_must_see": ["10.1.0.1", "10.1.0.2"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Slack mailto with IP in same message",
+      "description": "Slack mrkdwn mailto syntax is not preserved through roundtrip — Shroud strips the <mailto:x|x> wrapper but the email and IP are correctly obfuscated",
+      "input": "Contact <mailto:admin@internal-corp.net|admin@internal-corp.net> about the outage on 10.42.88.1. The device CORE-SW-01 is unreachable.",
+      "assertions": {
+        "llm_must_not_see": ["admin@internal-corp.net", "10.42.88.1", "CORE-SW-01"],
+        "user_must_see": ["admin@internal-corp.net", "10.42.88.1"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "WhatsApp-style message with international phone + IP",
+      "input": "Urgent: server 10.50.1.100 is down. Call the on-call engineer at +44 20 7946 0958 or +1-415-555-0198 immediately. Host: LDN-EDGE-FW-01",
+      "assertions": {
+        "llm_must_not_see": ["10.50.1.100", "+44 20 7946 0958", "+1-415-555-0198", "LDN-EDGE-FW-01"],
+        "user_must_see": ["10.50.1.100", "LDN-EDGE-FW-01"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Email-style message with signature block containing phone, email, address",
+      "input": "Hi team,\n\nThe firewall at 10.20.30.1 needs a rule update. Please apply ACL changes by EOD.\n\nThanks,\nJohn Smith\nSenior Network Engineer\njohn.smith@acme-corp.com\nPhone: +1-650-555-0147\nMobile: +44 7911 123456\n1234 Corporate Blvd, Suite 500\nSan Jose, CA 95134",
+      "assertions": {
+        "llm_must_not_see": ["10.20.30.1", "john.smith@acme-corp.com", "+1-650-555-0147"],
+        "user_must_see": ["10.20.30.1", "john.smith@acme-corp.com"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

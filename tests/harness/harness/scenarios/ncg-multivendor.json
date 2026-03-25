@@ -1,0 +1,49 @@
+{
+  "name": "NCG Multi-Vendor Network Scenarios",
+  "tests": [
+    {
+      "name": "Cisco IOS and Juniper JunOS BGP peering",
+      "input": "Show the BGP peering config between CISCO-EDGE-01 and JUNIPER-CORE-01.\n\n--- CISCO-EDGE-01 (IOS-XE) ---\nhostname CISCO-EDGE-01\n!\nrouter bgp 65001\n bgp log-neighbor-changes\n neighbor 10.0.100.2 remote-as 65002\n neighbor 10.0.100.2 description PEER_TO_JUNIPER-CORE-01\n neighbor 10.0.100.2 password 7 060506324F41584B\n neighbor 10.0.100.2 route-map RM-JNP-CORE-IN in\n neighbor 10.0.100.2 route-map RM-JNP-CORE-OUT out\n!\ninterface GigabitEthernet0/0/0\n description LINK_TO_JUNIPER-CORE-01_xe-0/0/0\n ip address 10.0.100.1 255.255.255.252\n mtu 9192\n no shutdown\n\n--- JUNIPER-CORE-01 (JunOS) ---\nset system host-name JUNIPER-CORE-01\n\nset interfaces xe-0/0/0 description \"LINK_TO_CISCO-EDGE-01_Gi0/0/0\"\nset interfaces xe-0/0/0 unit 0 family inet address 10.0.100.2/30\nset interfaces xe-0/0/0 mtu 9192\n\nset protocols bgp group EBGP-CISCO type external\nset protocols bgp group EBGP-CISCO neighbor 10.0.100.1 peer-as 65001\nset protocols bgp group EBGP-CISCO neighbor 10.0.100.1 description \"PEER_TO_CISCO-EDGE-01\"\nset protocols bgp group EBGP-CISCO neighbor 10.0.100.1 authentication-key \"$9$rKev87Vb2aGi\"\nset protocols bgp group EBGP-CISCO neighbor 10.0.100.1 import POL-CISCO-EDGE-IN\nset protocols bgp group EBGP-CISCO neighbor 10.0.100.1 export POL-CISCO-EDGE-OUT\nset protocols bgp group EBGP-CISCO local-as 65002",
+      "assertions": {
+        "llm_must_not_see": ["10.0.100.1", "10.0.100.2", "060506324F41584B"],
+        "user_must_see": ["10.0.100.1", "10.0.100.2"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Palo Alto firewall rules vs Cisco ACLs comparison",
+      "input": "Compare the firewall rules on PAN-FW-01 with the ACLs on CISCO-EDGE-01 for the DMZ zone.\n\n--- PAN-FW-01 (PAN-OS) ---\nset deviceconfig system hostname PAN-FW-01\n\nset network interface ethernet ethernet1/1 layer3 ip 203.0.113.10/30\nset network interface ethernet ethernet1/1 comment \"OUTSIDE_TO_ISP\"\nset network interface ethernet ethernet1/2 layer3 ip 10.20.0.1/24\nset network interface ethernet ethernet1/2 comment \"DMZ_SEGMENT\"\nset network interface ethernet ethernet1/3 layer3 ip 10.10.0.1/24\nset network interface ethernet ethernet1/3 comment \"INSIDE_LAN\"\n\nset rulebase security rules DMZ-ALLOW-WEB from OUTSIDE to DMZ source any destination 10.20.0.10 application web-browsing action allow\nset rulebase security rules DMZ-ALLOW-WEB destination 10.20.0.11 application web-browsing action allow\nset rulebase security rules DMZ-ALLOW-SSH from INSIDE to DMZ source 10.10.0.0/24 destination 10.20.0.0/24 application ssh action allow\nset rulebase security rules DMZ-DENY-ALL from any to DMZ source any destination any application any action deny log-start yes\n\n--- CISCO-EDGE-01 (IOS) ---\nip access-list extended ACL-DMZ-INBOUND\n remark --- ALLOW WEB TO DMZ SERVERS ---\n permit tcp any host 10.20.0.10 eq 80\n permit tcp any host 10.20.0.10 eq 443\n permit tcp any host 10.20.0.11 eq 80\n permit tcp any host 10.20.0.11 eq 443\n remark --- ALLOW SSH FROM INSIDE ---\n permit tcp 10.10.0.0 0.0.0.255 10.20.0.0 0.0.0.255 eq 22\n remark --- DENY ALL ---\n deny ip any any log\n!\ninterface GigabitEthernet0/0/2\n description DMZ_SEGMENT\n ip address 10.20.0.254 255.255.255.0\n ip access-group ACL-DMZ-INBOUND in",
+      "assertions": {
+        "llm_must_not_see": ["203.0.113.10", "10.20.0.1", "10.10.0.1", "10.20.0.10", "10.20.0.11", "10.20.0.254"],
+        "user_must_see": ["203.0.113.10", "10.20.0.1", "10.10.0.1", "10.20.0.10", "10.20.0.11", "10.20.0.254"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Juniper OSPF and Cisco OSPF interop",
+      "input": "Show OSPF config on both sides of the Juniper-Cisco link for area 0.\n\n--- JUNIPER-DIST-01 (JunOS) ---\nset system host-name JUNIPER-DIST-01\nset interfaces xe-0/0/1 unit 0 family inet address 10.0.50.2/30\nset interfaces lo0 unit 0 family inet address 10.255.10.2/32\n\nset protocols ospf area 0.0.0.0 interface xe-0/0/1.0 interface-type p2p\nset protocols ospf area 0.0.0.0 interface xe-0/0/1.0 hello-interval 10\nset protocols ospf area 0.0.0.0 interface xe-0/0/1.0 dead-interval 40\nset protocols ospf area 0.0.0.0 interface xe-0/0/1.0 authentication md5 1 key \"$9$0EhvMX7Vs2oJD\"\nset protocols ospf area 0.0.0.0 interface lo0.0 passive\nset routing-options router-id 10.255.10.2\n\n--- CISCO-CORE-01 (IOS-XE) ---\nhostname CISCO-CORE-01\n!\ninterface GigabitEthernet0/0/1\n description LINK_TO_JUNIPER-DIST-01_xe-0/0/1\n ip address 10.0.50.1 255.255.255.252\n ip ospf authentication message-digest\n ip ospf message-digest-key 1 md5 7 01100F175804\n ip ospf network point-to-point\n ip ospf hello-interval 10\n ip ospf dead-interval 40\n!\ninterface Loopback0\n ip address 10.255.10.1 255.255.255.255\n!\nrouter ospf 100\n router-id 10.255.10.1\n passive-interface default\n no passive-interface GigabitEthernet0/0/1\n network 10.0.50.0 0.0.0.3 area 0\n network 10.255.10.1 0.0.0.0 area 0",
+      "assertions": {
+        "llm_must_not_see": ["10.0.50.1", "10.0.50.2", "10.255.10.1", "10.255.10.2", "01100F175804"],
+        "user_must_see": ["10.0.50.1", "10.0.50.2", "10.255.10.1", "10.255.10.2"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Three-vendor network — Cisco, Juniper, Palo Alto management access",
+      "input": "Show management access configs across all three vendors.\n\n--- CISCO-CORE-01 (IOS-XE) ---\nhostname CISCO-CORE-01\naaa new-model\naaa authentication login default group tacacs+ local\ntacacs server TACACS-PRIMARY\n address ipv4 10.10.5.50\n key 7 094F471A1A0A464058\ntacacs server TACACS-BACKUP\n address ipv4 10.10.5.51\n key 7 094F471A1A0A464058\nip access-list standard ACL-VTY\n permit 10.10.5.0 0.0.0.255\n deny any log\nline vty 0 15\n access-class ACL-VTY in\n transport input ssh\n\n--- JUNIPER-CORE-01 (JunOS) ---\nset system host-name JUNIPER-CORE-01\nset system authentication-order [tacplus password]\nset system tacplus-server 10.10.5.50 secret \"$9$dxVYoZGiPQ36\"\nset system tacplus-server 10.10.5.50 source-address 10.255.10.2\nset system tacplus-server 10.10.5.51 secret \"$9$dxVYoZGiPQ36\"\nset system tacplus-server 10.10.5.51 source-address 10.255.10.2\nset system services ssh protocol-version v2\nset firewall filter MGMT-ACCESS term ALLOW-SSH from source-prefix-list MGMT-NETS\nset firewall filter MGMT-ACCESS term ALLOW-SSH from protocol tcp\nset firewall filter MGMT-ACCESS term ALLOW-SSH from destination-port ssh\nset firewall filter MGMT-ACCESS term ALLOW-SSH then accept\nset firewall filter MGMT-ACCESS term DENY-ALL then reject\n\n--- PAN-FW-01 (PAN-OS) ---\nset deviceconfig system hostname PAN-FW-01\nset shared authentication-profile TACACS-PROFILE method tacplus\nset shared authentication-profile TACACS-PROFILE server-profile TACACS-SERVERS\nset shared server-profile tacplus TACACS-SERVERS server TACACS-PRIMARY address 10.10.5.50\nset shared server-profile tacplus TACACS-SERVERS server TACACS-PRIMARY secret \"T@cP1usSh@red!\"\nset shared server-profile tacplus TACACS-SERVERS server TACACS-BACKUP address 10.10.5.51\nset shared server-profile tacplus TACACS-SERVERS server TACACS-BACKUP secret \"T@cP1usSh@red!\"",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.50", "10.10.5.51", "094F471A1A0A464058", "T@cP1usSh@red!"],
+        "user_must_see": ["10.10.5.50", "10.10.5.51"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

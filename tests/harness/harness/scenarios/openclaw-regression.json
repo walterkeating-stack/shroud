@@ -1,0 +1,82 @@
+[
+  {
+    "name": "OpenClaw reproduction: phones replaced not dropped",
+    "input": "From: User (+15550101000)\nGateway phone: +15550101001\nMessage-ID: 3A868CF298C17E9E7EC0\nEmail: user@example.com",
+    "assertions": {
+      "llm_must_not_see": ["+15550101000", "+15550101001"],
+      "user_must_see": ["+15550101000", "+15550101001"],
+      "entity_count_min": 2,
+      "categories": ["phone"],
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "OpenClaw: example.com email correctly filtered (doc domain)",
+    "input": "Contact user@example.com for details",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "OpenClaw: real domain email IS obfuscated",
+    "input": "Contact user@example.test for details",
+    "assertions": {
+      "llm_must_not_see": ["user@example.test"],
+      "user_must_see": ["user@example.test"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Bare config: phone replacement not empty",
+    "input": "Call me at +14155551234 please",
+    "assertions": {
+      "llm_must_not_see": ["+14155551234"],
+      "llm_must_see_pattern": ["\\+\\d+"],
+      "user_must_see": ["+14155551234"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Bare config: IP replacement not empty",
+    "input": "Server at 10.0.0.1 is down",
+    "assertions": {
+      "llm_must_not_see": ["10.0.0.1"],
+      "llm_must_see_pattern": ["\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"],
+      "user_must_see": ["10.0.0.1"],
+      "entity_count_min": 1,
+      "categories": ["ip_address"],
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Bare config: email replacement not empty",
+    "input": "Mail admin@bigcorp.com for help",
+    "assertions": {
+      "llm_must_not_see": ["admin@bigcorp.com"],
+      "llm_must_see_pattern": ["[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"],
+      "user_must_see": ["admin@bigcorp.com"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Multiple entities: none dropped",
+    "input": "From: +15550101000, IP: 10.20.30.40, email: admin@corp.net",
+    "assertions": {
+      "llm_must_not_see": ["+15550101000", "10.20.30.40", "admin@corp.net"],
+      "user_must_see": ["+15550101000", "10.20.30.40", "admin@corp.net"],
+      "entity_count_min": 3,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

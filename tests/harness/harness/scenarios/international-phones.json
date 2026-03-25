@@ -1,0 +1,143 @@
+{
+  "name": "International Phone Numbers",
+  "tests": [
+    {
+      "name": "US phone with dots",
+      "input": "Reach the NOC at 555.123.4567 for after-hours escalation.",
+      "assertions": {
+        "llm_must_not_see": ["555.123.4567"],
+        "user_must_see": ["555.123.4567"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "US phone with parentheses",
+      "input": "Call the datacenter manager at (408) 555-9182 if the UPS alarms.",
+      "assertions": {
+        "llm_must_not_see": ["(408) 555-9182"],
+        "user_must_see": ["(408) 555-9182"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Compact E.164 US number",
+      "input": "SMS alert destination: +14085559182",
+      "assertions": {
+        "llm_must_not_see": ["+14085559182"],
+        "user_must_see": ["+14085559182"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "UK phone number",
+      "input": "London office: +44 20 7946 0958. Ask for the infrastructure team.",
+      "assertions": {
+        "llm_must_not_see": ["+44 20 7946 0958"],
+        "user_must_see": ["+44 20 7946 0958"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Australian phone number",
+      "input": "Sydney DC contact: +61 2 8765 4321 (business hours AEST).",
+      "assertions": {
+        "llm_must_not_see": ["+61 2 8765 4321"],
+        "user_must_see": ["+61 2 8765 4321"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "German phone number",
+      "input": "Frankfurt colo vendor: +49 69 1234 5678, account rep Hans Mueller.",
+      "assertions": {
+        "llm_must_not_see": ["+49 69 1234 5678"],
+        "user_must_see": ["+49 69 1234 5678"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "French phone number",
+      "input": "Paris POP maintenance window confirmed by +33 1 42 68 53 00.",
+      "assertions": {
+        "llm_must_not_see": ["+33 1 42 68 53 00"],
+        "user_must_see": ["+33 1 42 68 53 00"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Multiple phones in one message",
+      "input": "Escalation chain:\n  L1: +1-415-555-0101 (NOC)\n  L2: +1-415-555-0202 (Senior Eng)\n  L3: +44 20 7946 0958 (EMEA Lead)\n  Mgr: (650) 555-8833",
+      "assertions": {
+        "llm_must_not_see": ["+1-415-555-0101", "+1-415-555-0202", "+44 20 7946 0958", "(650) 555-8833"],
+        "user_must_see": ["+1-415-555-0101", "+1-415-555-0202", "+44 20 7946 0958", "(650) 555-8833"],
+        "entity_count_min": 4,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Port numbers should NOT match as phones",
+      "input": "The service listens on port 8443 and forwards to 3128.",
+      "assertions": {
+        "entity_count_min": 0,
+        "entity_count_max": 0,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Years and version numbers should NOT match as phones",
+      "input": "Upgraded from IOS-XE 17.06.03a in 2024 to 17.09.04 in 2025. The 1024-bit key was deprecated.",
+      "assertions": {
+        "entity_count_min": 0,
+        "entity_count_max": 0,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Phone number embedded in URL query string",
+      "input": "Webhook callback: https://api.internal.corp.net/notify?phone=+12125551234&severity=critical",
+      "assertions": {
+        "llm_must_not_see": ["+12125551234"],
+        "user_must_see": ["+12125551234"],
+        "entity_count_min": 1,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Compact E.164 UK number without spaces",
+      "input": "Emergency contact for London DC: +15550101003 (24/7 hotline)",
+      "assertions": {
+        "llm_must_not_see": ["+15550101003"],
+        "user_must_see": ["+15550101003"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Mixed dot-separated phone format",
+      "input": "Contact the US office at +1.415.555.0101 for network escalation.",
+      "assertions": {
+        "llm_must_not_see": ["+1.415.555.0101"],
+        "user_must_see": ["+1.415.555.0101"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    }
+  ]
+}

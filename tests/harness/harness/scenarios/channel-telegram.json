@@ -1,0 +1,45 @@
+{
+  "name": "Telegram Channel Tests",
+  "tests": [
+    {
+      "name": "Email in Telegram message",
+      "channel": "telegram",
+      "input": "Send credentials to devops@infra-team.org",
+      "assertions": {
+        "llm_must_not_see": ["devops@infra-team.org"],
+        "user_must_see": ["devops@infra-team.org"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "IP address in Telegram",
+      "channel": "telegram",
+      "input": "Ping 172.16.0.254 to check gateway",
+      "assertions": {
+        "llm_must_not_see": ["172.16.0.254"],
+        "user_must_see": ["172.16.0.254"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Telegram bot token-like string",
+      "channel": "telegram",
+      "input": "The monitoring bot at 10.0.5.1 uses token 123456:ABC-DEF_ghiJKL to send alerts",
+      "assertions": {
+        "llm_must_not_see": ["10.0.5.1"],
+        "user_must_see": ["10.0.5.1"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Network config in Telegram",
+      "channel": "telegram",
+      "input": "interface Vlan100\n ip address 10.10.100.1 255.255.255.0\n description MGMT-VLAN\n ip helper-address 10.10.1.10",
+      "assertions": {
+        "llm_must_not_see": ["10.10.100.1", "10.10.1.10"],
+        "user_must_see": ["10.10.100.1", "10.10.1.10"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

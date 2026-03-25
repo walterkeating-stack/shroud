@@ -1,0 +1,46 @@
+[
+  {
+    "name": "Complete Cisco IOS config: hostname + creds + BGP + SNMP + VRF + ACL",
+    "input": "hostname CORE-RTR-01\n!\nenable secret 5 $1$mERo$ILwq/1h1\n!\nusername admin secret 5 $1$xyz$abc123\n!\ninterface GigabitEthernet0/0\n description LINK TO ISP-Upstream-ACME\n ip address 10.1.0.1 255.255.255.0\n!\nrouter bgp 65001\n neighbor 10.1.0.2 remote-as 65002\n neighbor 10.1.0.2 password 7 BgpSecret\n!\nsnmp-server community Pr1vateRO RO\nsnmp-server host 10.10.5.30 version 2c TrapComm\n!\nip vrf CUSTOMER-A\n rd 65001:100\n route-target export 65001:100\n!\nip access-list extended ACL-MGMT-IN\n permit ip 10.0.0.0 0.0.0.255 any\n!\nroute-map RM-PEER-IN permit 10\n match ip address prefix-list PL-DEFAULT",
+    "assertions": {
+      "llm_must_not_see": ["CORE-RTR-01", "$1$mERo$ILwq/1h1", "BgpSecret", "Pr1vateRO", "TrapComm", "10.1.0.1", "10.1.0.2", "10.10.5.30", "CUSTOMER-A", "ACL-MGMT-IN", "RM-PEER-IN", "PL-DEFAULT"],
+      "user_must_see": ["CORE-RTR-01", "10.1.0.1", "10.1.0.2", "BgpSecret", "Pr1vateRO"],
+      "entity_count_min": 10,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "NX-OS BGP config",
+    "input": "hostname NXOS-SPINE-01\nfeature bgp\nrouter bgp 65100\n neighbor 10.255.0.1 remote-as 65200\n  password MyBgpS3cret",
+    "assertions": {
+      "llm_must_not_see": ["NXOS-SPINE-01", "65100", "65200", "10.255.0.1", "MyBgpS3cret"],
+      "user_must_see": ["NXOS-SPINE-01", "10.255.0.1", "MyBgpS3cret"],
+      "entity_count_min": 4,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "SNMP full block",
+    "input": "snmp-server community PubR0 RO\nsnmp-server community Pr1vRW RW\nsnmp-server host 10.10.5.30 version 2c TrapComm1\nsnmp-server host 10.10.5.31 version 2c TrapComm2",
+    "assertions": {
+      "llm_must_not_see": ["PubR0", "Pr1vRW", "TrapComm1", "TrapComm2", "10.10.5.30", "10.10.5.31"],
+      "user_must_see": ["PubR0", "Pr1vRW", "TrapComm1", "TrapComm2"],
+      "entity_count_min": 6,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "50 unique IPs in config",
+    "input": "interface Vlan1\n ip address 10.0.0.1 255.255.255.0\ninterface Vlan2\n ip address 10.0.1.1 255.255.255.0\ninterface Vlan3\n ip address 10.0.2.1 255.255.255.0\ninterface Vlan4\n ip address 10.0.3.1 255.255.255.0\ninterface Vlan5\n ip address 10.0.4.1 255.255.255.0\ninterface Vlan6\n ip address 10.0.5.1 255.255.255.0\ninterface Vlan7\n ip address 10.0.6.1 255.255.255.0\ninterface Vlan8\n ip address 10.0.7.1 255.255.255.0\ninterface Vlan9\n ip address 10.0.8.1 255.255.255.0\ninterface Vlan10\n ip address 10.0.9.1 255.255.255.0",
+    "assertions": {
+      "llm_must_not_see": ["10.0.0.1", "10.0.5.1", "10.0.9.1"],
+      "user_must_see": ["10.0.0.1", "10.0.5.1", "10.0.9.1"],
+      "entity_count_min": 10,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

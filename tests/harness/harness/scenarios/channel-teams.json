@@ -1,0 +1,45 @@
+{
+  "name": "Teams Channel Tests",
+  "tests": [
+    {
+      "name": "Email in Teams message",
+      "channel": "teams",
+      "input": "Schedule a call with neteng@global-corp.com about the WAN migration",
+      "assertions": {
+        "llm_must_not_see": ["neteng@global-corp.com"],
+        "user_must_see": ["neteng@global-corp.com"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "IP in Teams adaptive card text",
+      "channel": "teams",
+      "input": "Alert: Host 10.100.0.1 CPU at 98%. VLAN 200 affected. Contact noc@internal.net.",
+      "assertions": {
+        "llm_must_not_see": ["10.100.0.1", "noc@internal.net"],
+        "user_must_see": ["10.100.0.1", "noc@internal.net"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Hostname and SNMP in Teams",
+      "channel": "teams",
+      "input": "Switch AMS-CORE-SW-01 config:\nsnmp-server community TEAMS_RO RO\nsnmp-server community TEAMS_RW RW",
+      "assertions": {
+        "llm_must_not_see": ["AMS-CORE-SW-01", "TEAMS_RO"],
+        "user_must_see": ["AMS-CORE-SW-01"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "ACL config in Teams",
+      "channel": "teams",
+      "input": "ip access-list extended BLOCK-EXTERNAL\n deny ip 10.0.0.0 0.255.255.255 any\n permit ip host 192.168.1.100 any\n deny ip any any log",
+      "assertions": {
+        "llm_must_not_see": ["192.168.1.100"],
+        "user_must_see": ["192.168.1.100"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

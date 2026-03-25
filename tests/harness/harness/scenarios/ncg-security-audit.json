@@ -1,0 +1,70 @@
+{
+  "name": "NCG Security Audit Scenarios",
+  "tests": [
+    {
+      "name": "SNMP communities audit across multiple devices",
+      "input": "Show all SNMP communities configured across the network. Flag any with RW access.\n\n--- CORE-RTR-01 ---\nhostname CORE-RTR-01\nsnmp-server community Publ1cR0 RO SNMP-ACL\nsnmp-server community Wr1t3Acc3ss RW SNMP-ACL\nsnmp-server community N0C-M0n1t0r RO\nsnmp-server host 10.10.5.30 version 2c Publ1cR0\nsnmp-server host 10.10.5.31 version 2c Publ1cR0\n\n--- DIST-SW-01 ---\nhostname DIST-SW-01\nsnmp-server community Publ1cR0 RO SNMP-ACL\nsnmp-server community L3gacyC0mm! RW\nsnmp-server host 10.10.5.30 version 2c Publ1cR0\n\n--- DIST-SW-02 ---\nhostname DIST-SW-02\nsnmp-server community Publ1cR0 RO SNMP-ACL\nsnmp-server community Publ1cRW RW\nsnmp-server community T3stC0mmun1ty RO\nsnmp-server host 10.10.5.30 version 2c Publ1cR0\n\n--- ACCESS-SW-FLOOR1 ---\nhostname ACCESS-SW-FLOOR1\nsnmp-server community public RO\nsnmp-server community private RW",
+      "assertions": {
+        "llm_must_not_see": ["Publ1cR0", "Wr1t3Acc3ss", "N0C-M0n1t0r", "L3gacyC0mm!", "Publ1cRW", "T3stC0mmun1ty", "10.10.5.30", "10.10.5.31"],
+        "user_must_see": ["Publ1cR0", "Wr1t3Acc3ss", "N0C-M0n1t0r", "L3gacyC0mm!", "Publ1cRW", "T3stC0mmun1ty", "10.10.5.30", "10.10.5.31"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Plaintext passwords in enable and user configs",
+      "input": "List all devices with enable password type 0 (plaintext) or username plaintext passwords.\n\n--- ACCESS-SW-FLOOR1 ---\nhostname ACCESS-SW-FLOOR1\nenable password Cisc0123!\nusername admin privilege 15 password 0 Adm1nP@ss!\nusername readonly privilege 1 password 0 R3ad0nly#\n\n--- ACCESS-SW-FLOOR2 ---\nhostname ACCESS-SW-FLOOR2\nenable password Cisc0456!\nusername admin privilege 15 secret 5 $1$xyz$abcdefghijk\nusername backup password 0 B@ckup2024\n\n--- CORE-RTR-01 ---\nhostname CORE-RTR-01\nenable secret 5 $1$rT3z$9hK2mR.xYzAbCdEfG\nusername admin privilege 15 secret 9 $9$salt$longhashvalue\nservice password-encryption\n\n--- DIST-SW-01 ---\nhostname DIST-SW-01\nenable password 7 0832495D1D1C\nusername netadmin privilege 15 password 7 046E1803362E5F",
+      "assertions": {
+        "llm_must_not_see": ["Cisc0123!", "Adm1nP@ss!", "R3ad0nly#", "Cisc0456!", "B@ckup2024", "0832495D1D1C", "046E1803362E5F"],
+        "user_must_see": ["Cisc0123!", "Adm1nP@ss!", "R3ad0nly#", "Cisc0456!", "B@ckup2024", "0832495D1D1C", "046E1803362E5F"],
+        "entity_count_min": 5,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Interfaces with no ACL applied — security gap",
+      "input": "Find all external-facing interfaces with no ACL applied.\n\n--- EDGE-RTR-01 ---\nhostname EDGE-RTR-01\n!\ninterface GigabitEthernet0/0/0\n description WAN_TO_ISP1_LUMEN_CID:LMN-44891\n ip address 203.0.113.2 255.255.255.252\n ip access-group ACL-WAN-IN in\n ip access-group ACL-WAN-OUT out\n no shutdown\n!\ninterface GigabitEthernet0/0/1\n description WAN_TO_ISP2_COGENT_CID:COG-22104\n ip address 198.51.100.6 255.255.255.252\n no shutdown\n!\ninterface GigabitEthernet0/0/2\n description PEERING_TO_IX-PARTNER_AS65500\n ip address 206.108.35.2 255.255.255.252\n no shutdown\n!\ninterface GigabitEthernet0/0/3\n description MPLS_PE_UPLINK\n ip address 10.0.12.1 255.255.255.252\n ip access-group ACL-MPLS-IN in\n no shutdown",
+      "assertions": {
+        "llm_must_not_see": ["203.0.113.2", "198.51.100.6", "206.108.35.2", "10.0.12.1"],
+        "user_must_see": ["203.0.113.2", "198.51.100.6", "206.108.35.2", "10.0.12.1"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "BGP peers using cleartext passwords",
+      "input": "Show all BGP peers using cleartext passwords (type 0 or no encryption).\n\n--- CORE-RTR-01 ---\nhostname CORE-RTR-01\nrouter bgp 65412\n neighbor 10.0.0.1 remote-as 65413\n neighbor 10.0.0.1 description TRANSIT_COGENT\n neighbor 10.0.0.1 password 0 C0g3ntBGP!\n neighbor 10.0.0.5 remote-as 65414\n neighbor 10.0.0.5 description TRANSIT_NTT\n neighbor 10.0.0.5 password 7 08354942071C11\n neighbor 10.0.0.9 remote-as 65500\n neighbor 10.0.0.9 description PEER_IX-PARTNER\n neighbor 10.0.0.9 password 0 IXp33r2024\n neighbor 172.16.255.2 remote-as 65412\n neighbor 172.16.255.2 description IBGP_CORE-RTR-02\n\n--- CORE-RTR-02 ---\nhostname CORE-RTR-02\nrouter bgp 65412\n neighbor 10.0.1.1 remote-as 65415\n neighbor 10.0.1.1 description TRANSIT_TELIA\n neighbor 10.0.1.1 password 0 T3l1aBGPk3y\n neighbor 172.16.255.1 remote-as 65412\n neighbor 172.16.255.1 description IBGP_CORE-RTR-01",
+      "assertions": {
+        "llm_must_not_see": ["C0g3ntBGP!", "IXp33r2024", "T3l1aBGPk3y", "08354942071C11", "10.0.0.1", "10.0.0.5", "10.0.0.9", "10.0.1.1", "172.16.255.2", "172.16.255.1"],
+        "user_must_see": ["C0g3ntBGP!", "IXp33r2024", "T3l1aBGPk3y", "10.0.0.1", "10.0.0.5", "10.0.0.9", "10.0.1.1", "172.16.255.2", "172.16.255.1"],
+        "entity_count_min": 8,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "RADIUS and TACACS server configs with keys",
+      "input": "List RADIUS/TACACS server configs with IPs and keys across all devices.\n\n--- CORE-RTR-01 ---\nhostname CORE-RTR-01\naaa new-model\ntacacs server TAC-PRI\n address ipv4 10.10.5.50\n key 0 T@c@csK3y!Pr1m@ry\ntacacs server TAC-SEC\n address ipv4 10.10.5.51\n key 0 T@c@csK3y!S3c0nd\nradius server RAD-PRI\n address ipv4 10.10.5.60 auth-port 1812 acct-port 1813\n key 0 R@d1usK3y!2024\n\n--- DIST-SW-01 ---\nhostname DIST-SW-01\naaa new-model\ntacacs-server host 10.10.5.50 key T@c@csK3y!Pr1m@ry\ntacacs-server host 10.10.5.51 key T@c@csK3y!S3c0nd\nradius-server host 10.10.5.60 key R@d1usK3y!2024\n\n--- JUNIPER-CORE-01 ---\nset system host-name JUNIPER-CORE-01\nset system tacplus-server 10.10.5.50 secret \"T@c@csK3y!Pr1m@ry\"\nset system tacplus-server 10.10.5.50 source-address 10.255.10.2\nset system tacplus-server 10.10.5.51 secret \"T@c@csK3y!S3c0nd\"\nset system tacplus-server 10.10.5.51 source-address 10.255.10.2\nset system radius-server 10.10.5.60 secret \"R@d1usK3y!2024\"\nset system radius-server 10.10.5.60 source-address 10.255.10.2",
+      "assertions": {
+        "llm_must_not_see": ["T@c@csK3y!Pr1m@ry", "T@c@csK3y!S3c0nd", "R@d1usK3y!2024", "10.10.5.50", "10.10.5.51", "10.10.5.60", "10.255.10.2"],
+        "user_must_see": ["T@c@csK3y!Pr1m@ry", "T@c@csK3y!S3c0nd", "R@d1usK3y!2024", "10.10.5.50", "10.10.5.51", "10.10.5.60", "10.255.10.2"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "SNMP community change request with config blocks",
+      "input": "Update SNMP communities on CORE-RTR-01 (10.10.5.1).\n\nCurrent config:\nsnmp-server community N3tM0n!t0r-R0 RO SNMP-ACL\nsnmp-server community Wr1t3-@cc3ss RW SNMP-ACL\nsnmp-server host 10.10.5.30 version 2c N3tM0n!t0r-R0\n\nNew config to apply:\nsnmp-server community S3cur3-Sn1mp#2024 RO SNMP-ACL\nsnmp-server community N3w-RW-K3y! RW SNMP-ACL\nsnmp-server host 10.10.5.30 version 2c S3cur3-Sn1mp#2024",
+      "assertions": {
+        "llm_must_not_see": ["N3tM0n!t0r-R0", "S3cur3-Sn1mp#2024", "Wr1t3-@cc3ss", "N3w-RW-K3y!", "10.10.5.1", "10.10.5.30"],
+        "user_must_see": ["N3tM0n!t0r-R0", "S3cur3-Sn1mp#2024", "Wr1t3-@cc3ss", "N3w-RW-K3y!", "10.10.5.1", "10.10.5.30"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

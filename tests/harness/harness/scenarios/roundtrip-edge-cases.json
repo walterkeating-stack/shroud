@@ -1,0 +1,80 @@
+[
+  {
+    "name": "Entity at start of text (no prefix)",
+    "input": "10.42.88.1 is unreachable from the monitoring station.",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.1"],
+      "user_must_see": ["10.42.88.1"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Entity at end of text (no suffix)",
+    "input": "The primary DNS resolver is 10.42.88.53",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.53"],
+      "user_must_see": ["10.42.88.53"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Two entities adjacent with no separator",
+    "description": "BUG: When IP and email are smashed together without separator, Shroud only detects one entity. Expected: both detected separately.",
+    "input": "Contact list: 10.1.0.1admin@corp.com for the server owner.",
+    "assertions": {
+      "llm_must_not_see": ["10.1.0.1"],
+      "user_must_see": ["10.1.0.1"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Entity inside JSON string value",
+    "input": "{\"server\": \"10.42.88.200\", \"contact\": \"devops@acme-corp.com\", \"hostname\": \"PROD-WEB-01.dc1.acme.net\"}",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.200", "devops@acme-corp.com", "PROD-WEB-01.dc1.acme.net"],
+      "user_must_see": ["10.42.88.200", "devops@acme-corp.com"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Entity inside a URL path",
+    "input": "API endpoint: https://api.corp.net/users/admin@corp.com/profile\nAlternate: https://monitoring.internal/hosts/10.42.88.50/status",
+    "assertions": {
+      "llm_must_not_see": ["admin@corp.com", "10.42.88.50"],
+      "user_must_see": ["admin@corp.com", "10.42.88.50"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Same entity appearing 5 times in text (consistency)",
+    "input": "Check 10.42.88.100 first. Then verify 10.42.88.100 responds to SNMP. After that, confirm 10.42.88.100 is in the monitoring system. Also add 10.42.88.100 to the backup job. Finally, document 10.42.88.100 in the CMDB.",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.100"],
+      "user_must_see": ["10.42.88.100"],
+      "entity_count_min": 5,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Entity spanning a line break should NOT match",
+    "input": "Send mail to admin@\nacme-corp.com for help. The IP is valid: 10.42.88.99",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.99"],
+      "user_must_see": ["10.42.88.99"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

@@ -1,0 +1,45 @@
+{
+  "name": "Signal Channel Tests",
+  "tests": [
+    {
+      "name": "Phone number in Signal",
+      "channel": "signal",
+      "input": "Add +14085551234 to the on-call rotation",
+      "assertions": {
+        "llm_must_not_see": ["+14085551234"],
+        "user_must_see": ["+14085551234"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Email and IP in Signal",
+      "channel": "signal",
+      "input": "The backup at 10.88.1.1 failed. Alert backup-admin@corp.net",
+      "assertions": {
+        "llm_must_not_see": ["10.88.1.1", "backup-admin@corp.net"],
+        "user_must_see": ["10.88.1.1", "backup-admin@corp.net"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Enable secret in Signal message",
+      "channel": "signal",
+      "input": "Jump box config:\nenable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0\nip address 10.50.0.1 255.255.255.0",
+      "assertions": {
+        "llm_must_not_see": ["$1$mERr$hx5rVt7rPNoS4wqbXKX7m0", "10.50.0.1"],
+        "user_must_see": ["10.50.0.1"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "BGP config in Signal",
+      "channel": "signal",
+      "input": "router bgp 65100\n neighbor 10.0.0.2 remote-as 65200\n neighbor 10.0.0.2 password BGP_PRIV4TE",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.2", "BGP_PRIV4TE"],
+        "user_must_see": ["10.0.0.2"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

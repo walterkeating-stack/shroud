@@ -1,0 +1,131 @@
+[
+  {
+    "name": "Generic sk- API key",
+    "input": "Use key SHROUD_TEST_API_KEY for auth",
+    "assertions": {
+      "llm_must_not_see": ["SHROUD_TEST_API_KEY"],
+      "user_must_see": ["SHROUD_TEST_API_KEY"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Generic api- key",
+    "input": "api-abc123def456ghi789jkl012",
+    "assertions": {
+      "llm_must_not_see": ["api-abc123def456ghi789jkl012"],
+      "user_must_see": ["api-abc123def456ghi789jkl012"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "AWS access key ID (AKIA prefix)",
+    "input": "AWS_ACCESS_KEY_ID=SHROUD_TEST_AWS_ACCESS_KEY",
+    "assertions": {
+      "llm_must_not_see": ["SHROUD_TEST_AWS_ACCESS_KEY"],
+      "user_must_see": ["SHROUD_TEST_AWS_ACCESS_KEY"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "AWS secret access key",
+    "input": "aws_secret_access_key=SHROUD_TEST_AWS_SECRET_KEY",
+    "assertions": {
+      "llm_must_not_see": ["SHROUD_TEST_AWS_SECRET_KEY"],
+      "user_must_see": ["SHROUD_TEST_AWS_SECRET_KEY"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GCP API key (AIza prefix)",
+    "input": "key: SHROUD_TEST_GOOGLE_API_KEY",
+    "assertions": {
+      "llm_must_not_see": ["SHROUD_TEST_GOOGLE_API_KEY"],
+      "user_must_see": ["SHROUD_TEST_GOOGLE_API_KEY"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GitHub PAT (ghp_ prefix)",
+    "input": "SHROUD_TEST_GITHUB_TOKEN",
+    "assertions": {
+      "llm_must_not_see": ["SHROUD_TEST_GITHUB_TOKEN"],
+      "user_must_see": ["SHROUD_TEST_GITHUB_TOKEN"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GitLab token (glpat- prefix)",
+    "input": "glpat-ABCDEFGHIJKLMNOPQRSTUVwx",
+    "assertions": {
+      "llm_must_not_see": ["glpat-ABCDEFGHIJKLMNOPQRSTU"],
+      "user_must_see": ["glpat-ABCDEFGHIJKLMNOPQRSTUVwx"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "HashiCorp Vault token (hvs. prefix)",
+    "input": "hvs.ABCDEFGHIJKLMNOPQRSTUVWXyz",
+    "assertions": {
+      "llm_must_not_see": ["hvs.ABCDEFGHIJKLMNOPQRSTU"],
+      "user_must_see": ["hvs.ABCDEFGHIJKLMNOPQRSTUVWXyz"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "JWT three-part token",
+    "input": "Token: SHROUD_TEST_JWT",
+    "assertions": {
+      "llm_must_not_see": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
+      "user_must_see": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
+      "entity_count_min": 1,
+      "categories": ["jwt"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Bearer token in Authorization header",
+    "input": "Authorization: Bearer SHROUD_TEST_JWT",
+    "assertions": {
+      "llm_must_not_see": ["eyJhbGciOiJIUzI1NiJ9"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Generic token- key",
+    "input": "token-abc123def456ghi789jkl012",
+    "assertions": {
+      "llm_must_not_see": ["token-abc123def456ghi789jkl012"],
+      "user_must_see": ["token-abc123def456ghi789jkl012"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Generic secret- key",
+    "input": "secret-abc123def456ghi789jkl012",
+    "assertions": {
+      "llm_must_not_see": ["secret-abc123def456ghi789jkl012"],
+      "user_must_see": ["secret-abc123def456ghi789jkl012"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  }
+]

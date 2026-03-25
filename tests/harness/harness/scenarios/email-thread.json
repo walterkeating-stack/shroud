@@ -1,0 +1,79 @@
+[
+  {
+    "name": "Full email thread with mixed PII",
+    "input": "From: Shroud Maintainers <walter@myisp.at>\nTo: NOC <noc@partner.com>\nSubject: Circuit down\n\nHi team,\n\nThe circuit between site VIE (10.1.0.1) and FRA (10.2.0.1) is down.\nBGP session dropped at 14:32 UTC (remote-as 65200).\nPlease check interface Gi0/0 on hostname CORE-RTR-01.\n\nTACacs credentials may need rotation.\n\nRegards,\nWalter\n+43 664 8563582",
+    "assertions": {
+      "llm_must_not_see": ["walter@myisp.at", "noc@partner.com", "10.1.0.1", "10.2.0.1", "CORE-RTR-01", "+43 664 8563582"],
+      "user_must_see": ["walter@myisp.at", "noc@partner.com", "10.1.0.1", "10.2.0.1", "CORE-RTR-01", "+43 664 8563582"],
+      "entity_count_min": 6,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Email variants: dotted local",
+    "input": "From john.doe@company.co.uk",
+    "assertions": {
+      "llm_must_not_see": ["john.doe@company.co.uk"],
+      "user_must_see": ["john.doe@company.co.uk"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Email variants: plus addressing",
+    "input": "user+tag@company.com",
+    "assertions": {
+      "llm_must_not_see": ["user+tag@company.com"],
+      "user_must_see": ["user+tag@company.com"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Email variants: subdomain",
+    "input": "user@mail.company.com",
+    "assertions": {
+      "llm_must_not_see": ["user@mail.company.com"],
+      "user_must_see": ["user@mail.company.com"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Email variants: hyphenated domain",
+    "input": "admin@my-company.co.at",
+    "assertions": {
+      "llm_must_not_see": ["admin@my-company.co.at"],
+      "user_must_see": ["admin@my-company.co.at"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Email variants: long TLD",
+    "input": "user@company.technology",
+    "assertions": {
+      "llm_must_not_see": ["user@company.technology"],
+      "user_must_see": ["user@company.technology"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Multiple emails in one block",
+    "input": "From: alice@corp.com\nTo: bob@corp.com\nCC: carol@partner.net",
+    "assertions": {
+      "llm_must_not_see": ["alice@corp.com", "bob@corp.com", "carol@partner.net"],
+      "user_must_see": ["alice@corp.com", "bob@corp.com", "carol@partner.net"],
+      "entity_count_min": 3,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  }
+]

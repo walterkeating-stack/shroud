@@ -1,0 +1,60 @@
+{
+  "name": "NCG Troubleshooting Queries",
+  "tests": [
+    {
+      "name": "BGP neighbor down — show config and status",
+      "input": "BGP neighbor 10.0.0.2 is down on CORE-RTR-01, show me the config and status.\n\n--- show ip bgp summary — CORE-RTR-01 ---\nhostname CORE-RTR-01\nBGP router identifier 10.255.0.1, local AS number 65412\nNeighbor        V  AS    MsgRcvd  MsgSent  TblVer  Up/Down  State/PfxRcd\n10.0.0.2        4  65413       0        0        0  never   Idle\n10.0.0.6        4  65414   84291    81023   32104   6w2d    218\n172.16.255.2    4  65412  192041   189321   32104   12w1d   412\n\n--- relevant config ---\nrouter bgp 65412\n neighbor 10.0.0.2 remote-as 65413\n neighbor 10.0.0.2 description TRANSIT_COGENT_PRIMARY\n neighbor 10.0.0.2 password 7 0529213F2D4D4C1C\n neighbor 10.0.0.2 ebgp-multihop 2\n neighbor 10.0.0.2 update-source Loopback0\n neighbor 10.0.0.2 route-map RM-COGENT-IN in\n neighbor 10.0.0.2 route-map RM-COGENT-OUT out\n\n--- show ip interface brief ---\nInterface              IP-Address      OK? Method Status                Protocol\nGigabitEthernet0/0/0   10.0.0.1        YES NVRAM  up                    up\nGigabitEthernet0/0/1   10.0.0.5        YES NVRAM  up                    up\nGigabitEthernet0/0/2   198.51.100.14   YES NVRAM  up                    down\nLoopback0              10.255.0.1      YES NVRAM  up                    up",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.2", "10.0.0.6", "172.16.255.2", "10.255.0.1", "198.51.100.14", "0529213F2D4D4C1C"],
+        "user_must_see": ["10.0.0.2", "10.0.0.6", "172.16.255.2", "10.255.0.1", "198.51.100.14"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "OSPF adjacency flapping with syslog entries",
+      "input": "Why is OSPF adjacency flapping between 172.16.1.1 and 172.16.1.2?\n\n--- syslog from DIST-RTR-01 (172.16.1.1) ---\nMar 23 14:32:01 DIST-RTR-01 %OSPF-5-ADJCHG: Process 100, Nbr 172.16.1.2 on GigabitEthernet0/0/0 from FULL to DOWN, Neighbor Down: Dead timer expired\nMar 23 14:32:47 DIST-RTR-01 %OSPF-5-ADJCHG: Process 100, Nbr 172.16.1.2 on GigabitEthernet0/0/0 from LOADING to FULL, Loading Done\nMar 23 14:35:12 DIST-RTR-01 %OSPF-5-ADJCHG: Process 100, Nbr 172.16.1.2 on GigabitEthernet0/0/0 from FULL to DOWN, Neighbor Down: Dead timer expired\nMar 23 14:35:58 DIST-RTR-01 %OSPF-5-ADJCHG: Process 100, Nbr 172.16.1.2 on GigabitEthernet0/0/0 from LOADING to FULL, Loading Done\n\n--- show ip ospf neighbor — DIST-RTR-01 ---\nNeighbor ID  Pri  State       Dead Time  Address      Interface\n172.16.1.2     1  FULL/DR     00:00:31   10.0.12.2    GigabitEthernet0/0/0\n172.16.1.3     1  FULL/BDR    00:00:37   10.0.12.6    GigabitEthernet0/0/1\n\n--- show ip ospf interface GigabitEthernet0/0/0 — DIST-RTR-01 ---\nGigabitEthernet0/0/0 is up, line protocol is up\n  Internet Address 10.0.12.1/30, Area 0\n  Process ID 100, Router ID 172.16.1.1, Network Type BROADCAST, Cost: 1\n  Transmit Delay is 1 sec, State BDR, Priority 1\n  Timer intervals configured, Hello 10, Dead 40, Wait 40, Retransmit 5\n  Neighbor Count is 1, Adjacent neighbor count is 1",
+      "assertions": {
+        "llm_must_not_see": ["172.16.1.1", "172.16.1.2", "172.16.1.3", "10.0.12.1", "10.0.12.2", "10.0.12.6"],
+        "user_must_see": ["172.16.1.1", "172.16.1.2", "172.16.1.3", "10.0.12.1", "10.0.12.2", "10.0.12.6"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Interface CRC errors with show interface output",
+      "input": "Interface Gi0/0/1 on SW-FLOOR3-A shows CRC errors, pull the config and counters.\n\n--- show interfaces GigabitEthernet0/0/1 — SW-FLOOR3-A ---\nGigabitEthernet0/0/1 is up, line protocol is up (connected)\n  Hardware is Gigabit Ethernet, address is 0050.56ab.1234\n  Description: UPLINK_TO_DIST-SW-02_Gi1/0/24_CID:INT-0044891\n  Internet address is 10.20.3.2/30\n  MTU 1500 bytes, BW 1000000 Kbit/sec, DLY 10 usec\n     reliability 255/255, txload 1/255, rxload 1/255\n  5 minute input rate 142000 bits/sec, 98 packets/sec\n  5 minute output rate 89000 bits/sec, 67 packets/sec\n     892741 packets input, 428901234 bytes, 0 no buffer\n     Received 3412 broadcasts, 0 runts, 0 giants, 0 throttles\n     847 input errors, 412 CRC, 201 frame, 0 overrun, 0 ignored\n     0 watchdog, 0 multicast\n     782103 packets output, 312847291 bytes, 0 underruns\n\n--- syslog ---\nMar 23 09:14:22 SW-FLOOR3-A %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0/1, changed state to down\nMar 23 09:14:28 SW-FLOOR3-A %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0/1, changed state to up\nMar 23 11:02:41 SW-FLOOR3-A %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0/1, changed state to down\nMar 23 11:02:47 SW-FLOOR3-A %LINEPROTO-5-UPDOWN: Line protocol on Interface GigabitEthernet0/0/1, changed state to up",
+      "assertions": {
+        "llm_must_not_see": ["10.20.3.2"],
+        "user_must_see": ["10.20.3.2"],
+        "entity_count_min": 1,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Traceroute with packet loss at specific hop",
+      "input": "Traceroute from 10.1.0.1 to 10.2.0.1 shows packet loss at hop 3 (172.16.5.1). Investigate.\n\n--- traceroute from SRC-RTR-01 (10.1.0.1) to DST-RTR-01 (10.2.0.1) ---\nType escape sequence to abort.\nTracing the route to 10.2.0.1\n  1  10.1.0.2      1 msec  1 msec  1 msec    [AGG-SW-01]\n  2  10.0.50.1     2 msec  2 msec  2 msec    [CORE-RTR-02]\n  3  172.16.5.1    *  48 msec  *              [WAN-RTR-03]\n  4  172.16.5.5    3 msec  3 msec  3 msec    [WAN-RTR-04]\n  5  10.2.0.1      4 msec  4 msec  3 msec    [DST-RTR-01]\n\n--- show ip route 172.16.5.0 — CORE-RTR-02 ---\nRouting entry for 172.16.5.0/30\n  Known via \"ospf 100\", distance 110, metric 20\n  Last update from 10.0.50.2 on GigabitEthernet0/0/2, 2w3d ago\n  Routing Descriptor Blocks:\n  * 10.0.50.2, from 172.16.5.1, 2w3d ago, via GigabitEthernet0/0/2\n\n--- show interfaces GigabitEthernet0/0/0 — WAN-RTR-03 ---\nGigabitEthernet0/0/0 is up, line protocol is up\n  Internet address is 172.16.5.1/30\n  Input queue: 75/75/128/0 (size/max/drops/flushes)\n  5 minute input rate 892000000 bits/sec, 74120 packets/sec\n  5 minute output rate 901000000 bits/sec, 75210 packets/sec\n  Output queue: 42/40/0 (size/max/drops)",
+      "assertions": {
+        "llm_must_not_see": ["10.1.0.1", "10.2.0.1", "172.16.5.1", "172.16.5.5", "10.0.50.1", "10.0.50.2", "10.1.0.2"],
+        "user_must_see": ["10.1.0.1", "10.2.0.1", "172.16.5.1", "172.16.5.5", "10.0.50.1", "10.0.50.2", "10.1.0.2"],
+        "entity_count_min": 7,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Show ip route with next-hop resolution failure",
+      "input": "CORE-RTR-01 cannot reach 10.30.0.0/16 — show routes and ARP.\n\n--- show ip route 10.30.0.0 — CORE-RTR-01 ---\nRouting entry for 10.30.0.0/16\n  Known via \"bgp 65412\", distance 200, metric 0\n  Last update from 10.255.0.5 1d ago\n  Routing Descriptor Blocks:\n  * 10.255.0.5, from 10.255.0.5, 1d ago\n      Route metric is 0, traffic share count is 1\n      AS Hops 0, MPLS label: 24012\n\n--- show ip cef 10.255.0.5 — CORE-RTR-01 ---\n10.255.0.5/32\n  nexthop 10.0.12.2 GigabitEthernet0/0/0\n\n--- show ip arp GigabitEthernet0/0/0 — CORE-RTR-01 ---\nProtocol  Address          Age (min)  Hardware Addr   Type   Interface\nInternet  10.0.12.1               -   aabb.cc00.0100  ARPA   GigabitEthernet0/0/0\nInternet  10.0.12.2              42   Incomplete       ARPA   GigabitEthernet0/0/0",
+      "assertions": {
+        "llm_must_not_see": ["10.255.0.5", "10.0.12.2", "10.0.12.1"],
+        "user_must_see": ["10.255.0.5", "10.0.12.2", "10.0.12.1"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

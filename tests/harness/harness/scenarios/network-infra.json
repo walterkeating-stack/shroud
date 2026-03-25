@@ -1,0 +1,91 @@
+[
+  {
+    "name": "Cisco hostname detection",
+    "input": "hostname core-rtr-01.dc-east.acme.net\n! Last configuration change at 14:32:01 UTC Mon Mar 23 2026",
+    "assertions": {
+      "llm_must_not_see": ["core-rtr-01.dc-east.acme.net"],
+      "user_must_see": ["core-rtr-01.dc-east.acme.net"],
+      "entity_count_min": 1,
+      "categories": ["hostname"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "SNMP community string",
+    "input": "snmp-server community S3cretR0-Str1ng RO\nsnmp-server location DC-East Rack 14",
+    "assertions": {
+      "llm_must_not_see": ["S3cretR0-Str1ng"],
+      "user_must_see": ["S3cretR0-Str1ng"],
+      "entity_count_min": 1,
+      "categories": ["snmp_community"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Enable secret",
+    "input": "enable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0\nservice password-encryption",
+    "assertions": {
+      "llm_must_not_see": ["$1$mERr$hx5rVt7rPNoS4wqbXKX7m0"],
+      "user_must_see": ["$1$mERr$hx5rVt7rPNoS4wqbXKX7m0"],
+      "entity_count_min": 1,
+      "categories": ["network_credential"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "BGP ASN and neighbor IPs",
+    "input": "router bgp 65412\n neighbor 10.0.0.1 remote-as 65413\n network 172.16.0.0 mask 255.255.0.0",
+    "assertions": {
+      "llm_must_not_see": ["10.0.0.1"],
+      "user_must_see": ["10.0.0.1"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "VLAN interface IP",
+    "input": "interface Vlan100\n ip address 192.168.100.1 255.255.255.0\n description MGMT-VLAN-EAST\n no shutdown",
+    "assertions": {
+      "llm_must_not_see": ["192.168.100.1"],
+      "user_must_see": ["192.168.100.1"],
+      "entity_count_min": 1,
+      "categories": ["ip_address"],
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Interface description with IP and hostname",
+    "input": "interface GigabitEthernet0/0/1\n description Link_to_border-fw-01.dc-west.acme.net\n ip address 10.255.0.2 255.255.255.252",
+    "assertions": {
+      "llm_must_not_see": ["10.255.0.2"],
+      "user_must_see": ["10.255.0.2"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Route-map name obfuscation",
+    "input": "route-map RM-CUST-ACME-IN permit 10\n match ip address prefix-list PL-CUST-ACME\n set local-preference 200",
+    "assertions": {
+      "llm_must_not_see": ["RM-CUST-ACME-IN"],
+      "user_must_see": ["RM-CUST-ACME-IN"],
+      "entity_count_min": 1,
+      "categories": ["route_map"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "ACL with IP addresses",
+    "input": "ip access-list extended ACL-MGMT-FILTER\n permit tcp 10.10.0.0 0.0.255.255 any eq 22\n permit tcp 10.10.0.0 0.0.255.255 any eq 443\n deny ip any any log",
+    "assertions": {
+      "llm_must_not_see": ["10.10.0.0"],
+      "user_must_see": ["10.10.0.0"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

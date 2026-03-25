@@ -1,0 +1,60 @@
+{
+  "name": "NCG MPLS/VPN Scenarios",
+  "tests": [
+    {
+      "name": "L3VPN full config with VRF, PE-CE BGP, and route targets",
+      "input": "Show the L3VPN config for customer ACME on NYC-MPLS-PE-01 including VRF, PE-CE routing, and MP-BGP.\n\n--- NYC-MPLS-PE-01 ---\nhostname NYC-MPLS-PE-01\n!\nip vrf CUST-ACME\n rd 65000:100\n route-target export 65000:100\n route-target import 65000:100\n route-target import 65000:999\n!\ninterface Loopback0\n ip address 10.255.0.10 255.255.255.255\n ip ospf 100 area 0\n!\ninterface GigabitEthernet0/0/1.100\n description CE_ACME-NYC-RTR-01_CID:ACME-NYC-L3VPN-001\n encapsulation dot1Q 100\n ip vrf forwarding CUST-ACME\n ip address 10.100.0.1 255.255.255.252\n!\nrouter bgp 65000\n bgp log-neighbor-changes\n !\n address-family vpnv4\n  neighbor 10.255.0.11 activate\n  neighbor 10.255.0.11 send-community extended\n  neighbor 10.255.0.12 activate\n  neighbor 10.255.0.12 send-community extended\n !\n address-family ipv4 vrf CUST-ACME\n  neighbor 10.100.0.2 remote-as 65100\n  neighbor 10.100.0.2 description CE_ACME-NYC-RTR-01\n  neighbor 10.100.0.2 password 0 AcmeBgpK3y!\n  neighbor 10.100.0.2 activate\n  neighbor 10.100.0.2 route-map RM-ACME-CE-IN in\n  neighbor 10.100.0.2 route-map RM-ACME-CE-OUT out\n  neighbor 10.100.0.2 maximum-prefix 100 80 restart 30\n exit-address-family\n!\nroute-map RM-ACME-CE-IN permit 10\n match ip address prefix-list PL-ACME-ALLOWED\n set community 65000:100\nroute-map RM-ACME-CE-OUT permit 10\n match ip address prefix-list PL-ACME-DEFAULT\n!\nip prefix-list PL-ACME-ALLOWED seq 10 permit 172.20.0.0/16 le 24\nip prefix-list PL-ACME-ALLOWED seq 20 permit 172.21.0.0/16 le 24\nip prefix-list PL-ACME-DEFAULT seq 10 permit 0.0.0.0/0",
+      "assertions": {
+        "llm_must_not_see": ["10.255.0.10", "10.255.0.11", "10.255.0.12", "10.100.0.1", "10.100.0.2", "AcmeBgpK3y!", "172.20.0.0", "172.21.0.0"],
+        "user_must_see": ["10.255.0.10", "10.255.0.11", "10.255.0.12", "10.100.0.1", "10.100.0.2", "AcmeBgpK3y!", "172.20.0.0", "172.21.0.0"],
+        "entity_count_min": 8,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "L2VPN VPLS with pseudowire and xconnect",
+      "input": "Show the L2VPN/VPLS config for customer GLOBEX between NYC and LAX PEs.\n\n--- NYC-MPLS-PE-01 ---\nhostname NYC-MPLS-PE-01\n!\nl2vpn vfi context VPLS-GLOBEX\n vpn id 200\n autodiscovery bgp signaling ldp\n  rd 65000:200\n  route-target export 65000:200\n  route-target import 65000:200\n!\ninterface GigabitEthernet0/0/2.200\n description CE_GLOBEX-NYC-SW-01_L2VPN_CID:GLOB-L2-NYC-001\n encapsulation dot1Q 200\n xconnect 10.255.0.20 200 encapsulation mpls\n  backup peer 10.255.0.21 200\n!\nmpls ldp router-id Loopback0\nmpls label protocol ldp\n!\ninterface Loopback0\n ip address 10.255.0.10 255.255.255.255\n\n--- LAX-MPLS-PE-01 ---\nhostname LAX-MPLS-PE-01\n!\nl2vpn vfi context VPLS-GLOBEX\n vpn id 200\n autodiscovery bgp signaling ldp\n  rd 65000:200\n  route-target export 65000:200\n  route-target import 65000:200\n!\ninterface GigabitEthernet0/0/2.200\n description CE_GLOBEX-LAX-SW-01_L2VPN_CID:GLOB-L2-LAX-001\n encapsulation dot1Q 200\n xconnect 10.255.0.10 200 encapsulation mpls\n  backup peer 10.255.0.11 200\n!\ninterface Loopback0\n ip address 10.255.0.20 255.255.255.255",
+      "assertions": {
+        "llm_must_not_see": ["10.255.0.10", "10.255.0.20", "10.255.0.21", "10.255.0.11"],
+        "user_must_see": ["10.255.0.10", "10.255.0.20", "10.255.0.21", "10.255.0.11"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "MPLS TE tunnel with RSVP",
+      "input": "Show the MPLS TE tunnel config from CHI-P-01 to NYC-P-01.\n\n--- CHI-P-01 ---\nhostname CHI-P-01\n!\nmpls traffic-eng tunnels\n!\ninterface Loopback0\n ip address 10.255.0.30 255.255.255.255\n ip ospf 100 area 0\n!\ninterface Tunnel100\n description MPLS-TE_TO_NYC-P-01_PRIMARY\n ip unnumbered Loopback0\n tunnel mode mpls traffic-eng\n tunnel destination 10.255.0.31\n tunnel mpls traffic-eng autoroute announce\n tunnel mpls traffic-eng priority 7 7\n tunnel mpls traffic-eng bandwidth 1000000\n tunnel mpls traffic-eng path-option 10 explicit name PATH-CHI-NYC-PRI\n tunnel mpls traffic-eng path-option 20 dynamic\n!\ninterface Tunnel101\n description MPLS-TE_TO_NYC-P-01_BACKUP\n ip unnumbered Loopback0\n tunnel mode mpls traffic-eng\n tunnel destination 10.255.0.31\n tunnel mpls traffic-eng autoroute announce\n tunnel mpls traffic-eng priority 7 7\n tunnel mpls traffic-eng bandwidth 500000\n tunnel mpls traffic-eng path-option 10 explicit name PATH-CHI-NYC-BKP\n tunnel mpls traffic-eng path-option 20 dynamic\n!\nip explicit-path name PATH-CHI-NYC-PRI enable\n next-address 10.0.60.2\n next-address 10.0.61.2\n next-address 10.255.0.31\n!\nip explicit-path name PATH-CHI-NYC-BKP enable\n next-address 10.0.62.2\n next-address 10.0.63.2\n next-address 10.0.64.2\n next-address 10.255.0.31\n!\ninterface GigabitEthernet0/0/0\n description CORE_TO_CHI-P-02\n ip address 10.0.60.1 255.255.255.252\n mpls traffic-eng tunnels\n ip rsvp bandwidth 10000000\n!\ninterface GigabitEthernet0/0/1\n description CORE_TO_DEN-P-01\n ip address 10.0.62.1 255.255.255.252\n mpls traffic-eng tunnels\n ip rsvp bandwidth 10000000",
+      "assertions": {
+        "llm_must_not_see": ["10.255.0.30", "10.255.0.31", "10.0.60.1", "10.0.60.2", "10.0.61.2", "10.0.62.1", "10.0.62.2", "10.0.63.2", "10.0.64.2"],
+        "user_must_see": ["10.255.0.30", "10.255.0.31", "10.0.60.1", "10.0.60.2", "10.0.61.2", "10.0.62.1", "10.0.62.2"],
+        "entity_count_min": 9,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "MP-BGP VPNv4 with multiple PE route reflectors",
+      "input": "Show the MP-BGP VPNv4 config between PE routers and route reflectors.\n\n--- show bgp vpnv4 unicast all summary — NYC-MPLS-PE-01 ---\nhostname NYC-MPLS-PE-01\nBGP router identifier 10.255.0.10, local AS number 65000\n\nNeighbor        V  AS    MsgRcvd  MsgSent  TblVer  Up/Down  State/PfxRcd\n10.255.0.1      4  65000  482910   471023   98210   24w3d    4821\n10.255.0.2      4  65000  481029   470112   98210   24w3d    4821\n\n--- config ---\nrouter bgp 65000\n bgp router-id 10.255.0.10\n no bgp default ipv4-unicast\n neighbor 10.255.0.1 remote-as 65000\n neighbor 10.255.0.1 description RR-NYC-01\n neighbor 10.255.0.1 update-source Loopback0\n neighbor 10.255.0.2 remote-as 65000\n neighbor 10.255.0.2 description RR-CHI-01\n neighbor 10.255.0.2 update-source Loopback0\n !\n address-family vpnv4\n  neighbor 10.255.0.1 activate\n  neighbor 10.255.0.1 send-community both\n  neighbor 10.255.0.2 activate\n  neighbor 10.255.0.2 send-community both\n !\n address-family ipv4 vrf CUST-ACME\n  redistribute connected\n  neighbor 10.100.0.2 remote-as 65100\n  neighbor 10.100.0.2 activate\n !\n address-family ipv4 vrf CUST-GLOBEX\n  redistribute connected\n  neighbor 10.100.1.2 remote-as 65200\n  neighbor 10.100.1.2 activate\n !\n address-family ipv4 vrf CUST-INITECH\n  redistribute connected\n  neighbor 10.100.2.2 remote-as 65300\n  neighbor 10.100.2.2 activate",
+      "assertions": {
+        "llm_must_not_see": ["10.255.0.10", "10.255.0.1", "10.255.0.2", "10.100.0.2", "10.100.1.2", "10.100.2.2"],
+        "user_must_see": ["10.255.0.10", "10.255.0.1", "10.255.0.2", "10.100.0.2", "10.100.1.2", "10.100.2.2"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "LDP neighbor and label binding table",
+      "input": "Show LDP neighbors and label bindings on CHI-P-01.\n\n--- show mpls ldp neighbor — CHI-P-01 ---\nhostname CHI-P-01\nPeer LDP Ident: 10.255.0.31:0; Local LDP Ident 10.255.0.30:0\n  TCP connection: 10.255.0.31.646 - 10.255.0.30.11019\n  State: Oper; Msgs sent/rcvd: 42891/43102; Up time: 12w3d\n  LDP discovery sources:\n    GigabitEthernet0/0/0, Src IP addr: 10.0.60.2\nPeer LDP Ident: 10.255.0.32:0; Local LDP Ident 10.255.0.30:0\n  TCP connection: 10.255.0.32.646 - 10.255.0.30.14201\n  State: Oper; Msgs sent/rcvd: 38291/37812; Up time: 10w1d\n  LDP discovery sources:\n    GigabitEthernet0/0/1, Src IP addr: 10.0.62.2\n\n--- show mpls forwarding-table (partial) ---\nLocal  Outgoing    Prefix           Bytes Label  Outgoing     Next Hop\nLabel  Label       or Tunnel Id     Switched     interface\n24     Pop Label   10.255.0.31/32   482910124    Gi0/0/0      10.0.60.2\n25     24012       10.255.0.20/32   129482011    Gi0/0/0      10.0.60.2\n26     Pop Label   10.255.0.32/32   312849102    Gi0/0/1      10.0.62.2\n27     24015       10.255.0.11/32   89201482     Gi0/0/1      10.0.62.2",
+      "assertions": {
+        "llm_must_not_see": ["10.255.0.30", "10.255.0.31", "10.255.0.32", "10.0.60.2", "10.0.62.2", "10.255.0.20", "10.255.0.11"],
+        "user_must_see": ["10.255.0.30", "10.255.0.31", "10.255.0.32", "10.0.60.2", "10.0.62.2", "10.255.0.20", "10.255.0.11"],
+        "entity_count_min": 7,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

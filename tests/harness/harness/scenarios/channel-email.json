@@ -1,0 +1,45 @@
+{
+  "name": "Email Channel Tests",
+  "tests": [
+    {
+      "name": "Email addresses in email body",
+      "channel": "email",
+      "input": "From: alerts@monitoring.internal\nTo: oncall@sre-team.io\n\nServer 10.200.5.10 disk usage at 95%. Please investigate.",
+      "assertions": {
+        "llm_must_not_see": ["alerts@monitoring.internal", "oncall@sre-team.io", "10.200.5.10"],
+        "user_must_see": ["10.200.5.10"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Credentials in email with context keyword",
+      "channel": "email",
+      "input": "Your new VPN credentials:\n  Username: jsmith\n  password 7 0832495D1D1A\n  Gateway: vpn.corp-internal.net (10.0.0.1)",
+      "assertions": {
+        "llm_must_not_see": ["0832495D1D1A", "10.0.0.1"],
+        "user_must_see": ["10.0.0.1"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Network change request in email",
+      "channel": "email",
+      "input": "Change Request CR-2026-0042\nDevice: FRA-EDGE-FW-01\nAction: Add permit rule for 172.16.50.0/24 to 10.10.0.0/16\nApprover: netops@datacenter.eu",
+      "assertions": {
+        "llm_must_not_see": ["FRA-EDGE-FW-01", "netops@datacenter.eu"],
+        "user_must_see": ["FRA-EDGE-FW-01"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Multi-recipient email with IPs",
+      "channel": "email",
+      "input": "CC: team-a@corp.net, team-b@corp.net\n\nMigration plan: move 10.1.0.0/24 from VLAN 10 to VLAN 20. Primary DNS 10.1.0.53.",
+      "assertions": {
+        "llm_must_not_see": ["team-a@corp.net", "team-b@corp.net"],
+        "user_must_see": ["team-a@corp.net", "team-b@corp.net"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

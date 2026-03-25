@@ -1,0 +1,71 @@
+{
+  "name": "NCG Change Requests",
+  "tests": [
+    {
+      "name": "Add VLAN with IP to distribution switches",
+      "input": "Add VLAN 100 with name ENGINEERING and IP 10.10.100.1/24 to SW-DIST-01 and SW-DIST-02. Include HSRP between them.\n\nGenerated config for SW-DIST-01:\nvlan 100\n name ENGINEERING\n!\ninterface Vlan100\n description ENGINEERING_LAN\n ip address 10.10.100.2 255.255.255.0\n ip helper-address 10.10.5.40\n ip helper-address 10.10.5.41\n standby version 2\n standby 100 ip 10.10.100.1\n standby 100 priority 110\n standby 100 preempt\n standby 100 authentication md5 key-string HSRP-ENG-100\n no shutdown\n\nGenerated config for SW-DIST-02:\nvlan 100\n name ENGINEERING\n!\ninterface Vlan100\n description ENGINEERING_LAN\n ip address 10.10.100.3 255.255.255.0\n ip helper-address 10.10.5.40\n ip helper-address 10.10.5.41\n standby version 2\n standby 100 ip 10.10.100.1\n standby 100 priority 90\n standby 100 preempt\n standby 100 authentication md5 key-string HSRP-ENG-100\n no shutdown",
+      "assertions": {
+        "llm_must_not_see": ["10.10.100.2", "10.10.100.3", "10.10.100.1", "10.10.5.40", "10.10.5.41"],
+        "user_must_see": ["10.10.100.2", "10.10.100.3", "10.10.100.1", "10.10.5.40", "10.10.5.41"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Create VRF with RD and RT on PE routers",
+      "input": "Create a new VRF CUSTOMER-B with RD 65000:200 and RT 65000:200 on all PE routers. Add a customer-facing subinterface on each.\n\nGenerated config for NYC-MPLS-PE-01:\nip vrf CUSTOMER-B\n rd 65000:200\n route-target export 65000:200\n route-target import 65000:200\n!\ninterface GigabitEthernet0/0/3.200\n description CE_CUSTOMER-B_NYC_CID:CUST-B-NYC-001\n encapsulation dot1Q 200\n ip vrf forwarding CUSTOMER-B\n ip address 10.200.0.1 255.255.255.252\n!\nrouter bgp 65000\n address-family ipv4 vrf CUSTOMER-B\n  neighbor 10.200.0.2 remote-as 65200\n  neighbor 10.200.0.2 activate\n  neighbor 10.200.0.2 route-map RM-CUST-B-IN in\n  neighbor 10.200.0.2 route-map RM-CUST-B-OUT out\n exit-address-family\n\nGenerated config for LAX-MPLS-PE-01:\nip vrf CUSTOMER-B\n rd 65000:200\n route-target export 65000:200\n route-target import 65000:200\n!\ninterface GigabitEthernet0/0/3.200\n description CE_CUSTOMER-B_LAX_CID:CUST-B-LAX-001\n encapsulation dot1Q 200\n ip vrf forwarding CUSTOMER-B\n ip address 10.200.1.1 255.255.255.252\n!\nrouter bgp 65000\n address-family ipv4 vrf CUSTOMER-B\n  neighbor 10.200.1.2 remote-as 65200\n  neighbor 10.200.1.2 activate\n exit-address-family",
+      "assertions": {
+        "llm_must_not_see": ["10.200.0.1", "10.200.0.2", "10.200.1.1", "10.200.1.2"],
+        "user_must_see": ["10.200.0.1", "10.200.0.2", "10.200.1.1", "10.200.1.2"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Add BGP peer with authentication",
+      "input": "Add BGP peer 10.0.0.5 AS 65200 with password BGPAUTH123 on CORE-RTR-01. Include route-maps and soft-reconfiguration.\n\nGenerated config:\nrouter bgp 65412\n neighbor 10.0.0.5 remote-as 65200\n neighbor 10.0.0.5 description PEER_TRANSIT_NTT\n neighbor 10.0.0.5 password 0 BGPAUTH123\n neighbor 10.0.0.5 ebgp-multihop 2\n neighbor 10.0.0.5 update-source GigabitEthernet0/0/3\n neighbor 10.0.0.5 route-map RM-NTT-IN in\n neighbor 10.0.0.5 route-map RM-NTT-OUT out\n neighbor 10.0.0.5 soft-reconfiguration inbound\n neighbor 10.0.0.5 maximum-prefix 500000 90 restart 15\n!\nroute-map RM-NTT-IN permit 10\n match ip address prefix-list PL-NTT-ALLOWED\n set local-preference 150\nroute-map RM-NTT-IN deny 20\n!\nroute-map RM-NTT-OUT permit 10\n match ip address prefix-list PL-OUR-PREFIXES\n!\nip prefix-list PL-NTT-ALLOWED seq 10 permit 0.0.0.0/0 le 24\nip prefix-list PL-OUR-PREFIXES seq 10 permit 198.51.44.0/22",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.5", "BGPAUTH123"],
+        "user_must_see": ["10.0.0.5", "BGPAUTH123"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Configure SNMPv3 user with auth and priv",
+      "input": "Configure SNMP v3 user NMSUSER auth SHA AUTHPASS123 priv AES PRIVPASS456 on all core routers.\n\nGenerated config for CORE-RTR-01:\nsnmp-server group NMS-GROUP v3 priv\nsnmp-server user NMSUSER NMS-GROUP v3 auth sha AUTHPASS123 priv aes 128 PRIVPASS456\nsnmp-server host 10.10.5.30 version 3 priv NMSUSER\nsnmp-server host 10.10.5.31 version 3 priv NMSUSER\n\nGenerated config for CORE-RTR-02:\nsnmp-server group NMS-GROUP v3 priv\nsnmp-server user NMSUSER NMS-GROUP v3 auth sha AUTHPASS123 priv aes 128 PRIVPASS456\nsnmp-server host 10.10.5.30 version 3 priv NMSUSER\nsnmp-server host 10.10.5.31 version 3 priv NMSUSER",
+      "assertions": {
+        "llm_must_not_see": ["AUTHPASS123", "PRIVPASS456", "10.10.5.30", "10.10.5.31"],
+        "user_must_see": ["AUTHPASS123", "PRIVPASS456", "10.10.5.30", "10.10.5.31"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Configure IPSec tunnel with PSK",
+      "input": "Set up IPSec tunnel between 203.0.113.1 (EDGE-RTR-01) and 198.51.100.1 (REMOTE-GW-01) with PSK MyTunnelKey99.\n\nGenerated config for EDGE-RTR-01:\ncrypto isakmp policy 10\n encr aes 256\n hash sha256\n authentication pre-share\n group 14\n lifetime 86400\n!\ncrypto isakmp key MyTunnelKey99 address 198.51.100.1\n!\ncrypto ipsec transform-set TS-AES256-SHA esp-aes 256 esp-sha256-hmac\n mode tunnel\n!\ncrypto map CMAP-IPSEC 10 ipsec-isakmp\n description TUNNEL_TO_REMOTE-GW-01\n set peer 198.51.100.1\n set transform-set TS-AES256-SHA\n match address ACL-IPSEC-INTERESTING\n!\nip access-list extended ACL-IPSEC-INTERESTING\n permit ip 10.1.0.0 0.0.255.255 10.2.0.0 0.0.255.255\n!\ninterface GigabitEthernet0/0/0\n description WAN_TO_ISP_LUMEN\n ip address 203.0.113.1 255.255.255.252\n crypto map CMAP-IPSEC\n!\ninterface Tunnel0\n description IPSEC_TO_REMOTE-GW-01\n ip address 10.254.0.1 255.255.255.252\n tunnel source 203.0.113.1\n tunnel destination 198.51.100.1\n tunnel mode ipsec ipv4\n tunnel protection ipsec profile IPSEC-PROFILE-01",
+      "assertions": {
+        "llm_must_not_see": ["203.0.113.1", "198.51.100.1", "MyTunnelKey99", "10.254.0.1"],
+        "user_must_see": ["203.0.113.1", "198.51.100.1", "MyTunnelKey99", "10.254.0.1"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Add static routes with descriptions and tracking",
+      "input": "Add tracked static routes for the new branch office 10.50.0.0/16 via both WAN links on BRANCH-RTR-01.\n\nGenerated config:\nip sla 1\n icmp-echo 203.0.113.1 source-ip 203.0.113.5\n frequency 10\nip sla schedule 1 life forever start-time now\n!\ntrack 1 ip sla 1 reachability\n!\nip route 10.50.0.0 255.255.0.0 203.0.113.1 10 name PRIMARY-WAN-TO-HQ track 1\nip route 10.50.0.0 255.255.0.0 198.51.100.5 20 name BACKUP-WAN-TO-HQ\nip route 10.51.0.0 255.255.0.0 203.0.113.1 10 name PRIMARY-WAN-TO-DC track 1\nip route 10.51.0.0 255.255.0.0 198.51.100.5 20 name BACKUP-WAN-TO-DC",
+      "assertions": {
+        "llm_must_not_see": ["203.0.113.1", "203.0.113.5", "198.51.100.5", "10.50.0.0", "10.51.0.0"],
+        "user_must_see": ["203.0.113.1", "203.0.113.5", "198.51.100.5", "10.50.0.0", "10.51.0.0"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

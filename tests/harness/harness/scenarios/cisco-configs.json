@@ -1,0 +1,126 @@
+{
+  "name": "Cisco IOS/IOS-XE Configurations",
+  "tests": [
+    {
+      "name": "Full interface config with IP, description, ACL",
+      "input": "interface GigabitEthernet0/0/0\n description WAN_Link_to_ISP1_CenturyLink_CID:82-HCGS-044719\n ip address 203.0.120.34 255.255.255.252\n ip access-group ACL-WAN-INBOUND in\n ip access-group ACL-WAN-OUTBOUND out\n ip flow ingress\n load-interval 30\n negotiation auto\n no shutdown",
+      "assertions": {
+        "llm_must_not_see": ["203.0.120.34"],
+        "user_must_see": ["203.0.120.34"],
+        "entity_count_min": 1,
+        "categories": ["ip_address"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "BGP neighbor config with password and route-maps",
+      "input": "router bgp 65412\n bgp log-neighbor-changes\n neighbor 10.0.0.1 remote-as 65413\n neighbor 10.0.0.1 description PEER_TRANSIT_COGENT\n neighbor 10.0.0.1 password 7 08354942071C11\n neighbor 10.0.0.1 route-map RM-TRANSIT-COGENT-IN in\n neighbor 10.0.0.1 route-map RM-TRANSIT-COGENT-OUT out\n neighbor 10.0.0.1 soft-reconfiguration inbound\n neighbor 172.16.255.2 remote-as 65412\n neighbor 172.16.255.2 update-source Loopback0\n neighbor 172.16.255.2 next-hop-self\n !\n address-family ipv4 unicast\n  network 198.51.44.0 mask 255.255.252.0\n  neighbor 10.0.0.1 activate\n  neighbor 172.16.255.2 activate\n exit-address-family",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.1", "172.16.255.2", "08354942071C11"],
+        "user_must_see": ["10.0.0.1", "172.16.255.2"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "OSPF config with network statements",
+      "input": "router ospf 100\n router-id 10.255.255.1\n log-adjacency-changes detail\n passive-interface default\n no passive-interface GigabitEthernet0/0/0\n no passive-interface GigabitEthernet0/0/1\n network 10.0.12.0 0.0.0.3 area 0\n network 10.0.12.4 0.0.0.3 area 0\n network 10.255.255.1 0.0.0.0 area 0\n network 192.168.100.0 0.0.0.255 area 10\n area 10 stub no-summary",
+      "assertions": {
+        "llm_must_not_see": ["10.255.255.1", "10.0.12.0", "192.168.100.0"],
+        "user_must_see": ["10.255.255.1", "10.0.12.0", "192.168.100.0"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "AAA/RADIUS/TACACS config",
+      "input": "aaa new-model\naaa group server tacacs+ TACACS-SERVERS\n server-private 10.10.5.50 key 7 045E0A0B0E3A2D44\n server-private 10.10.5.51 key 7 045E0A0B0E3A2D44\naaa group server radius RADIUS-SERVERS\n server-private 10.10.5.60 key 7 110A1016141D5A\naaa authentication login default group TACACS-SERVERS local\naaa authorization exec default group TACACS-SERVERS local\naaa accounting exec default start-stop group TACACS-SERVERS",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.50", "10.10.5.51", "10.10.5.60", "045E0A0B0E3A2D44"],
+        "user_must_see": ["10.10.5.50", "10.10.5.51", "10.10.5.60"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Route-map with prefix-list references",
+      "input": "ip prefix-list PL-CUST-MEGACORP seq 10 permit 198.51.44.0/22\nip prefix-list PL-CUST-MEGACORP seq 20 permit 198.51.48.0/24 le 25\nip prefix-list PL-DEFAULT seq 10 permit 0.0.0.0/0\n!\nroute-map RM-CUST-MEGACORP-IN permit 10\n match ip address prefix-list PL-CUST-MEGACORP\n set local-preference 200\n set community 65412:1000\nroute-map RM-CUST-MEGACORP-IN deny 20\n match ip address prefix-list PL-DEFAULT",
+      "assertions": {
+        "llm_must_not_see": ["RM-CUST-MEGACORP-IN", "PL-CUST-MEGACORP"],
+        "user_must_see": ["RM-CUST-MEGACORP-IN", "PL-CUST-MEGACORP"],
+        "entity_count_min": 2,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "SNMP config with communities and trap hosts",
+      "input": "snmp-server community N3tw0rkM0n-R0 RO SNMP-ACL-RO\nsnmp-server community N3tw0rkCfg-RW RW SNMP-ACL-RW\nsnmp-server trap-source Loopback0\nsnmp-server host 10.10.5.30 version 2c N3tw0rkM0n-R0\nsnmp-server host 10.10.5.31 version 2c N3tw0rkM0n-R0\nsnmp-server enable traps snmp linkdown linkup\nsnmp-server enable traps bgp\nsnmp-server enable traps ospf",
+      "assertions": {
+        "llm_must_not_see": ["N3tw0rkM0n-R0", "N3tw0rkCfg-RW", "10.10.5.30", "10.10.5.31"],
+        "user_must_see": ["N3tw0rkM0n-R0", "N3tw0rkCfg-RW", "10.10.5.30", "10.10.5.31"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Logging, NTP, and SSH config",
+      "input": "logging buffered 32768 informational\nlogging trap notifications\nlogging source-interface Loopback0\nlogging host 10.10.5.20\nlogging host 10.10.5.21\n!\nntp server 10.10.5.10 prefer\nntp server 10.10.5.11\nntp source Loopback0\n!\nip ssh version 2\nip ssh time-out 60\nip ssh authentication-retries 3\ncrypto key generate rsa modulus 4096\n!\nline vty 0 15\n transport input ssh\n access-class ACL-VTY-ACCESS in\n exec-timeout 15 0\n login authentication default",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.20", "10.10.5.21", "10.10.5.10", "10.10.5.11"],
+        "user_must_see": ["10.10.5.20", "10.10.5.21", "10.10.5.10", "10.10.5.11"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "VRF with RD, RT, and interfaces",
+      "input": "ip vrf CUST-ACME\n rd 65412:100\n route-target export 65412:100\n route-target import 65412:100\n!\ninterface GigabitEthernet0/0/2.100\n encapsulation dot1Q 100\n ip vrf forwarding CUST-ACME\n ip address 10.100.0.1 255.255.255.252\n!\ninterface GigabitEthernet0/0/2.200\n encapsulation dot1Q 200\n ip vrf forwarding CUST-ACME\n ip address 10.100.0.5 255.255.255.252\n!\nip route vrf CUST-ACME 172.20.0.0 255.255.0.0 10.100.0.2\nip route vrf CUST-ACME 172.21.0.0 255.255.0.0 10.100.0.6",
+      "assertions": {
+        "llm_must_not_see": ["10.100.0.1", "10.100.0.5", "172.20.0.0", "172.21.0.0"],
+        "user_must_see": ["10.100.0.1", "10.100.0.5", "172.20.0.0", "172.21.0.0"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Static routes",
+      "input": "ip route 0.0.0.0 0.0.0.0 203.0.120.33\nip route 10.20.0.0 255.255.0.0 10.0.12.2\nip route 10.30.0.0 255.255.0.0 10.0.12.6\nip route 172.16.100.0 255.255.255.0 10.0.12.10 name BRANCH-OFFICE-LAN\nip route 192.168.50.0 255.255.255.0 10.0.12.14 name REMOTE-SITE-VPN",
+      "assertions": {
+        "llm_must_not_see": ["203.0.120.33", "10.20.0.0", "10.30.0.0", "172.16.100.0"],
+        "user_must_see": ["203.0.120.33", "10.20.0.0", "10.30.0.0", "172.16.100.0"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "SNMP host with community string detection",
+      "input": "snmp-server host 10.10.5.30 version 2c PR0D-C0MMUN1TY\nsnmp-server host 10.10.5.31 version 2c PR0D-C0MMUN1TY\nsnmp-server host 10.10.5.32 version 2c ST@G1NG-RO\nsnmp-server community PR0D-C0MMUN1TY RO SNMP-ACL\nsnmp-server community ST@G1NG-RO RO",
+      "assertions": {
+        "llm_must_not_see": ["PR0D-C0MMUN1TY", "ST@G1NG-RO", "10.10.5.30", "10.10.5.31", "10.10.5.32"],
+        "user_must_see": ["PR0D-C0MMUN1TY", "ST@G1NG-RO", "10.10.5.30", "10.10.5.31", "10.10.5.32"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Extended ACL with remarks and multiple entries",
+      "input": "ip access-list extended ACL-FIREWALL-INBOUND\n remark --- ALLOW ESTABLISHED ---\n permit tcp any any established\n remark --- ALLOW MGMT FROM NOC ---\n permit tcp 10.10.5.0 0.0.0.255 any eq 22\n permit tcp 10.10.5.0 0.0.0.255 any eq 443\n remark --- ALLOW MONITORING ---\n permit udp 10.10.5.0 0.0.0.255 any eq 161\n permit icmp 10.10.5.0 0.0.0.255 any\n remark --- ALLOW CUSTOMER TRAFFIC ---\n permit ip 172.20.0.0 0.0.255.255 any\n permit ip 172.21.0.0 0.0.255.255 any\n remark --- DENY ALL ---\n deny ip any any log",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.0", "172.20.0.0", "172.21.0.0"],
+        "user_must_see": ["10.10.5.0", "172.20.0.0", "172.21.0.0"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

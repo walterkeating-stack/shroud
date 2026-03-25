@@ -1,0 +1,46 @@
+{
+  "name": "Slack Channel Tests",
+  "note": "no_cgnat_leak is Socket Mode-only — tested by slack-webhook-runner.mjs, not channel-runner",
+  "tests": [
+    {
+      "name": "Email in Slack message",
+      "channel": "slack",
+      "input": "Please contact admin@internal-corp.net about the outage",
+      "assertions": {
+        "llm_must_not_see": ["admin@internal-corp.net"],
+        "user_must_see": ["admin@internal-corp.net"],
+        "no_cgnat_leak": "socket-mode-only"
+      }
+    },
+    {
+      "name": "IP address in Slack message",
+      "channel": "slack",
+      "input": "The core switch at 10.1.0.1 is unreachable",
+      "assertions": {
+        "llm_must_not_see": ["10.1.0.1"],
+        "user_must_see": ["10.1.0.1"],
+        "no_cgnat_leak": "socket-mode-only"
+      }
+    },
+    {
+      "name": "Cisco config block in Slack",
+      "channel": "slack",
+      "input": "hostname CHICAGO-CORE-01\ninterface GigabitEthernet0/1\n ip address 10.1.0.1 255.255.255.0\n description UPLINK TO NYC-CORE-02\nsnmp-server community SECRET_RO RO",
+      "assertions": {
+        "llm_must_not_see": ["CHICAGO-CORE-01", "10.1.0.1", "NYC-CORE-02", "SECRET_RO"],
+        "user_must_see": ["CHICAGO-CORE-01", "10.1.0.1"],
+        "no_cgnat_leak": "socket-mode-only"
+      }
+    },
+    {
+      "name": "Slack mrkdwn with PII",
+      "channel": "slack",
+      "input": "Check *10.42.88.1* — it's the `PROD-DB-01` server owned by <mailto:ops@internal.io|ops@internal.io>",
+      "assertions": {
+        "llm_must_not_see": ["10.42.88.1", "PROD-DB-01", "ops@internal.io"],
+        "user_must_see": ["10.42.88.1", "ops@internal.io"],
+        "no_cgnat_leak": "socket-mode-only"
+      }
+    }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  "name": "Juniper JunOS Configurations",
+  "tests": [
+    {
+      "name": "Set commands — interfaces",
+      "input": "set interfaces ge-0/0/0 unit 0 family inet address 10.0.1.1/30\nset interfaces ge-0/0/0 unit 0 description \"UPLINK_TO_CORE-RTR-01\"\nset interfaces ge-0/0/1 unit 0 family inet address 10.0.1.5/30\nset interfaces ge-0/0/1 unit 0 description \"PEER_TO_EDGE-RTR-02\"\nset interfaces lo0 unit 0 family inet address 10.255.0.1/32",
+      "assertions": {
+        "llm_must_not_see": ["10.0.1.1", "10.0.1.5", "10.255.0.1"],
+        "user_must_see": ["10.0.1.1", "10.0.1.5", "10.255.0.1"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "BGP group with neighbor and auth key",
+      "input": "set protocols bgp group TRANSIT-COGENT type external\nset protocols bgp group TRANSIT-COGENT peer-as 174\nset protocols bgp group TRANSIT-COGENT neighbor 154.54.12.97 authentication-key \"$9$kPTQF39tOBEyrKM8X-wYoaU\"\nset protocols bgp group TRANSIT-COGENT neighbor 154.54.12.97 import TRANSIT-IMPORT\nset protocols bgp group TRANSIT-COGENT neighbor 154.54.12.97 export TRANSIT-EXPORT\nset protocols bgp group IBGP type internal\nset protocols bgp group IBGP local-address 10.255.0.1\nset protocols bgp group IBGP neighbor 10.255.0.2\nset protocols bgp group IBGP neighbor 10.255.0.3",
+      "assertions": {
+        "llm_must_not_see": ["154.54.12.97", "10.255.0.1", "$9$kPTQF39tOBEyrKM8X-wYoaU"],
+        "user_must_see": ["154.54.12.97", "10.255.0.1"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Firewall filter rules",
+      "input": "set firewall family inet filter PROTECT-RE term ALLOW-SSH from source-address 10.10.5.0/24\nset firewall family inet filter PROTECT-RE term ALLOW-SSH from protocol tcp\nset firewall family inet filter PROTECT-RE term ALLOW-SSH from destination-port 22\nset firewall family inet filter PROTECT-RE term ALLOW-SSH then accept\nset firewall family inet filter PROTECT-RE term ALLOW-SNMP from source-address 10.10.5.0/24\nset firewall family inet filter PROTECT-RE term ALLOW-SNMP from protocol udp\nset firewall family inet filter PROTECT-RE term ALLOW-SNMP from destination-port 161\nset firewall family inet filter PROTECT-RE term ALLOW-SNMP then accept\nset firewall family inet filter PROTECT-RE term ALLOW-BGP from source-address 154.54.12.96/30\nset firewall family inet filter PROTECT-RE term ALLOW-BGP from protocol tcp\nset firewall family inet filter PROTECT-RE term ALLOW-BGP from destination-port 179\nset firewall family inet filter PROTECT-RE term ALLOW-BGP then accept\nset firewall family inet filter PROTECT-RE term DENY-ALL then discard",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.0", "154.54.12.96"],
+        "user_must_see": ["10.10.5.0", "154.54.12.96"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Routing policy with prefix-list",
+      "input": "set policy-options prefix-list CUST-MEGACORP-PREFIXES 198.51.44.0/22\nset policy-options prefix-list CUST-MEGACORP-PREFIXES 198.51.48.0/24\nset policy-options policy-statement CUST-MEGACORP-IMPORT term ACCEPT from prefix-list CUST-MEGACORP-PREFIXES\nset policy-options policy-statement CUST-MEGACORP-IMPORT term ACCEPT then local-preference 200\nset policy-options policy-statement CUST-MEGACORP-IMPORT term ACCEPT then accept\nset policy-options policy-statement CUST-MEGACORP-IMPORT term REJECT then reject",
+      "assertions": {
+        "llm_must_not_see": ["198.51.44.0", "198.51.48.0"],
+        "user_must_see": ["198.51.44.0", "198.51.48.0"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "SNMP community and trap-group",
+      "input": "set snmp community Pr0dM0n1tor-RO authorization read-only\nset snmp community Pr0dM0n1tor-RO clients 10.10.5.0/24\nset snmp trap-group MONITORING-TRAPS version v2\nset snmp trap-group MONITORING-TRAPS targets 10.10.5.30\nset snmp trap-group MONITORING-TRAPS targets 10.10.5.31\nset snmp trap-group MONITORING-TRAPS categories chassis\nset snmp trap-group MONITORING-TRAPS categories routing",
+      "assertions": {
+        "llm_must_not_see": ["Pr0dM0n1tor-RO", "10.10.5.30", "10.10.5.31"],
+        "user_must_see": ["Pr0dM0n1tor-RO", "10.10.5.30", "10.10.5.31"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "System syslog and NTP",
+      "input": "set system syslog host 10.10.5.20 any info\nset system syslog host 10.10.5.20 authorization any\nset system syslog host 10.10.5.21 any warning\nset system syslog file messages any notice\nset system syslog file interactive-commands interactive-commands any\nset system ntp server 10.10.5.10 prefer\nset system ntp server 10.10.5.11\nset system ntp source-address 10.255.0.1",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.20", "10.10.5.21", "10.10.5.10", "10.10.5.11", "10.255.0.1"],
+        "user_must_see": ["10.10.5.20", "10.10.5.21", "10.10.5.10", "10.10.5.11", "10.255.0.1"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Hierarchical config block (show configuration style)",
+      "input": "interfaces {\n    ge-0/0/0 {\n        unit 0 {\n            description \"TRANSIT_COGENT_CID:OC-4419872\";\n            family inet {\n                address 154.54.12.98/30;\n            }\n        }\n    }\n    ge-0/0/1 {\n        unit 0 {\n            description \"PEERING_IX_EQUINIX\";\n            family inet {\n                address 206.126.236.44/24;\n            }\n        }\n    }\n    lo0 {\n        unit 0 {\n            family inet {\n                address 10.255.0.1/32;\n            }\n        }\n    }\n}",
+      "assertions": {
+        "llm_must_not_see": ["154.54.12.98", "206.126.236.44", "10.255.0.1"],
+        "user_must_see": ["154.54.12.98", "206.126.236.44", "10.255.0.1"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

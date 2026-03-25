@@ -1,0 +1,66 @@
+[
+  {
+    "name": "Mixed PII and network (IP + email in one text)",
+    "input": "Alert: Server at 10.42.88.100 is down. Contact ops@acme-corp.com immediately.",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.100", "ops@acme-corp.com"],
+      "user_must_see": ["10.42.88.100", "ops@acme-corp.com"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Cisco config block with many entities",
+    "input": "hostname edge-rtr-04.pop-chicago.acme.net\n!\ninterface Loopback0\n ip address 10.255.255.4 255.255.255.255\n!\ninterface GigabitEthernet0/0/0\n ip address 10.0.12.1 255.255.255.252\n!\ninterface GigabitEthernet0/0/1\n ip address 206.53.12.44 255.255.255.252\n!\nrouter bgp 65501\n neighbor 10.0.12.2 remote-as 65500\n neighbor 206.53.12.45 remote-as 13335\n!\nsnmp-server community Pr0dM0n-R0 RO\n!\nntp server 10.10.5.10\nlogging host 10.10.5.11",
+    "assertions": {
+      "llm_must_not_see": ["10.255.255.4", "10.0.12.1", "206.53.12.44", "edge-rtr-04.pop-chicago.acme.net"],
+      "user_must_see": ["10.255.255.4", "10.0.12.1", "206.53.12.44", "edge-rtr-04.pop-chicago.acme.net"],
+      "entity_count_min": 8,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Large input — traceroute with many IPs",
+    "input": "Traceroute to destination:\n 1  10.0.0.1  1ms\n 2  10.1.0.1  2ms\n 3  10.2.0.1  3ms\n 4  10.3.0.1  4ms\n 5  10.4.0.1  5ms\n 6  10.5.0.1  6ms\n 7  10.6.0.1  7ms\n 8  10.7.0.1  8ms\n 9  10.8.0.1  9ms\n10  10.9.0.1  10ms\n11  10.10.0.1  11ms\n12  10.11.0.1  12ms\n13  10.12.0.1  13ms\n14  10.13.0.1  14ms\n15  10.14.0.1  15ms",
+    "assertions": {
+      "llm_must_not_see": ["10.0.0.1", "10.5.0.1", "10.14.0.1"],
+      "user_must_see": ["10.0.0.1", "10.5.0.1", "10.14.0.1"],
+      "entity_count_min": 15,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Multiple emails in one paragraph",
+    "input": "Please CC the following people on the migration notice: alice.chen@acme-corp.com, bob.jones@acme-corp.com, carol.wu@partner-co.net, and dave.patel@vendor.io. The project lead is eve.martinez@acme-corp.com.",
+    "assertions": {
+      "llm_must_not_see": ["alice.chen@acme-corp.com", "bob.jones@acme-corp.com", "carol.wu@partner-co.net", "dave.patel@vendor.io", "eve.martinez@acme-corp.com"],
+      "user_must_see": ["alice.chen@acme-corp.com", "bob.jones@acme-corp.com", "carol.wu@partner-co.net", "dave.patel@vendor.io", "eve.martinez@acme-corp.com"],
+      "entity_count_min": 5,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Credentials in connection string — email-like user@host",
+    "input": "Database connection: postgresql://admin@db-primary.internal.acme.net:5432/production_data",
+    "assertions": {
+      "llm_must_not_see": ["admin@db-primary.internal.acme.net"],
+      "user_must_see": ["admin@db-primary.internal.acme.net"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "JWT token with IP in headers",
+    "input": "Authorization: Bearer SHROUD_TEST_JWT\nX-Forwarded-For: 10.42.88.200",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.200"],
+      "user_must_see": ["10.42.88.200"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

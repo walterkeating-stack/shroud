@@ -1,0 +1,85 @@
+[
+  {
+    "name": "LLM summarizes fake IPs as CGNAT range description",
+    "description": "Real LLMs summarize multiple IPs into range descriptions. If the LLM writes '100.64.x.x/xx' or 'within 100.64.0.0 space', that's a CGNAT leak.",
+    "input": "Show me the VRF allocations for all sites. Here are the IPs:\n- VRF-VCX: 10.1.0.0/24\n- VRF-COV2: 10.2.0.0/16\n- VRF-OPS: 10.3.0.0/24\n- VRF-RADIO: 10.4.0.0/24\n- VRF-SMLAT: 10.5.0.0/24",
+    "assertions": {
+      "llm_must_not_see": ["10.1.0.0", "10.2.0.0", "10.3.0.0", "10.4.0.0", "10.5.0.0"],
+      "user_must_see": ["10.1.0.0"],
+      "no_cgnat_leak": true,
+      "no_cgnat_range_leak": true,
+      "categories": ["ip_address"]
+    }
+  },
+  {
+    "name": "LLM uses CGNAT range in summary table",
+    "description": "Tests that Shroud catches when the LLM produces a summary like '100.64.0.x/24 (allocated, TBD)'",
+    "input": "List all network allocations:\nSite A: 192.168.1.0/24\nSite B: 172.16.0.0/16\nSite C: 10.0.0.0/8\nSite D: 10.10.0.0/16",
+    "assertions": {
+      "llm_must_not_see": ["192.168.1.0", "172.16.0.0", "10.10.0.0"],
+      "no_cgnat_leak": true,
+      "no_cgnat_range_leak": true
+    }
+  },
+  {
+    "name": "Multiple VRFs with IPs should not leak CGNAT",
+    "input": "hostname CORE-RTR-01\nip vrf VRF-VOICE\n rd 65001:100\n route-target export 65001:100\n!\ninterface Vlan100\n ip vrf forwarding VRF-VOICE\n ip address 10.100.0.1 255.255.255.0\n!\ninterface Vlan200\n ip vrf forwarding VRF-DATA\n ip address 10.200.0.1 255.255.255.0",
+    "assertions": {
+      "llm_must_not_see": ["CORE-RTR-01", "10.100.0.1", "10.200.0.1"],
+      "user_must_see": ["CORE-RTR-01"],
+      "no_cgnat_leak": true,
+      "no_cgnat_range_leak": true,
+      "categories": ["ip_address", "hostname"]
+    }
+  },
+  {
+    "name": "LLM generates 100.64.x.x/24 CIDR description",
+    "input": "The network team allocated the following subnets:\n- Site Alpha: 10.10.0.0/24\n- Site Beta: 10.20.0.0/24\n- Site Gamma: 10.30.0.0/24\nPlease summarize these allocations.",
+    "assertions": {
+      "llm_must_not_see": ["10.10.0.0", "10.20.0.0", "10.30.0.0"],
+      "no_cgnat_leak": true,
+      "no_cgnat_range_leak": true
+    }
+  },
+  {
+    "name": "CGNAT IPs in educational prose pass through (Shroud uses CGNAT range for fakes)",
+    "description": "100.64.0.0/10 is the CGNAT range Shroud uses for fake IPs, so real CGNAT IPs are intentionally NOT obfuscated. BUG: roundtrip fails because 100.127.255.255 collides with CGNAT fake mappings, deobfuscating to 100.64.255.255.",
+    "input": "Explain what CGNAT is. The CGNAT address space is 100.64.0.0/10, spanning from 100.64.0.0 to 100.127.255.255. This is defined in RFC 6598.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 3
+    }
+  },
+  {
+    "name": "CGNAT prose keywords and IPs pass through unchanged",
+    "description": "CGNAT IPs like 100.64.0.0 are in the fake-IP range, so Shroud does not obfuscate them. Prose words like 'carrier-grade NAT' also pass through.",
+    "input": "The ISP uses carrier-grade NAT (CGNAT) to conserve IPv4 addresses. CGNAT space refers to the 100.64.0.0/10 block. This is not the same as private RFC1918 space.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "fd00:: ULA address in LLM response",
+    "input": "The internal IPv6 network uses ULA addressing:\n- Server A: fd00::1\n- Server B: fd00::2\n- Server C: fd12:3456:789a::1\nThese are not globally routable.",
+    "assertions": {
+      "llm_must_not_see": ["fd00::1", "fd00::2", "fd12:3456:789a::1"],
+      "user_must_see": ["fd00::1", "fd00::2", "fd12:3456:789a::1"],
+      "entity_count_min": 3,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Mixed CGNAT + real IPs in same response",
+    "input": "Network audit results:\n- Public edge: 203.0.113.50 (OK)\n- Internal core: 10.1.0.1 (OK)\n- DMZ: 172.16.50.1 (OK)\n- Management: 10.255.0.1 (OK)\nAll systems operational. No CGNAT addresses were found in use.",
+    "assertions": {
+      "llm_must_not_see": ["203.0.113.50", "10.1.0.1", "172.16.50.1", "10.255.0.1"],
+      "user_must_see": ["203.0.113.50", "10.1.0.1"],
+      "no_cgnat_leak": true,
+      "no_cgnat_range_leak": true,
+      "entity_count_min": 4
+    }
+  }
+]

@@ -1,0 +1,128 @@
+[
+  {
+    "name": "Phone: Austrian +43",
+    "input": "Call +43 664 1234567",
+    "assertions": {
+      "llm_must_not_see": ["+43 664 1234567"],
+      "user_must_see": ["+43 664 1234567"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: UK +44",
+    "input": "Call +44 20 7946 0958",
+    "assertions": {
+      "llm_must_not_see": ["+44 20 7946 0958"],
+      "user_must_see": ["+44 20 7946 0958"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: French +33",
+    "input": "Call +33 1 42 68 53 00",
+    "assertions": {
+      "llm_must_not_see": ["+33 1 42 68 53 00"],
+      "user_must_see": ["+33 1 42 68 53 00"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: German +49",
+    "input": "Call +49-30-1234567",
+    "assertions": {
+      "llm_must_not_see": ["+49-30-1234567"],
+      "user_must_see": ["+49-30-1234567"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: Australian +61",
+    "input": "Call +61 2 8765 4321",
+    "assertions": {
+      "llm_must_not_see": ["+61 2 8765 4321"],
+      "user_must_see": ["+61 2 8765 4321"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: US no spaces",
+    "input": "Call +14085559182",
+    "assertions": {
+      "llm_must_not_see": ["+14085559182"],
+      "user_must_see": ["+14085559182"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: US parens",
+    "input": "Call (555) 123-4567",
+    "assertions": {
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: US dots",
+    "input": "Call 555.123.4567",
+    "assertions": {
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: US dashes",
+    "input": "Call 555-123-4567",
+    "assertions": {
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: Irish +353",
+    "input": "Call +353 1 234 5678",
+    "assertions": {
+      "llm_must_not_see": ["+353 1 234 5678"],
+      "user_must_see": ["+353 1 234 5678"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: Chinese +86",
+    "input": "Call +8613812345678",
+    "assertions": {
+      "llm_must_not_see": ["+8613812345678"],
+      "user_must_see": ["+8613812345678"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone: two phones in one message",
+    "input": "Main: +15550101000, backup: +15550101001",
+    "assertions": {
+      "llm_must_not_see": ["+15550101000", "+15550101001"],
+      "user_must_see": ["+15550101000", "+15550101001"],
+      "entity_count_min": 2,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  }
+]

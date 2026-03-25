@@ -1,0 +1,58 @@
+[
+  {
+    "name": "Tool call with hostname parameter",
+    "input": "hostname core-rtr-01.dc-east.acme.net\nLook up DNS records",
+    "assertions": {
+      "llm_must_not_see": ["core-rtr-01.dc-east.acme.net"],
+      "user_must_see": ["core-rtr-01.dc-east.acme.net"],
+      "entity_count_min": 1,
+      "categories": ["hostname"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Tool call with IP parameter",
+    "input": "Run a port scan on 10.42.88.55 and report open services.",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.55"],
+      "user_must_see": ["10.42.88.55"],
+      "entity_count_min": 1,
+      "categories": ["ip_address"],
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Tool result with IP and email",
+    "input": "The nslookup returned: address 10.42.88.101, admin contact is admin@acme-corp.com",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.101", "admin@acme-corp.com"],
+      "user_must_see": ["10.42.88.101", "admin@acme-corp.com"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Multi-step with multiple IPs",
+    "input": "First query 10.42.90.3, then check the primary at 10.42.90.1",
+    "assertions": {
+      "llm_must_not_see": ["10.42.90.3", "10.42.90.1"],
+      "user_must_see": ["10.42.90.3", "10.42.90.1"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Tool call with JSON payload containing IP and email",
+    "input": "Send this payload to the API: {\"ip\": \"10.42.88.200\", \"contact\": \"devops@acme-corp.com\"}",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.200", "devops@acme-corp.com"],
+      "user_must_see": ["10.42.88.200", "devops@acme-corp.com"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

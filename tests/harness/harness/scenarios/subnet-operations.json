@@ -1,0 +1,71 @@
+{
+  "name": "Subnet-Aware Deobfuscation",
+  "tests": [
+    {
+      "name": "Host IP and its /24 network address",
+      "input": "Host 10.100.10.50 is on subnet 10.100.10.0/24. The gateway is 10.100.10.1.",
+      "assertions": {
+        "llm_must_not_see": ["10.100.10.50", "10.100.10.0", "10.100.10.1"],
+        "user_must_see": ["10.100.10.50", "10.100.10.0", "10.100.10.1"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Host IP and derived broadcast address",
+      "input": "Interface Vlan100:\n  ip address 192.168.100.50 255.255.255.0\n  network: 192.168.100.0\n  broadcast: 192.168.100.255\n  gateway: 192.168.100.1",
+      "assertions": {
+        "llm_must_not_see": ["192.168.100.50", "192.168.100.0", "192.168.100.255", "192.168.100.1"],
+        "user_must_see": ["192.168.100.50", "192.168.100.0", "192.168.100.255", "192.168.100.1"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Multiple subnets with /24 /28 /30 prefix lengths",
+      "input": "Network summary:\n  Server VLAN: 10.100.10.0/24 (gateway 10.100.10.1, hosts 10.100.10.2-10.100.10.254)\n  PTP link A: 10.0.1.0/30 (local 10.0.1.1, remote 10.0.1.2)\n  Mgmt net: 10.10.5.0/28 (gateway 10.10.5.1, DHCP 10.10.5.2-10.10.5.14)",
+      "assertions": {
+        "llm_must_not_see": ["10.100.10.0", "10.100.10.1", "10.0.1.0", "10.0.1.1", "10.0.1.2", "10.10.5.0", "10.10.5.1"],
+        "user_must_see": ["10.100.10.0", "10.100.10.1", "10.0.1.0", "10.0.1.1", "10.0.1.2", "10.10.5.0", "10.10.5.1"],
+        "entity_count_min": 7,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Gateway derivation from /24",
+      "input": "Configure default gateway for each VLAN:\n  VLAN 10: 172.16.10.1 (subnet 172.16.10.0/24)\n  VLAN 20: 172.16.20.1 (subnet 172.16.20.0/24)\n  VLAN 30: 172.16.30.1 (subnet 172.16.30.0/24)\nAll hosts should use their VLAN gateway as default route.",
+      "assertions": {
+        "llm_must_not_see": ["172.16.10.1", "172.16.10.0", "172.16.20.1", "172.16.20.0", "172.16.30.1", "172.16.30.0"],
+        "user_must_see": ["172.16.10.1", "172.16.10.0", "172.16.20.1", "172.16.20.0", "172.16.30.1", "172.16.30.0"],
+        "entity_count_min": 6,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "DHCP scope with range derivation",
+      "input": "ip dhcp pool OFFICE-WLAN\n network 10.200.50.0 255.255.255.0\n default-router 10.200.50.1\n dns-server 10.10.5.53 10.10.5.54\n lease 0 8 0\n ip dhcp excluded-address 10.200.50.1 10.200.50.10\n ip dhcp excluded-address 10.200.50.250 10.200.50.255",
+      "assertions": {
+        "llm_must_not_see": ["10.200.50.0", "10.200.50.1", "10.10.5.53", "10.10.5.54"],
+        "user_must_see": ["10.200.50.0", "10.200.50.1", "10.10.5.53", "10.10.5.54"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "HSRP/VRRP virtual IP alongside real interface IPs",
+      "input": "interface Vlan200\n description CORP-LAN\n ip address 10.200.100.2 255.255.255.0\n standby 200 ip 10.200.100.1\n standby 200 priority 110\n standby 200 preempt\n!\ninterface Vlan200 (on peer switch)\n ip address 10.200.100.3 255.255.255.0\n standby 200 ip 10.200.100.1\n standby 200 priority 100",
+      "assertions": {
+        "llm_must_not_see": ["10.200.100.2", "10.200.100.3", "10.200.100.1"],
+        "user_must_see": ["10.200.100.2", "10.200.100.3", "10.200.100.1"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}
