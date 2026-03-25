@@ -247,10 +247,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       `[shroud] before_prompt_build: obfuscated ${result.entities.length} entities`,
     );
 
-    // Return the obfuscated prompt as a full replacement.
-    // OpenClaw's deploy-local.sh patches before_prompt_build to support
-    // the `prompt` field, which replaces params.prompt entirely so that
-    // raw PII never reaches the LLM.
     return {
       prompt: result.obfuscated,
     };
@@ -746,25 +742,39 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
         }
 
-        // Obfuscate ALL messages — user, assistant, tool results, everything
-        for (const msg of body.messages) {
-          // String content
-          if (typeof msg.content === "string") {
-            const result = obfuscator.obfuscate(msg.content);
-            if (result.entities.length > 0) {
-              msg.content = result.obfuscated;
-              modified = true;
-            }
+        // Obfuscate ALL messages — user, assistant, tool results, everything.
+        // Skip text that's already fully obfuscated (all known real values
+        // replaced) to avoid double-obfuscation when before_prompt_build
+        // already processed the prompt.
+        const allMappings = obfuscator["_store"]?.allMappings?.() ?? new Map();
+        const knownReals = allMappings.size > 0 ? new Set(allMappings.keys()) : null;
+
+        function needsObfuscation(text: string): boolean {
+          if (!knownReals || knownReals.size === 0) return true;
+          // If text contains any known real value, it needs obfuscation
+          for (const real of knownReals) {
+            if (text.includes(real)) return true;
           }
-          // Array content (content blocks)
-          else if (Array.isArray(msg.content)) {
+          return false;
+        }
+
+        function obfuscateText(text: string): { text: string; modified: boolean } {
+          if (!needsObfuscation(text)) return { text, modified: false };
+          const result = obfuscator.obfuscate(text);
+          return result.entities.length > 0
+            ? { text: result.obfuscated, modified: true }
+            : { text, modified: false };
+        }
+
+        for (const msg of body.messages) {
+          if (typeof msg.content === "string") {
+            const r = obfuscateText(msg.content);
+            if (r.modified) { msg.content = r.text; modified = true; }
+          } else if (Array.isArray(msg.content)) {
             for (const block of msg.content) {
               if (block?.type === "text" && typeof block.text === "string") {
-                const result = obfuscator.obfuscate(block.text);
-                if (result.entities.length > 0) {
-                  block.text = result.obfuscated;
-                  modified = true;
-                }
+                const r = obfuscateText(block.text);
+                if (r.modified) { block.text = r.text; modified = true; }
               }
             }
           }
