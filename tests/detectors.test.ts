@@ -234,7 +234,10 @@ describe("RegexDetector - base64 secrets", () => {
 
   test("detect SECRET= base64 value", () => {
     const entities = detector.detect("SECRET=dGhpc2lzYXZlcnlsb25nc2VjcmV0a2V5");
-    expect(entities.some((e) => e.category === Category.API_KEY)).toBe(true);
+    // env_var_secret pattern matches first (higher priority), categorizing as credential
+    expect(entities.some((e) =>
+      e.category === Category.API_KEY || e.category === Category.NETWORK_CREDENTIAL
+    )).toBe(true);
   });
 
   test("detect base64: prefixed value", () => {

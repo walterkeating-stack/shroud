@@ -182,10 +182,16 @@ describe("#6 Description field scraping", () => {
 // ---------------------------------------------------------------------------
 
 describe("#7 Documentation/example filtering", () => {
-  test("isDocExample filters RFC 5737 IPs", () => {
-    expect(isDocExample("192.0.2.1", Category.IP_ADDRESS)).toBe(true);
-    expect(isDocExample("198.51.100.5", Category.IP_ADDRESS)).toBe(true);
-    expect(isDocExample("203.0.113.10", Category.IP_ADDRESS)).toBe(true);
+  test("isDocExample filters doc IPs but not RFC 5737 TEST-NETs", () => {
+    // RFC 5737 TEST-NETs are intentionally NOT filtered — they appear in real
+    // configs as stand-in addresses and must be obfuscated.
+    expect(isDocExample("192.0.2.1", Category.IP_ADDRESS)).toBe(false);
+    expect(isDocExample("198.51.100.5", Category.IP_ADDRESS)).toBe(false);
+    expect(isDocExample("203.0.113.10", Category.IP_ADDRESS)).toBe(false);
+    // MCAST-TEST-NET and benchmarking ranges are still filtered
+    expect(isDocExample("233.252.0.1", Category.IP_ADDRESS)).toBe(true);
+    expect(isDocExample("100.51.16.1", Category.IP_ADDRESS)).toBe(true);
+    // Real IPs should not be filtered
     expect(isDocExample("10.0.0.1", Category.IP_ADDRESS)).toBe(false);
   });
 
@@ -206,11 +212,11 @@ describe("#7 Documentation/example filtering", () => {
     expect(entities.filter((e) => e.category === Category.EMAIL)).toHaveLength(0);
   });
 
-  test("detector skips TEST-NET IPs", () => {
+  test("detector detects TEST-NET IPs (they appear in real configs)", () => {
     const detector = new RegexDetector();
     const entities = detector.detect("Test with 192.0.2.1 and 198.51.100.5");
     const ips = entities.filter((e) => e.category === Category.IP_ADDRESS);
-    expect(ips).toHaveLength(0);
+    expect(ips.length).toBeGreaterThan(0);
   });
 
   test("detector keeps real IPs", () => {

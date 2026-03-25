@@ -208,6 +208,20 @@ function walkStrings(
 // ---------------------------------------------------------------------------
 
 export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
+  // Share the Obfuscator instance across all plugin instances via globalThis.
+  // OpenClaw loads plugins per-agent, so before_prompt_build may fire on one
+  // instance while message_sending fires on another (via the delivery subsystem).
+  // Without sharing, the delivery instance has an empty mapping store and
+  // cannot deobfuscate CGNAT surrogates in outbound channel messages.
+  if (process.env.NODE_ENV !== "test") {
+    const g = globalThis as any;
+    if (g.__shroudObfuscator) {
+      obfuscator = g.__shroudObfuscator;
+    } else {
+      g.__shroudObfuscator = obfuscator;
+    }
+  }
+
   const config = obfuscator.config;
   const auditActive = config.auditEnabled || config.verboseLogging;
 
@@ -447,27 +461,53 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   // -----------------------------------------------------------------------
   // 5. message_sending (async): deobfuscate outbound message content
+  //    Handles both string content and structured blocks/arrays (Slack
+  //    sends blocks in the first call, text in the second).
   // -----------------------------------------------------------------------
   api.on("message_sending", async (event: any) => {
-    if (typeof event?.content !== "string") return;
+    if (!event?.content) return;
 
-    if (auditActive) {
-      const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(event.content);
+    // String content — direct deobfuscation
+    if (typeof event.content === "string") {
+      if (auditActive) {
+        const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(event.content);
+        if (deobfuscated === event.content) return;
+        try {
+          emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount);
+        } catch { /* best-effort */ }
+        dumpStatsFile(obfuscator);
+        return { content: deobfuscated };
+      }
+
+      const deobfuscated = obfuscator.deobfuscate(event.content);
       if (deobfuscated === event.content) return;
-      try {
-        emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount);
-      } catch { /* best-effort */ }
+
+      api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
       dumpStatsFile(obfuscator);
       return { content: deobfuscated };
     }
 
-    const deobfuscated = obfuscator.deobfuscate(event.content);
-    if (deobfuscated === event.content) return;
-
-    api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
-    dumpStatsFile(obfuscator);
-
-    return { content: deobfuscated };
+    // Array content (blocks) — walk and deobfuscate all text leaves
+    if (Array.isArray(event.content)) {
+      let changed = false;
+      const newContent = event.content.map((block: any) => {
+        if (block && typeof block === "object") {
+          if (typeof block.text === "string") {
+            const deob = obfuscator.deobfuscate(block.text);
+            if (deob !== block.text) { changed = true; return { ...block, text: deob }; }
+          }
+          if (typeof block.content === "string") {
+            const deob = obfuscator.deobfuscate(block.content);
+            if (deob !== block.content) { changed = true; return { ...block, content: deob }; }
+          }
+        }
+        return block;
+      });
+      if (!changed) return;
+      api.logger?.info("[shroud] message_sending: deobfuscated outbound blocks");
+      dumpStatsFile(obfuscator);
+      return { content: newContent };
+    }
   });
 
   // -----------------------------------------------------------------------
