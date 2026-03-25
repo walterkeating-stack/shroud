@@ -33,28 +33,29 @@ export class CustomPatternDetector implements BaseDetector {
 
   detect(text: string): DetectedEntity[] {
     const entities: DetectedEntity[] = [];
-    const seenSpans: Array<[number, number]> = [];
+    // Sorted non-overlapping intervals for O(log n) overlap checks
+    const spans: Array<[number, number]> = [];
 
     for (const { name, regex, category } of this._patterns) {
       regex.lastIndex = 0;
       for (const match of text.matchAll(regex)) {
         const start = match.index!;
         const end = start + match[0].length;
-        const span: [number, number] = [start, end];
 
-        // Check for overlap with existing spans
-        let overlaps = false;
-        for (const [s, e] of seenSpans) {
-          if ((s <= span[0] && span[0] < e) || (s < span[1] && span[1] <= e)) {
-            overlaps = true;
-            break;
-          }
-        }
-        if (overlaps) {
+        // Binary search overlap check
+        if (_spansOverlap(spans, start, end)) {
           continue;
         }
 
-        seenSpans.push(span);
+        // Insert sorted
+        let lo = 0, hi = spans.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (spans[mid][0] < start) lo = mid + 1;
+          else hi = mid;
+        }
+        spans.splice(lo, 0, [start, end]);
+
         entities.push({
           value: match[0],
           start,
@@ -69,4 +70,21 @@ export class CustomPatternDetector implements BaseDetector {
     entities.sort((a, b) => a.start - b.start);
     return entities;
   }
+}
+
+/** Binary-search overlap check matching original semantics. */
+function _spansOverlap(spans: Array<[number, number]>, start: number, end: number): boolean {
+  const len = spans.length;
+  if (len === 0) return false;
+  let lo = 0, hi = len - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    if (spans[mid][0] <= start) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  if (hi >= 0 && start < spans[hi][1]) return true;
+  for (let i = lo; i < len && spans[i][0] < end; i++) {
+    if (end <= spans[i][1]) return true;
+  }
+  return false;
 }

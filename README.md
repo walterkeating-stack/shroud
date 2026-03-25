@@ -25,7 +25,7 @@
 | `before_message_write` | Any → History | Obfuscate non-assistant messages; deobfuscate assistant messages |
 | `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
-| `message_sending` | Agent → User | Deobfuscate outbound messages (Telegram only) |
+| `message_sending` | Agent → User | Deobfuscate outbound messages (all channels) |
 
 > **Streaming deobfuscation:** On first load, Shroud patches pi-ai's EventStream to deobfuscate ALL LLM responses at the stream level — every provider (Anthropic, OpenAI, Google), every channel (Slack, WhatsApp, Telegram, etc.). A single gateway restart activates the patch.
 
@@ -307,7 +307,7 @@ OpenClaw logs each plugin message twice (once under the plugin subsystem logger,
 
 ```bash
 npm install
-npm test          # run vitest (210 tests)
+npm test          # run vitest (718 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```

@@ -137,7 +137,8 @@ export class CodeDetector implements BaseDetector {
   /** Extract string literals and comments from code. */
   private _extractSpans(text: string): CodeSpan[] {
     const spans: CodeSpan[] = [];
-    const covered = new Set<number>();
+    // Sorted non-overlapping intervals for O(log n) overlap checks
+    const covered: Array<[number, number]> = [];
 
     for (const pattern of SPAN_PATTERNS) {
       pattern.lastIndex = 0;
@@ -145,21 +146,20 @@ export class CodeDetector implements BaseDetector {
         const start = match.index!;
         const end = start + match[0].length;
 
-        // Skip if overlapping with already-found span
-        let overlaps = false;
-        for (let i = start; i < end; i++) {
-          if (covered.has(i)) {
-            overlaps = true;
-            break;
-          }
-        }
-        if (overlaps) {
+        // Binary search overlap check
+        if (this._coveredOverlaps(covered, start, end)) {
           continue;
         }
 
-        for (let i = start; i < end; i++) {
-          covered.add(i);
+        // Insert sorted
+        let lo = 0, hi = covered.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (covered[mid][0] < start) lo = mid + 1;
+          else hi = mid;
         }
+        covered.splice(lo, 0, [start, end]);
+
         const kind = match[0].startsWith("/") || match[0].startsWith("#")
           ? "comment" as const
           : "string" as const;
@@ -169,5 +169,21 @@ export class CodeDetector implements BaseDetector {
 
     spans.sort((a, b) => a.start - b.start);
     return spans;
+  }
+
+  private _coveredOverlaps(spans: Array<[number, number]>, start: number, end: number): boolean {
+    const len = spans.length;
+    if (len === 0) return false;
+    let lo = 0, hi = len - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      if (spans[mid][0] <= start) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    if (hi >= 0 && start < spans[hi][1]) return true;
+    for (let i = lo; i < len && spans[i][0] < end; i++) {
+      if (end <= spans[i][1]) return true;
+    }
+    return false;
   }
 }

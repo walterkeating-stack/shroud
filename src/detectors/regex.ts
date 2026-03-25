@@ -1130,18 +1130,52 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
 
 ];
 
-/** Check if two spans overlap. */
-function spansOverlap(
-  spanStart: number,
-  spanEnd: number,
-  seenSpans: Array<[number, number]>,
-): boolean {
-  for (const [s, e] of seenSpans) {
-    if ((s <= spanStart && spanStart < e) || (s < spanEnd && spanEnd <= e)) {
-      return true;
+/**
+ * Tracks occupied text spans and answers overlap queries in O(log n)
+ * via a sorted array of non-overlapping [start, end) intervals with
+ * binary search.  Much faster than the previous O(n) linear scan.
+ */
+class SpanTracker {
+  // Sorted by start. Invariant: intervals don't overlap.
+  private _spans: Array<[number, number]> = [];
+
+  /**
+   * Match original semantics: reject if the new span's start or end
+   * falls strictly inside an existing span. A span that fully contains
+   * an existing span is allowed (the obfuscator resolves that later).
+   */
+  overlaps(start: number, end: number): boolean {
+    const spans = this._spans;
+    const len = spans.length;
+    if (len === 0) return false;
+
+    // Binary search: find rightmost span whose start <= start
+    let lo = 0, hi = len - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      if (spans[mid][0] <= start) lo = mid + 1;
+      else hi = mid - 1;
     }
+    // Check: start falls inside existing span [s, e) → s <= start && start < e
+    if (hi >= 0 && start < spans[hi][1]) return true;
+    // Check: end falls inside existing span [s, e) → s < end && end <= e
+    for (let i = lo; i < len && spans[i][0] < end; i++) {
+      if (end <= spans[i][1]) return true;
+    }
+    return false;
   }
-  return false;
+
+  add(start: number, end: number): void {
+    const spans = this._spans;
+    // Binary search for insertion point (sorted by start)
+    let lo = 0, hi = spans.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (spans[mid][0] < start) lo = mid + 1;
+      else hi = mid;
+    }
+    spans.splice(lo, 0, [start, end]);
+  }
 }
 
 /** Override config for individual rules: disable or change confidence. */
@@ -1175,7 +1209,7 @@ export class RegexDetector implements BaseDetector {
 
   detect(text: string): DetectedEntity[] {
     const entities: DetectedEntity[] = [];
-    const seenSpans: Array<[number, number]> = [];
+    const spans = new SpanTracker();
 
     for (const pdef of this.patterns) {
       // Reset lastIndex for the global regex
@@ -1200,9 +1234,8 @@ export class RegexDetector implements BaseDetector {
             // Find the group's position within the full match string
             const grpStart = findGroupStart(fullMatch, fullMatchStart, grp, match, i);
             const grpEnd = grpStart + grp.length;
-            const span: [number, number] = [grpStart, grpEnd];
 
-            if (spansOverlap(span[0], span[1], seenSpans)) {
+            if (spans.overlaps(grpStart, grpEnd)) {
               continue;
             }
             // Skip subnet/wildcard masks for IP-like values
@@ -1213,7 +1246,7 @@ export class RegexDetector implements BaseDetector {
             if (isDocExample(grp, pdef.category)) {
               continue;
             }
-            seenSpans.push(span);
+            spans.add(grpStart, grpEnd);
             entities.push({
               value: grp,
               start: grpStart,
@@ -1226,9 +1259,8 @@ export class RegexDetector implements BaseDetector {
         } else {
           const start = match.index!;
           const end = start + match[0].length;
-          const span: [number, number] = [start, end];
 
-          if (spansOverlap(span[0], span[1], seenSpans)) {
+          if (spans.overlaps(start, end)) {
             continue;
           }
           const value = match[0];
@@ -1240,11 +1272,11 @@ export class RegexDetector implements BaseDetector {
           if (isDocExample(value, pdef.category)) {
             continue;
           }
-          seenSpans.push(span);
+          spans.add(start, end);
           entities.push({
             value,
-            start: span[0],
-            end: span[1],
+            start,
+            end,
             category: pdef.category,
             confidence: pdef.confidence,
             detector: `${this.name}:${pdef.name}`,
