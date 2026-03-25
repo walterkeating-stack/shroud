@@ -767,6 +767,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
 
         for (const msg of body.messages) {
+          // Only obfuscate user messages and tool results.
+          // Assistant messages contain deobfuscated text (real values restored
+          // by streaming deobfuscation) — re-obfuscating them creates a second
+          // fake that the LLM echoes back alongside the first.
+          if (msg.role === "assistant") continue;
+
           if (typeof msg.content === "string") {
             const r = obfuscateText(msg.content);
             if (r.modified) { msg.content = r.text; modified = true; }
