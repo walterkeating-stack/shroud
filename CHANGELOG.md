@@ -2,16 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.0.21] - 2026-03-25
+## [2.0.22] - 2026-03-25
 
 ### Added
 - **APP server shipped in npm package** — `app-server.mjs` now included, enabling any AI agent to integrate Shroud via the Agent Privacy Protocol (JSON-RPC over stdin/stdout)
-- **Standalone Python APP client** — `clients/python/shroud_client.py` provides a ready-made client with auto-restart, residual fake detection, and context manager support
-- **APP protocol documentation** — full protocol reference in README: handshake, methods, request/response format, heartbeat, integration checklist
+- **Standalone Python APP client** — `clients/python/shroud_client.py` with auto-restart, residual fake detection, context manager
+- **APP protocol documentation** — full protocol reference in README: handshake, methods, heartbeat, integration checklist
+- **Unified test process** — `npm test` runs all three layers: vitest (736) + APP harness (359) + OpenClaw sandbox (12) = 1,107 tests
+- **Test harness in-repo** — moved from separate repo into `tests/harness/`
+- **Comprehensive audit/logging tests** — 18 new hook lifecycle tests covering streaming deobfuscation, audit counters, format variants, proof hashes
+
+### Fixed
+- **Deobfuscation audit counter** — streaming and `before_message_write` paths now emit audit events (was showing 1 deob for 25 obfuscations)
+- **Streaming deobCount tracking** — count accumulated during chunks, not re-counted at message_end (which always found 0)
 
 ### Changed
-- Package description updated to reflect both OpenClaw and APP integration paths
-- Keywords expanded: `ai-agent`, `app-protocol`
+- Package description: "for OpenClaw" → "for AI agents"
+- Keywords: added `ai-agent`, `app-protocol`
 
 ## [2.0.20] - 2026-03-25
 
