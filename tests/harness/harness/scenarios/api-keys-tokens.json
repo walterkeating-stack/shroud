@@ -55,10 +55,10 @@
   },
   {
     "name": "GitHub PAT (ghp_ prefix)",
-    "input": "github_pat_FAKEABCDEFGHIJKLMNOPQRSTUV",
+    "input": "ghp_FAKE00TEST00SHROUD00SCENARIO00DATA0000",
     "assertions": {
-      "llm_must_not_see": ["github_pat_FAKEABCDEFGHIJKLMNOPQRSTUV"],
-      "user_must_see": ["github_pat_FAKEABCDEFGHIJKLMNOPQRSTUV"],
+      "llm_must_not_see": ["ghp_FAKE00TEST00SHROUD00SCENARIO00DATA0000"],
+      "user_must_see": ["ghp_FAKE00TEST00SHROUD00SCENARIO00DATA0000"],
       "entity_count_min": 1,
       "categories": ["api_key"],
       "roundtrip": true
