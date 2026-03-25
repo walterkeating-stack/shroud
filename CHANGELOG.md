@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.20] - 2026-03-25
+
+### Performance
+- **Span overlap detection O(n²) → O(log n)** — all three detectors (regex, patterns, code) now use sorted interval arrays with binary search instead of linear scans. New `SpanTracker` class in regex detector. Measurable on large configs with 50+ entities.
+
+### Fixed
+- **CGNAT range regex false positives** — added negative lookbehind `(?<!\d\.)(?<!\d)` to `CGNAT_RANGE_DESC_RE` to prevent matching when preceded by other IP octets
+
 ## [2.0.19] - 2026-03-24
 
 ### Fixed

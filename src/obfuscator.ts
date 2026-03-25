@@ -40,7 +40,7 @@ const CGNAT_IP_RE = /\b(100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3
 // - Hyphenated ranges: "100.64.16-19.0/24", "100.64.0-3.0"
 // - Short 3-octet forms: "100.64.8-14", "100.64.9"
 // - Prose references: "100.64.x.x space", "100.64.8-11"
-const CGNAT_RANGE_DESC_RE = /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])(?:\.[\dx]+(?:-[\dx]+)?(?:\.[\dx]+(?:-[\dx]+)?)?)?(?:\/[\dx]+(?:-[\dx]+)?)?\b/gi;
+const CGNAT_RANGE_DESC_RE = /(?<!\d\.)(?<!\d)\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])(?:\.[\dx]+(?:-[\dx]+)?(?:\.[\dx]+(?:-[\dx]+)?)?)?(?:\/[\dx]+(?:-[\dx]+)?)?\b/gi;
 
 /** Regex to find fd00::/8 ULA IPv6 addresses (Shroud fake range) in text. */
 const ULA_IPV6_RE = /(?:^|(?<=[\s,;=(\[]))fd00(?::[0-9a-fA-F]{1,4}){0,7}(?:::(?:[0-9a-fA-F]{1,4}(?::[0-9a-fA-F]{1,4})*)?)?(?=$|[\s,;)\]\/])/gi;
