@@ -230,6 +230,10 @@ export class Obfuscator {
   private _ruleHits: Map<string, number> = new Map();
   private _detectionsByCategory: Map<string, number> = new Map();
   private _replacementsByCategory: Map<string, number> = new Map();
+  private _obfuscationEvents = 0;
+  private _deobfuscationEvents = 0;
+  private _totalEntitiesObfuscated = 0;
+  private _totalReplacementsDeobfuscated = 0;
   private _redactionFormatter: RedactionFormatter;
   private _contextDetector: ContextDetector | null = null;
   private _toolDepth: number = 0;
@@ -505,6 +509,9 @@ export class Obfuscator {
       alreadyObfuscated,
     };
 
+    this._obfuscationEvents++;
+    this._totalEntitiesObfuscated += filtered.length;
+
     return {
       original: text,
       obfuscated: resultText,
@@ -584,6 +591,11 @@ export class Obfuscator {
       totalReplacements += rangeCleanup.count;
     }
 
+    if (totalReplacements > 0) {
+      this._deobfuscationEvents++;
+      this._totalReplacementsDeobfuscated += totalReplacements;
+    }
+
     // Audit log
     if (this._audit && totalReplacements > 0) {
       const elapsed = Date.now() - startTime;
@@ -650,6 +662,11 @@ export class Obfuscator {
     if (rangeCleanup.count > 0) {
       result = rangeCleanup.text;
       replacementCount += rangeCleanup.count;
+    }
+
+    if (replacementCount > 0) {
+      this._deobfuscationEvents++;
+      this._totalReplacementsDeobfuscated += replacementCount;
     }
 
     if (this._audit && replacementCount > 0) {
@@ -929,6 +946,10 @@ export class Obfuscator {
       salt: this._mapping.salt,
       canarySessionId: this._canary?.sessionId ?? null,
       audit: auditStats,
+      obfuscationEvents: this._obfuscationEvents,
+      deobfuscationEvents: this._deobfuscationEvents,
+      totalEntitiesObfuscated: this._totalEntitiesObfuscated,
+      totalReplacementsDeobfuscated: this._totalReplacementsDeobfuscated,
       ruleHits: Object.fromEntries(this._ruleHits),
       detectionsByCategory: Object.fromEntries(this._detectionsByCategory),
       replacementsByCategory: Object.fromEntries(this._replacementsByCategory),

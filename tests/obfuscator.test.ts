@@ -733,3 +733,75 @@ describe("CGNAT range description cleanup", () => {
     expect(deob).not.toContain("100.64");
   });
 });
+
+// =========================================================================
+// Obfuscation/deobfuscation event counters
+// =========================================================================
+
+describe("obfuscator event counters", () => {
+  test("getStats tracks obfuscation events and entity counts", () => {
+    const obf = new Obfuscator(testConfig);
+
+    obf.obfuscate("Contact john@acme.com about 10.1.0.1");
+    obf.obfuscate("Call +14155551234");
+
+    const stats = obf.getStats() as any;
+    expect(stats.obfuscationEvents).toBe(2);
+    expect(stats.totalEntitiesObfuscated).toBeGreaterThanOrEqual(3);
+  });
+
+  test("getStats tracks deobfuscation events and replacement counts", () => {
+    const obf = new Obfuscator(testConfig);
+
+    const result = obf.obfuscate("Contact john@acme.com about 10.1.0.1");
+    const fakeText = result.obfuscated;
+
+    // Deobfuscate via deobfuscateWithStats
+    const deob = obf.deobfuscateWithStats(fakeText);
+    expect(deob.replacementCount).toBeGreaterThanOrEqual(2);
+
+    const stats = obf.getStats() as any;
+    expect(stats.deobfuscationEvents).toBe(1);
+    expect(stats.totalReplacementsDeobfuscated).toBeGreaterThanOrEqual(2);
+  });
+
+  test("deobfuscation counter increments on every call with replacements", () => {
+    const obf = new Obfuscator(testConfig);
+
+    const r1 = obf.obfuscate("john@acme.com");
+    const r2 = obf.obfuscate("10.1.0.1");
+
+    obf.deobfuscateWithStats(r1.obfuscated);
+    obf.deobfuscateWithStats(r2.obfuscated);
+    obf.deobfuscateWithStats("no fakes here"); // should not increment
+
+    const stats = obf.getStats() as any;
+    expect(stats.deobfuscationEvents).toBe(2); // not 3
+    expect(stats.obfuscationEvents).toBe(2);
+  });
+
+  test("counters survive across many obfuscate/deobfuscate cycles", () => {
+    const obf = new Obfuscator(testConfig);
+
+    for (let i = 0; i < 10; i++) {
+      const result = obf.obfuscate(`user${i}@test.com`);
+      obf.deobfuscateWithStats(result.obfuscated);
+    }
+
+    const stats = obf.getStats() as any;
+    expect(stats.obfuscationEvents).toBe(10);
+    expect(stats.deobfuscationEvents).toBe(10);
+    expect(stats.totalEntitiesObfuscated).toBe(10);
+    expect(stats.totalReplacementsDeobfuscated).toBe(10);
+  });
+
+  test("plain deobfuscate() also increments counter", () => {
+    const obf = new Obfuscator(testConfig);
+
+    const result = obf.obfuscate("john@acme.com");
+    obf.deobfuscate(result.obfuscated); // plain deobfuscate, not WithStats
+
+    const stats = obf.getStats() as any;
+    expect(stats.deobfuscationEvents).toBe(1);
+  });
+});
