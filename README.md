@@ -5,7 +5,7 @@
 <h1 align="center">Shroud — Community Edition</h1>
 
 <p align="center">
-  Privacy obfuscation plugin for <a href="https://openclaw.ai">OpenClaw</a>. Detects sensitive data (PII, network infrastructure, credentials) and replaces it with deterministic fake values before anything reaches the LLM. Tool calls still work because Shroud deobfuscates on the way back.
+  Privacy obfuscation for AI agents. Detects sensitive data (PII, network infrastructure, credentials) and replaces it with deterministic fake values before anything reaches the LLM. Tool calls still work because Shroud deobfuscates on the way back. Works with <a href="https://openclaw.ai">OpenClaw</a> (plugin) or any agent via the Agent Privacy Protocol (APP).
 </p>
 
 > **Open-source Community Edition** — free to use under Apache 2.0 license. [Enterprise Edition](#enterprise-edition) available with additional features for teams.
@@ -38,6 +38,58 @@ openclaw plugins install shroud-privacy
 ```
 
 That's it. Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`.
+
+### Any agent (via APP)
+
+The **Agent Privacy Protocol** (APP) lets any AI agent add privacy obfuscation — no OpenClaw required. Shroud ships with an APP server and a Python client.
+
+```bash
+npm install shroud-privacy
+```
+
+**Python:**
+
+```python
+from shroud_client import ShroudClient
+
+with ShroudClient() as shroud:
+    # Before sending to LLM
+    result = shroud.obfuscate("Contact admin@acme.com about 10.1.0.1")
+    send_to_llm(result.text)  # "Contact user@example.net about 100.64.0.12"
+
+    # After receiving from LLM
+    restored = shroud.deobfuscate(llm_response)
+    show_to_user(restored.text)  # original values restored
+```
+
+Copy `clients/python/shroud_client.py` into your project, or import it directly from the npm install path. Requires Node.js on the PATH.
+
+**Any language:**
+
+Spawn the APP server and talk JSON-RPC over stdin/stdout:
+
+```bash
+node node_modules/shroud-privacy/app-server.mjs node_modules/shroud-privacy/dist
+```
+
+Handshake (server writes on startup):
+```json
+{"app":"1.0","engine":"shroud","version":"2.0.21","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
+```
+
+Obfuscate:
+```json
+→ {"id":1,"method":"obfuscate","params":{"text":"Contact admin@acme.com"}}
+← {"id":1,"result":{"text":"Contact user@example.net","entityCount":1,"categories":{"email":1},"modified":true}}
+```
+
+Deobfuscate:
+```json
+→ {"id":2,"method":"deobfuscate","params":{"text":"Contact user@example.net"}}
+← {"id":2,"result":{"text":"Contact admin@acme.com","replacementCount":1,"modified":true}}
+```
+
+Other methods: `reset`, `stats`, `health`, `configure`, `shutdown`.
 
 ### From source (development)
 
@@ -302,6 +354,109 @@ With proof hashes enabled:
 ### Note on log duplication
 
 OpenClaw logs each plugin message twice (once under the plugin subsystem logger, once under the parent `openclaw` logger). This is normal OpenClaw behavior. Filter to `"name":"openclaw"` to get one line per event, as shown in the verify command above.
+
+## Agent Privacy Protocol (APP)
+
+APP is an open protocol for adding privacy obfuscation to any AI agent. Shroud is the reference implementation.
+
+### Overview
+
+```
+┌─────────────────┐     stdin/stdout     ┌──────────────────┐
+│   Your Agent    │ ◄──── JSON-RPC ────► │  APP Server      │
+│  (any language) │                      │  (app-server.mjs)│
+└─────────────────┘                      └──────────────────┘
+        │                                        │
+        │ 1. obfuscate(user_input)               │ detects PII,
+        │ 2. send to LLM ──────────────►         │ returns fakes
+        │ 3. deobfuscate(llm_response)           │ restores reals
+        │ 4. show to user                        │
+```
+
+### Protocol specification
+
+- **Transport**: Newline-delimited JSON-RPC 2.0 over stdin/stdout
+- **Encoding**: UTF-8
+- **Process model**: Agent spawns APP server as subprocess, one per agent instance
+
+### Handshake
+
+On startup, the server writes a single JSON line to stdout:
+
+```json
+{"app":"1.0","engine":"shroud","version":"2.0.21","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
+```
+
+The agent must read this line before sending requests. Fields:
+- `app` — protocol version (always `"1.0"`)
+- `engine` — implementation name
+- `version` — implementation version
+- `capabilities` — supported methods
+
+### Methods
+
+| Method | Params | Returns | Description |
+|--------|--------|---------|-------------|
+| `obfuscate` | `{text}` | `{text, entityCount, categories, modified, audit}` | Replace real values with fakes |
+| `deobfuscate` | `{text}` | `{text, replacementCount, modified, audit}` | Restore fakes to real values |
+| `reset` | `{}` | `{ok, summary}` | Clear all mappings |
+| `stats` | `{}` | `{storeMappings, ruleHits, ...}` | Engine statistics |
+| `health` | `{}` | `{uptime, requests, avgLatencyMs}` | Liveness check |
+| `configure` | `{config}` | `{ok}` | Hot-reload configuration |
+| `batch` | `{operations: [{direction, text}]}` | `{results: [...]}` | Batch obfuscate/deobfuscate |
+| `shutdown` | `{}` | `{ok}` | Graceful shutdown (flushes stats) |
+
+### Request/response format
+
+```
+→ {"id":1,"method":"obfuscate","params":{"text":"Server 10.1.0.1 is down"}}
+← {"id":1,"result":{"text":"Server 100.64.0.12 is down","entityCount":1,"categories":{"ip_address":1},"modified":true,"audit":{"requestId":"a1b2c3","proofIn":"8a3c1f","proofOut":"f7d2a1"}}}
+```
+
+Errors:
+```
+← {"id":1,"error":{"code":-32602,"message":"Missing required param: text"}}
+```
+
+### Heartbeat
+
+The server writes JSON heartbeats to stderr every 30 seconds:
+```json
+{"heartbeat":true,"pid":12345,"uptime":120,"requests":42,"avgLatencyMs":1.2,"storeSize":15,"memoryMB":28}
+```
+
+### Integration checklist
+
+1. `npm install shroud-privacy`
+2. Spawn: `node node_modules/shroud-privacy/app-server.mjs node_modules/shroud-privacy/dist`
+3. Read handshake line from stdout
+4. Before LLM: send `obfuscate`, use returned `text`
+5. After LLM: send `deobfuscate`, show returned `text` to user
+6. On agent shutdown: send `shutdown`
+
+### Python client
+
+A ready-made Python client is included at `clients/python/shroud_client.py`:
+
+```python
+from shroud_client import ShroudClient
+
+client = ShroudClient()
+client.start()
+
+safe = client.obfuscate("Contact admin@acme.com about 10.1.0.1")
+print(safe.text)          # fakes
+print(safe.entity_count)  # 2
+print(safe.categories)    # {"email": 1, "ip_address": 1}
+
+real = client.deobfuscate(llm_response)
+print(real.text)           # originals restored
+print(real.residual_fakes) # any CGNAT/ULA IPs that survived
+
+client.stop()
+```
+
+Supports context manager, auto-restart on crash, residual fake detection, and hot-reload via `configure()`.
 
 ## Development
 

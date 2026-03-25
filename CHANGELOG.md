@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.21] - 2026-03-25
+
+### Added
+- **APP server shipped in npm package** — `app-server.mjs` now included, enabling any AI agent to integrate Shroud via the Agent Privacy Protocol (JSON-RPC over stdin/stdout)
+- **Standalone Python APP client** — `clients/python/shroud_client.py` provides a ready-made client with auto-restart, residual fake detection, and context manager support
+- **APP protocol documentation** — full protocol reference in README: handshake, methods, request/response format, heartbeat, integration checklist
+
+### Changed
+- Package description updated to reflect both OpenClaw and APP integration paths
+- Keywords expanded: `ai-agent`, `app-protocol`
+
 ## [2.0.20] - 2026-03-25
 
 ### Performance
