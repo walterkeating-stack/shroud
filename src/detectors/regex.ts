@@ -378,7 +378,9 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "ospf_auth_key",
-    pattern: /(?:(?:ip\s+ospf\s+)?(?:authentication-key|message-digest-key\s+\d+\s+md5)\s+(?:\d+\s+)?)(\S+)/g,
+    // Must require "ip ospf" prefix for authentication-key (to avoid matching NTP
+    // authentication-key lines), or match message-digest-key which is OSPF-specific.
+    pattern: /(?:ip\s+ospf\s+authentication-key\s+(?:\d+\s+)?|(?:ip\s+ospf\s+)?message-digest-key\s+\d+\s+md5\s+(?:\d+\s+)?)(\S+)/g,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
   },
@@ -702,7 +704,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- Juniper ---
   {
     name: "junos_secret",
-    pattern: /"\$9\$[A-Za-z0-9./]+"/g,
+    pattern: /"\$9\$[A-Za-z0-9./_-]+"/g,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.00,
   },
@@ -960,8 +962,9 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- Environment variable secrets ---
   {
     // DB_PASSWORD=value, SMTP_PASSWORD=value, etc. (shell .env format)
+    // Excludes quoted values — those are handled by the attribute_password rule.
     name: "env_var_secret",
-    pattern: /(?:^|[\n;])\s*\w*(?:PASSWORD|PASSWD|SECRET|_KEY|_TOKEN)\w*\s*=\s*(\S+)/gmi,
+    pattern: /(?:^|[\n;])\s*\w*(?:PASSWORD|PASSWD|SECRET|_KEY|_TOKEN)\w*\s*=\s*(?!"|\s*$)(\S+)/gmi,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 0.95,
   },
@@ -969,6 +972,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- XML/HCL attribute passwords ---
   {
     // password="value", secret="value", token="value" in XML/HCL/config attributes
+    // Also handles space before quote: password = "value"
     name: "attribute_password",
     pattern: /(?:password|passwd|secret|auth)\s*=\s*"([^"]+)"/gi,
     category: Category.NETWORK_CREDENTIAL,
@@ -1076,20 +1080,17 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
 
   // --- NTP trusted key ---
-  {
-    // "ntp trusted-key 1" — the key ID reveals NTP infra
-    name: "ntp_trusted_key",
-    pattern: /(?:ntp\s+trusted-key\s+)(\d+)/g,
-    category: Category.NETWORK_CREDENTIAL,
-    confidence: 0.80,
-  },
+  // NOTE: "ntp trusted-key <ID>" just references a numeric key ID (1, 2, etc.),
+  // not the actual secret. The secret is captured by the ntp_auth_key rule.
+  // Obfuscating single-digit IDs corrupts deobfuscation. Disabled.
 
   // --- Cisco line password (console/aux/vty without type number) ---
   {
     // "password VALUE" (without a type number prefix, i.e. not "password 7 XXX")
     // Appears under "line con 0", "line aux 0", "line vty 0 15"
+    // Excludes "password = ..." (HCL/config assignment syntax) via negative lookahead.
     name: "cisco_line_password",
-    pattern: /(?:^\s*password\s+)(?![057]\s)(\S+)/gm,
+    pattern: /(?:^\s*password\s+)(?![057]\s)(?!=)(\S{2,})/gm,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 0.95,
   },

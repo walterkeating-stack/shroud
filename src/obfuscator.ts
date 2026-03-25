@@ -382,6 +382,10 @@ export class Obfuscator {
       }
       // Prevent double-obfuscation: skip values that are already known fakes
       if (this._store.getReal(e.value) !== undefined) { alreadyObfuscated++; return false; }
+      // Safety net: never store very short values (1-2 chars) as they cause
+      // catastrophic false-positive replacements during deobfuscation.
+      // IPs, emails, hostnames etc. are always longer than 2 chars.
+      if (e.value.length <= 2) return false;
       return true;
     });
 

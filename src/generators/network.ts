@@ -699,28 +699,55 @@ export class NetworkGenerator implements BaseGenerator {
 
       const isPrivate = realAsn >= 64512 && realAsn <= 65534;
 
+      // Build set of already-used fake ASNs for collision detection
+      const usedFakes = new Set([...this._asnMap.values()]);
+
       // Check if realAsn-1 is already mapped (sequential relationship)
       const prevMapping = this._asnMap.get(realAsn - 1);
       if (prevMapping !== undefined) {
-        const fakeAsn = prevMapping + 1;
-        this._asnMap.set(realAsn, fakeAsn);
-        return String(fakeAsn);
+        const candidate = prevMapping + 1;
+        // Only use sequential if the candidate isn't already taken
+        if (!usedFakes.has(candidate)) {
+          this._asnMap.set(realAsn, candidate);
+          // Advance counters past sequentially-assigned values to avoid collisions
+          if (isPrivate && candidate >= this._nextPrivateAsn) {
+            this._nextPrivateAsn = candidate + 1;
+            if (this._nextPrivateAsn > 65534) this._nextPrivateAsn = 64512;
+          } else if (!isPrivate && candidate >= this._nextPublicAsn) {
+            this._nextPublicAsn = candidate + 7;
+            if (this._nextPublicAsn > 63999) this._nextPublicAsn = 10000;
+          }
+          return String(candidate);
+        }
+        // Fall through to counter-based allocation if collision
       }
       // Check if realAsn+1 is already mapped
       const nextMapping = this._asnMap.get(realAsn + 1);
       if (nextMapping !== undefined) {
-        const fakeAsn = nextMapping - 1;
-        this._asnMap.set(realAsn, fakeAsn);
-        return String(fakeAsn);
+        const candidate = nextMapping - 1;
+        if (!usedFakes.has(candidate)) {
+          this._asnMap.set(realAsn, candidate);
+          return String(candidate);
+        }
+        // Fall through to counter-based allocation if collision
       }
 
       let fakeAsn: number;
       if (isPrivate) {
+        // Skip past any fake ASNs already in use
+        while (usedFakes.has(this._nextPrivateAsn)) {
+          this._nextPrivateAsn++;
+          if (this._nextPrivateAsn > 65534) this._nextPrivateAsn = 64512;
+        }
         fakeAsn = this._nextPrivateAsn;
         this._nextPrivateAsn++;
         if (this._nextPrivateAsn > 65534) this._nextPrivateAsn = 64512;
       } else {
         // Public ASN range: map to plausible public ASNs
+        while (usedFakes.has(this._nextPublicAsn)) {
+          this._nextPublicAsn += 7;
+          if (this._nextPublicAsn > 63999) this._nextPublicAsn = 10000;
+        }
         fakeAsn = this._nextPublicAsn;
         this._nextPublicAsn += 7; // spread them out
         if (this._nextPublicAsn > 63999) this._nextPublicAsn = 10000;
