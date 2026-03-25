@@ -726,9 +726,28 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
 
         let modified = false;
-        for (const msg of body.messages) {
-          if (msg.role !== "user") continue;
 
+        // Obfuscate system prompt
+        if (typeof body.system === "string") {
+          const result = obfuscator.obfuscate(body.system);
+          if (result.entities.length > 0) {
+            body.system = result.obfuscated;
+            modified = true;
+          }
+        } else if (Array.isArray(body.system)) {
+          for (const block of body.system) {
+            if (block?.type === "text" && typeof block.text === "string") {
+              const result = obfuscator.obfuscate(block.text);
+              if (result.entities.length > 0) {
+                block.text = result.obfuscated;
+                modified = true;
+              }
+            }
+          }
+        }
+
+        // Obfuscate ALL messages — user, assistant, tool results, everything
+        for (const msg of body.messages) {
           // String content
           if (typeof msg.content === "string") {
             const result = obfuscator.obfuscate(msg.content);
