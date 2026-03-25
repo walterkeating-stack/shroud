@@ -326,8 +326,8 @@ export class OpenClawRunner {
       },
       {
         name: "Credential through OpenClaw plugin",
-        message: "snmp-server community SECRET_RO RO\nsnmp-server host 10.1.0.1 traps SECRET_RO",
-        realValues: ["SECRET_RO", "10.1.0.1"],
+        message: "enable secret 5 $1$mERo$ILwq/1h1\nsnmp-server host 10.1.0.1 version 2c TrapComm",
+        realValues: ["$1$mERo$ILwq/1h1", "10.1.0.1"],
       },
       {
         name: "Multi-entity through OpenClaw plugin",
@@ -445,6 +445,16 @@ export class OpenClawRunner {
       const llmRequests = await this._httpReq("GET", `http://127.0.0.1:${this.mockLlmPort}/requests`);
       if (!Array.isArray(llmRequests) || llmRequests.length === 0) {
         throw new Error("Mock LLM received 0 requests — agent did not reach the model");
+      }
+
+      // 3b. LLM must NOT have seen real PII values in any message content
+      if (scenario.realValues?.length > 0) {
+        const allContent = JSON.stringify(llmRequests);
+        for (const val of scenario.realValues) {
+          if (allContent.includes(val)) {
+            throw new Error(`LLM saw real PII value: "${val}" — fetch intercept failed`);
+          }
+        }
       }
 
       // 4. No CGNAT/ULA leaks in agent output
