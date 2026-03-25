@@ -563,10 +563,269 @@ describe("hooks - audit counter accuracy", () => {
     await handlers["before_prompt_build"]({ prompt: "IP 10.1.0.1 is down" });
     await handlers["before_prompt_build"]({ prompt: "Call +14155551234" });
 
-    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
-    // before_prompt_build doesn't emit audit directly (it's done via message_write)
-    // but getStats should show the obfuscation counts
     const stats = obf.getStats() as any;
     expect(stats.storeMappings).toBeGreaterThanOrEqual(3);
+  });
+
+  test("before_message_write obfuscation emits audit for user messages", () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    handlers["before_message_write"]({
+      message: { role: "user", content: "Contact alice@secret.org about 10.0.0.1" },
+    });
+
+    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
+    expect(obfAudit.length).toBe(1);
+
+    const audit = JSON.parse(obfAudit[0]);
+    expect(audit.totalEntities).toBeGreaterThanOrEqual(2);
+    expect(audit.byCategory).toBeDefined();
+    expect(audit.byRule).toBeDefined();
+  });
+
+  test("before_message_write obfuscation emits audit for array-of-blocks", () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    handlers["before_message_write"]({
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "Server 10.20.30.40 and john@acme.com" }],
+      },
+    });
+
+    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
+    expect(obfAudit.length).toBeGreaterThanOrEqual(1);
+  });
+
+  test("tool_result_persist triggers dumpStatsFile", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate first to have something in the store
+    obf.obfuscate("alice@secret.org");
+
+    handlers["tool_result_persist"]({
+      message: "Found alice@secret.org in the database",
+    });
+
+    // Stats should show at least 1 mapping
+    const stats = obf.getStats() as any;
+    expect(stats.storeMappings).toBeGreaterThanOrEqual(1);
+  });
+
+  test("no audit emitted when auditEnabled is false", () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: false });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    handlers["before_message_write"]({
+      message: { role: "user", content: "Email alice@secret.org" },
+    });
+
+    const auditLines = logLines.filter(l => l.includes("shroud.audit"));
+    expect(auditLines.length).toBe(0);
+  });
+
+  test("streaming deobCount accumulates across multiple fakes in chunks", () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const hook = (globalThis as any).__shroudStreamDeobfuscate;
+
+    // Obfuscate multiple entities
+    const obResult = obf.obfuscate("Email john@acme.com and alice@secret.org plus 10.1.0.1");
+    const fakeEmail1 = obResult.mappingsUsed["john@acme.com"];
+    const fakeEmail2 = obResult.mappingsUsed["alice@secret.org"];
+    const fakeIp = obResult.mappingsUsed["10.1.0.1"];
+
+    // Stream response containing all fakes
+    const stream: any = {};
+    const response = `Results: ${fakeEmail1}, ${fakeEmail2}, ${fakeIp}`;
+    const chunks = response.match(/.{1,15}/g) || [];
+
+    for (const chunk of chunks) {
+      hook(stream, { type: "text_delta", delta: chunk });
+    }
+
+    hook(stream, {
+      type: "done",
+      message: { content: [{ type: "text", text: response }] },
+    });
+
+    const auditLines = logLines.filter(l => l.includes("shroud.audit.deobfuscate"));
+    expect(auditLines.length).toBe(1);
+
+    const audit = JSON.parse(auditLines[0]);
+    expect(audit.deobfuscations).toBeGreaterThanOrEqual(3);
+  });
+});
+
+// =========================================================================
+// Audit format tests (JSON vs human)
+// =========================================================================
+
+describe("hooks - audit log formats", () => {
+  test("emitObfuscationAudit JSON format has all required fields", () => {
+    const obf = new Obfuscator({
+      ...testConfig,
+      auditEnabled: true,
+      auditLogFormat: "json",
+      auditIncludeProofHashes: true,
+      auditHashSalt: "test-salt",
+      auditHashTruncate: 12,
+      auditMaxFakesSample: 3,
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    handlers["before_message_write"]({
+      message: { role: "user", content: "Contact john@acme.com from 10.1.0.1" },
+    });
+
+    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
+    expect(obfAudit.length).toBe(1);
+
+    const audit = JSON.parse(obfAudit[0]);
+    expect(audit.event).toBe("shroud.audit.obfuscate");
+    expect(audit.req).toBeDefined();
+    expect(audit.ts).toBeDefined();
+    expect(audit.modified).toBe(true);
+    expect(audit.totalEntities).toBeGreaterThanOrEqual(2);
+    expect(audit.inputChars).toBeGreaterThan(0);
+    expect(audit.outputChars).toBeGreaterThan(0);
+    expect(audit.charDelta).toBeDefined();
+    expect(audit.byCategory).toBeDefined();
+    expect(audit.byRule).toBeDefined();
+    // Proof hashes
+    expect(audit.proofIn).toBeDefined();
+    expect(audit.proofIn.length).toBe(12);
+    expect(audit.proofOut).toBeDefined();
+    expect(audit.proofOut.length).toBe(12);
+    // Fakes sample
+    expect(audit.fakesSample).toBeDefined();
+    expect(audit.fakesSample.length).toBeGreaterThan(0);
+    expect(audit.fakesSample.length).toBeLessThanOrEqual(3);
+  });
+
+  test("emitObfuscationAudit human format has pipe-separated fields", () => {
+    const obf = new Obfuscator({
+      ...testConfig,
+      auditEnabled: true,
+      auditLogFormat: "human",
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    handlers["before_message_write"]({
+      message: { role: "user", content: "Contact john@acme.com" },
+    });
+
+    const obfAudit = logLines.filter(l => l.includes("[shroud][audit] OBFUSCATE"));
+    expect(obfAudit.length).toBe(1);
+    expect(obfAudit[0]).toContain("req=");
+    expect(obfAudit[0]).toContain("entities=");
+    expect(obfAudit[0]).toContain("chars=");
+    expect(obfAudit[0]).toContain("modified=YES");
+    expect(obfAudit[0]).toContain("byCat=");
+    expect(obfAudit[0]).toContain("byRule=");
+    expect(obfAudit[0]).toContain("|");
+  });
+
+  test("emitDeobfuscationAudit JSON format", async () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const obResult = obf.obfuscate("john@acme.com");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+
+    await handlers["message_sending"]({ content: `Found ${fakeEmail}` });
+
+    const deobAudit = logLines.filter(l => l.includes("shroud.audit.deobfuscate"));
+    expect(deobAudit.length).toBe(1);
+
+    const audit = JSON.parse(deobAudit[0]);
+    expect(audit.event).toBe("shroud.audit.deobfuscate");
+    expect(audit.req).toBeDefined();
+    expect(audit.ts).toBeDefined();
+    expect(audit.modified).toBe(true);
+    expect(audit.deobfuscations).toBeGreaterThan(0);
+  });
+
+  test("emitDeobfuscationAudit human format", async () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "human" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const obResult = obf.obfuscate("john@acme.com");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+
+    await handlers["message_sending"]({ content: `Found ${fakeEmail}` });
+
+    const deobAudit = logLines.filter(l => l.includes("[shroud][audit] DEOBFUSCATE"));
+    expect(deobAudit.length).toBe(1);
+    expect(deobAudit[0]).toContain("req=");
+    expect(deobAudit[0]).toContain("replacements=");
+    expect(deobAudit[0]).toContain("modified=YES");
+  });
+
+  test("proof hashes not included when auditIncludeProofHashes is false", () => {
+    const obf = new Obfuscator({
+      ...testConfig,
+      auditEnabled: true,
+      auditLogFormat: "json",
+      auditIncludeProofHashes: false,
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    handlers["before_message_write"]({
+      message: { role: "user", content: "Contact john@acme.com" },
+    });
+
+    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
+    const audit = JSON.parse(obfAudit[0]);
+    expect(audit.proofIn).toBeUndefined();
+    expect(audit.proofOut).toBeUndefined();
+  });
+
+  test("fakes sample not included when auditMaxFakesSample is 0", () => {
+    const obf = new Obfuscator({
+      ...testConfig,
+      auditEnabled: true,
+      auditLogFormat: "json",
+      auditMaxFakesSample: 0,
+    });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    handlers["before_message_write"]({
+      message: { role: "user", content: "Contact john@acme.com" },
+    });
+
+    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
+    const audit = JSON.parse(obfAudit[0]);
+    expect(audit.fakesSample).toBeUndefined();
+  });
+
+  test("modified=NO when no entities detected", () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    // Send text with no PII — before_message_write returns undefined (no audit)
+    const result = handlers["before_message_write"]({
+      message: { role: "user", content: "Hello world no PII here" },
+    });
+    expect(result).toBeUndefined();
+    // No audit line when nothing was modified
+    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
+    expect(obfAudit.length).toBe(0);
   });
 });
