@@ -1,0 +1,90 @@
+[
+  {
+    "name": "Email obfuscation",
+    "input": "Please contact John Smith at john.smith@acme-corp.com for details.",
+    "assertions": {
+      "llm_must_not_see": ["john.smith@acme-corp.com"],
+      "llm_must_see_pattern": ["[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"],
+      "user_must_see": ["john.smith@acme-corp.com"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IPv4 obfuscation",
+    "input": "The server at 10.42.88.7 is unreachable from the monitoring subnet.",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.7"],
+      "llm_must_see_pattern": ["\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"],
+      "user_must_see": ["10.42.88.7"],
+      "entity_count_min": 1,
+      "categories": ["ip_address"],
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IPv6 address passthrough",
+    "input": "The DNS resolver is at 2001:0db8:85a3:0000:0000:8a2e:0370:7334 and is responding slowly.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Phone number obfuscation",
+    "input": "Call our support line at +1-415-555-0198 for immediate assistance.",
+    "assertions": {
+      "llm_must_not_see": ["+1-415-555-0198"],
+      "user_must_see": ["+1-415-555-0198"],
+      "entity_count_min": 1,
+      "categories": ["phone"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Credit card obfuscation",
+    "input": "The transaction was made with card number 4532-0151-2345-6789, expiring 03/27.",
+    "assertions": {
+      "llm_must_not_see": ["4532-0151-2345-6789"],
+      "user_must_see": ["4532-0151-2345-6789"],
+      "entity_count_min": 1,
+      "categories": ["credit_card"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "SSN obfuscation",
+    "input": "Employee record shows SSN 482-39-1057 for tax filing purposes.",
+    "assertions": {
+      "llm_must_not_see": ["482-39-1057"],
+      "user_must_see": ["482-39-1057"],
+      "entity_count_min": 1,
+      "categories": ["ssn"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "URL obfuscation",
+    "input": "The admin panel is at https://internal-dashboard.acme-corp.com:8443/admin/settings and requires VPN.",
+    "assertions": {
+      "llm_must_not_see": ["internal-dashboard.acme-corp.com"],
+      "user_must_see": ["internal-dashboard.acme-corp.com"],
+      "entity_count_min": 1,
+      "categories": ["url"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Person name in context (near email)",
+    "input": "From: Alice Chen <alice.chen@globex.net>\nSubject: Server migration plan",
+    "assertions": {
+      "llm_must_not_see": ["alice.chen@globex.net"],
+      "user_must_see": ["alice.chen@globex.net"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  }
+]

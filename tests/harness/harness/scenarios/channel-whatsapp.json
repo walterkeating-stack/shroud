@@ -1,0 +1,55 @@
+{
+  "name": "WhatsApp Channel Tests",
+  "tests": [
+    {
+      "name": "E.164 phone number in WhatsApp",
+      "channel": "whatsapp",
+      "input": "Call the NOC at +14155551234 for help",
+      "assertions": {
+        "llm_must_not_see": ["+14155551234"],
+        "user_must_see": ["+14155551234"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Email in WhatsApp message",
+      "channel": "whatsapp",
+      "input": "Forward the ticket to support@datacenter.net",
+      "assertions": {
+        "llm_must_not_see": ["support@datacenter.net"],
+        "user_must_see": ["support@datacenter.net"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "IP and hostname in WhatsApp",
+      "channel": "whatsapp",
+      "input": "The switch SYD-ACC-SW-12 at 10.200.1.5 is flapping",
+      "assertions": {
+        "llm_must_not_see": ["SYD-ACC-SW-12", "10.200.1.5"],
+        "user_must_see": ["SYD-ACC-SW-12", "10.200.1.5"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "International E.164 numbers in WhatsApp",
+      "channel": "whatsapp",
+      "input": "Escalate to +442071234567 or +61298765432 immediately",
+      "assertions": {
+        "llm_must_not_see": ["+442071234567", "+61298765432"],
+        "user_must_see": ["+442071234567", "+61298765432"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Multi-entity WhatsApp alert",
+      "channel": "whatsapp",
+      "input": "ALERT: 10.50.1.1 down. Contact admin@noc.internal or call +14155559876. Host: DAL-CORE-RTR-01",
+      "assertions": {
+        "llm_must_not_see": ["10.50.1.1", "admin@noc.internal", "+14155559876", "DAL-CORE-RTR-01"],
+        "user_must_see": ["10.50.1.1", "admin@noc.internal"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

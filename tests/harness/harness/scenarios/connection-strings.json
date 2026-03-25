@@ -1,0 +1,102 @@
+[
+  {
+    "name": "Postgres connection string password",
+    "input": "DATABASE_URL=postgres://admin:S3cretDbP@ss@db.internal:5432/prod",
+    "assertions": {
+      "llm_must_not_see": ["S3cretDbP@ss"],
+      "user_must_see": ["S3cretDbP@ss"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "MongoDB connection string password",
+    "input": "mongodb://appuser:M0ng0S3cret@mongo.internal:27017/appdb",
+    "assertions": {
+      "llm_must_not_see": ["M0ng0S3cret"],
+      "user_must_see": ["M0ng0S3cret"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Redis connection string password",
+    "input": "REDIS_URL=redis://default:R3d1sP@ssw0rd@cache.internal:6379",
+    "assertions": {
+      "llm_must_not_see": ["R3d1sP@ssw0rd"],
+      "user_must_see": ["R3d1sP@ssw0rd"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "MySQL connection string password",
+    "input": "mysql://root:MyR00tP@ss@mysql.internal:3306/production",
+    "assertions": {
+      "llm_must_not_see": ["MyR00tP@ss"],
+      "user_must_see": ["MyR00tP@ss"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "AMQP connection string password",
+    "input": "amqp://guest:Gu3stP@ssw0rd@rabbit.internal:5672",
+    "assertions": {
+      "llm_must_not_see": ["Gu3stP@ssw0rd"],
+      "user_must_see": ["Gu3stP@ssw0rd"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "URL query param: password",
+    "input": "https://app.internal/login?password=MyS3cretP@ss&user=admin",
+    "assertions": {
+      "llm_must_not_see": ["MyS3cretP@ss"],
+      "user_must_see": ["MyS3cretP@ss"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "URL query param: api_key",
+    "input": "https://api.internal/data?api_key=abc123def456ghi789",
+    "assertions": {
+      "llm_must_not_see": ["abc123def456ghi789"],
+      "user_must_see": ["abc123def456ghi789"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "URL query param: token",
+    "input": "https://api.internal/auth?token=MyTokenValue12345",
+    "assertions": {
+      "llm_must_not_see": ["MyTokenValue12345"],
+      "user_must_see": ["MyTokenValue12345"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Azure storage connection string",
+    "input": "DefaultEndpointsProtocol=https;AccountName=myacct;AccountKey=abc123def456ghi789jkl==",
+    "assertions": {
+      "llm_must_not_see": ["AccountKey=abc123def456ghi789jkl"],
+      "user_must_see": ["AccountKey=abc123def456ghi789jkl"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Cloud credentials block",
+    "input": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\naws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\nDATABASE_URL=postgres://admin:DbP@ss@rds.internal:5432/prod",
+    "assertions": {
+      "llm_must_not_see": ["AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI", "DbP@ss"],
+      "user_must_see": ["AKIAIOSFODNN7EXAMPLE"],
+      "entity_count_min": 3,
+      "roundtrip": true
+    }
+  }
+]

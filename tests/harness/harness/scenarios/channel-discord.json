@@ -1,0 +1,45 @@
+{
+  "name": "Discord Channel Tests",
+  "tests": [
+    {
+      "name": "Email in Discord message",
+      "channel": "discord",
+      "input": "DM sre-lead@company.io about the P1 incident",
+      "assertions": {
+        "llm_must_not_see": ["sre-lead@company.io"],
+        "user_must_see": ["sre-lead@company.io"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "IP in Discord code block",
+      "channel": "discord",
+      "input": "```\ntraceroute 10.99.1.1\n 1  10.0.0.1  1ms\n 2  10.99.1.1  5ms\n```",
+      "assertions": {
+        "llm_must_not_see": ["10.99.1.1", "10.0.0.1"],
+        "user_must_see": ["10.99.1.1"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Discord mention with PII",
+      "channel": "discord",
+      "input": "Hey <@123456>, the server PROD-WEB-04 at 10.20.30.4 needs patching",
+      "assertions": {
+        "llm_must_not_see": ["PROD-WEB-04", "10.20.30.4"],
+        "user_must_see": ["PROD-WEB-04", "10.20.30.4"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "SNMP credentials in Discord",
+      "channel": "discord",
+      "input": "snmp-server community D1SC0RD_RW RW\nsnmp-server community D1SC0RD_RO RO\ninterface Gi0/1\n ip address 10.5.5.5 255.255.255.0",
+      "assertions": {
+        "llm_must_not_see": ["D1SC0RD_RW", "D1SC0RD_RO", "10.5.5.5"],
+        "user_must_see": ["10.5.5.5"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

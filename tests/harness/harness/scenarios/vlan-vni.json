@@ -1,0 +1,78 @@
+{
+  "name": "VLAN and VNI Detection",
+  "tests": [
+    {
+      "name": "Cisco VLAN config with name",
+      "input": "vlan 100\n name SERVER-VLAN-PROD\n!\nvlan 200\n name MGMT-VLAN-EAST\n!\ninterface Vlan100\n ip address 10.100.0.1 255.255.255.0\n no shutdown",
+      "assertions": {
+        "llm_must_not_see": ["SERVER-VLAN-PROD", "MGMT-VLAN-EAST"],
+        "user_must_see": ["SERVER-VLAN-PROD", "MGMT-VLAN-EAST"],
+        "entity_count_min": 2,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "VXLAN VNI config",
+      "input": "interface nve1\n member vni 10100\n  ingress-replication protocol bgp\n member vni 50000\n  ingress-replication protocol bgp\n!\nvxlan vni 10100 vlan 100\nvxlan vni 50000 vlan 500",
+      "assertions": {
+        "llm_must_not_see": ["10100", "50000"],
+        "user_must_see": ["10100", "50000"],
+        "entity_count_min": 4,
+        "categories": ["vlan_id"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Juniper VLAN set commands",
+      "input": "set vlans SERVERVLAN vlan-id 100\nset vlans MGMTVLAN vlan-id 200\nset vlans GUESTVLAN vlan-id 300\nset interfaces ge-0/0/1 unit 0 family ethernet-switching vlan members SERVERVLAN",
+      "assertions": {
+        "llm_must_not_see": ["SERVERVLAN", "MGMTVLAN", "GUESTVLAN"],
+        "user_must_see": ["SERVERVLAN", "MGMTVLAN", "GUESTVLAN"],
+        "entity_count_min": 3,
+        "categories": ["vlan_id"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "L2VPN VPN ID",
+      "input": "l2vpn xconnect context CUST-ACME-L2\n vpn id 200\n member GigabitEthernet0/0/1.100 service-instance 100\n member 10.0.0.2 100 encapsulation mpls",
+      "assertions": {
+        "llm_must_not_see": ["200"],
+        "user_must_see": ["200"],
+        "entity_count_min": 1,
+        "categories": ["vlan_id"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Switchport access VLAN",
+      "input": "interface GigabitEthernet0/1\n switchport mode access\n switchport access vlan 100\n spanning-tree portfast\n!\ninterface GigabitEthernet0/2\n switchport mode trunk\n switchport trunk native vlan 999\n switchport trunk allowed vlan 100,200,300",
+      "assertions": {
+        "llm_must_not_see": ["100", "999"],
+        "user_must_see": ["100", "999"],
+        "entity_count_min": 2,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "VXLAN EVPN with VNI and route-target",
+      "input": "router bgp 65001\n address-family l2vpn evpn\n!\nvlan 100\n vni 10100\n!\nevpn\n vni 10100 l2\n  rd auto\n  route-target import 65001:10100\n  route-target export 65001:10100",
+      "assertions": {
+        "llm_must_not_see": ["10100"],
+        "user_must_see": ["10100"],
+        "entity_count_min": 2,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Mixed VLAN + VNI + VRF config",
+      "input": "vrf definition TENANT-A\n rd 65001:100\n route-target export 65001:100\n route-target import 65001:100\n!\nvlan 100\n name TENANT-A-DATA\n!\nvlan 200\n name TENANT-A-VOICE\n!\ninterface nve1\n member vni 10100\n  vrf TENANT-A\n member vni 10200\n  vrf TENANT-A\n!\nvxlan vni 10100 vlan 100\nvxlan vni 10200 vlan 200",
+      "assertions": {
+        "llm_must_not_see": ["TENANT-A", "TENANT-A-DATA", "TENANT-A-VOICE", "10100", "10200"],
+        "user_must_see": ["TENANT-A", "TENANT-A-DATA", "TENANT-A-VOICE", "10100", "10200"],
+        "entity_count_min": 5,
+        "roundtrip": true
+      }
+    }
+  ]
+}

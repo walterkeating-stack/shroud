@@ -1,0 +1,77 @@
+{
+  "name": "Prompt privacy — LLM must never see raw PII",
+  "tests": [
+    {
+      "name": "Email: LLM sees fake, never real",
+      "input": "Please email admin@secret-corp.io about the outage",
+      "assertions": {
+        "llm_must_not_see": ["admin@secret-corp.io"],
+        "llm_must_see_pattern": ["[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"],
+        "user_must_see": ["admin@secret-corp.io"],
+        "entity_count_min": 1,
+        "categories": ["email"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "IP: LLM sees CGNAT fake, never real RFC1918",
+      "input": "The database server at 10.200.55.3 is not responding to pings",
+      "assertions": {
+        "llm_must_not_see": ["10.200.55.3"],
+        "llm_must_see_pattern": ["100\\.(?:6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.\\d{1,3}\\.\\d{1,3}"],
+        "user_must_see": ["10.200.55.3"],
+        "entity_count_min": 1,
+        "categories": ["ip_address"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Phone: LLM must not see real number",
+      "input": "For emergency support call +1-650-888-9999 immediately",
+      "assertions": {
+        "llm_must_not_see": ["+1-650-888-9999"],
+        "user_must_see": ["+1-650-888-9999"],
+        "entity_count_min": 1,
+        "categories": ["phone"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Hostname: LLM must not see real device name",
+      "input": "hostname NYC-EDGE-FW-01\ninterface GigabitEthernet0/0\n ip address 172.16.99.1 255.255.255.252",
+      "assertions": {
+        "llm_must_not_see": ["NYC-EDGE-FW-01", "172.16.99.1"],
+        "user_must_see": ["NYC-EDGE-FW-01", "172.16.99.1"],
+        "entity_count_min": 2,
+        "categories": ["hostname", "ip_address"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Multiple PII types in single prompt",
+      "input": "User sarah@megacorp.com reported that host SFO-CORE-01 at 10.50.1.1 is down. Her number is +1-212-555-0147.",
+      "assertions": {
+        "llm_must_not_see": ["sarah@megacorp.com", "SFO-CORE-01", "10.50.1.1", "+1-212-555-0147"],
+        "user_must_see": ["sarah@megacorp.com", "SFO-CORE-01", "10.50.1.1", "+1-212-555-0147"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Obfuscated prompt must not contain prependContext framing",
+      "input": "Server at 10.10.10.1 owned by ops@internal.dev needs a reboot",
+      "assertions": {
+        "llm_must_not_see": ["10.10.10.1", "ops@internal.dev", "SHROUD PRIVACY LAYER", "prependContext"],
+        "llm_must_see_pattern": ["[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}"],
+        "user_must_see": ["10.10.10.1", "ops@internal.dev"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

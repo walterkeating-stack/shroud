@@ -1,0 +1,99 @@
+{
+  "name": "Infrastructure Names and Credentials",
+  "tests": [
+    {
+      "name": "TACACS server names",
+      "input": "tacacs server TAC-PRI\n address ipv4 10.10.5.50\n key 7 045E0A0B0E3A2D44\n!\ntacacs server TAC-SEC\n address ipv4 10.10.5.51\n key 7 045E0A0B0E3A2D44",
+      "assertions": {
+        "llm_must_not_see": ["TAC-PRI", "TAC-SEC", "045E0A0B0E3A2D44"],
+        "user_must_see": ["TAC-PRI", "TAC-SEC"],
+        "entity_count_min": 2,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "RADIUS server names",
+      "input": "radius server RAD-01\n address ipv4 10.10.5.60\n key 7 110A1016141D5A\n!\nradius server RAD-02\n address ipv4 10.10.5.61\n key 7 110A1016141D5A",
+      "assertions": {
+        "llm_must_not_see": ["RAD-01", "RAD-02", "110A1016141D5A"],
+        "user_must_see": ["RAD-01", "RAD-02"],
+        "entity_count_min": 2,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Juniper firewall filter names",
+      "input": "set firewall family inet filter PROTECT-RE term ALLOW-BGP from protocol tcp\nset firewall family inet filter PROTECT-RE term ALLOW-BGP from port bgp\nset firewall family inet filter PROTECT-RE term ALLOW-BGP then accept\nset firewall family inet filter EDGE-INBOUND term DENY-BOGONS from source-address 0.0.0.0/8\nset firewall family inet filter EDGE-INBOUND term DENY-BOGONS then discard",
+      "assertions": {
+        "llm_must_not_see": ["PROTECT-RE", "EDGE-INBOUND"],
+        "user_must_see": ["PROTECT-RE", "EDGE-INBOUND"],
+        "entity_count_min": 2,
+        "categories": ["acl_name"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Palo Alto service groups",
+      "input": "set service-group SG-WEB-SERVICES members HTTP\nset service-group SG-WEB-SERVICES members HTTPS\nset service-group SG-MONITORING members SNMP\nset service-group SG-MONITORING members ICMP",
+      "assertions": {
+        "llm_must_not_see": ["SG-WEB-SERVICES", "SG-MONITORING"],
+        "user_must_see": ["SG-WEB-SERVICES", "SG-MONITORING"],
+        "entity_count_min": 2,
+        "categories": ["acl_name"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Cisco banner text",
+      "input": "banner motd ^C\n***********************************************\n* Property of Acme Corp - Vienna Office       *\n* Unauthorized access is strictly prohibited  *\n* Contact NOC: noc@acme-corp.at               *\n***********************************************\n^C",
+      "assertions": {
+        "llm_must_not_see": ["Acme Corp"],
+        "user_must_see": ["Acme Corp"],
+        "entity_count_min": 1,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "EIGRP AS number",
+      "input": "router eigrp 100\n network 10.0.0.0\n network 192.168.1.0\n no auto-summary\n!\nrouter eigrp 200\n network 172.16.0.0",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.0", "192.168.1.0"],
+        "user_must_see": ["10.0.0.0", "192.168.1.0"],
+        "entity_count_min": 2,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Console and VTY line passwords",
+      "input": "line con 0\n password C0ns0l3P@ss!\n login\n!\nline aux 0\n password AuxP@ss123\n!\nline vty 0 4\n password V7yAcce$$\n login\n transport input ssh",
+      "assertions": {
+        "llm_must_not_see": ["C0ns0l3P@ss!", "AuxP@ss123", "V7yAcce$$"],
+        "user_must_see": ["C0ns0l3P@ss!", "AuxP@ss123", "V7yAcce$$"],
+        "entity_count_min": 3,
+        "categories": ["network_credential"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "NTP trusted key config",
+      "input": "ntp authentication-key 1 md5 NtpS3cret!\nntp authentication-key 2 md5 NtpB@ckup#\nntp trusted-key 1\nntp trusted-key 2\nntp server 10.10.5.10 key 1\nntp server 10.10.5.11 key 2",
+      "assertions": {
+        "llm_must_not_see": ["NtpS3cret!", "NtpB@ckup#"],
+        "user_must_see": ["NtpS3cret!", "NtpB@ckup#"],
+        "entity_count_min": 2,
+        "categories": ["network_credential"],
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "MPLS label range",
+      "input": "mpls label range 100 199\nmpls ldp router-id Loopback0\nmpls ldp discovery transport-address 10.255.255.1",
+      "assertions": {
+        "llm_must_not_see": ["100 199"],
+        "user_must_see": ["100 199"],
+        "entity_count_min": 1,
+        "roundtrip": true
+      }
+    }
+  ]
+}

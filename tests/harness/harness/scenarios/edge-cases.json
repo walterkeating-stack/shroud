@@ -1,0 +1,65 @@
+[
+  {
+    "name": "Empty string (no crash)",
+    "input": "",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0
+    }
+  },
+  {
+    "name": "Unicode text with PII",
+    "input": "\u3053\u3093\u306b\u3061\u306f\u3001\u30b5\u30fc\u30d0\u30fc 10.42.88.33 \u306b\u63a5\u7d9a\u3067\u304d\u307e\u305b\u3093\u3002\u9023\u7d61\u5148: tanaka.yuki@acme-corp.co.jp",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.33", "tanaka.yuki@acme-corp.co.jp"],
+      "user_must_see": ["10.42.88.33", "tanaka.yuki@acme-corp.co.jp"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Text with RFC 5737 IPs and RFC 2606 domain (IPs obfuscated, domain skipped)",
+    "input": "As shown in RFC 5737, use 192.0.2.1 for documentation. See example.com for more info.",
+    "assertions": {
+      "llm_must_not_see": ["192.0.2.1"],
+      "user_must_see": ["192.0.2.1"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Long Cisco config with many IPs and hostnames",
+    "input": "hostname mon-01.mgmt.acme.net\n!\ninterface Loopback0\n ip address 10.255.255.1 255.255.255.255\n!\ninterface GigabitEthernet0/0/0\n ip address 10.0.12.1 255.255.255.252\n!\ninterface GigabitEthernet0/0/1\n ip address 10.0.12.5 255.255.255.252\n!\ninterface GigabitEthernet0/0/2\n ip address 10.0.12.9 255.255.255.252\n!\nrouter bgp 65500\n neighbor 10.0.12.2 remote-as 65501\n neighbor 10.0.12.6 remote-as 65502\n neighbor 10.0.12.10 remote-as 65503\n!\nsnmp-server community ReadOnlySNMP RO\nntp server 10.10.5.10\nlogging host 10.10.5.11",
+    "assertions": {
+      "llm_must_not_see": ["10.255.255.1", "mon-01.mgmt.acme.net", "10.0.12.1"],
+      "user_must_see": ["10.255.255.1", "mon-01.mgmt.acme.net", "10.0.12.1"],
+      "entity_count_min": 10,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Multiple IPs and email in mixed context",
+    "input": "Server 10.42.88.99 reported by admin@acme-corp.com\nBackup at 10.42.88.100 also affected\nSecondary contact: ops@acme-corp.com",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.99", "10.42.88.100", "admin@acme-corp.com", "ops@acme-corp.com"],
+      "user_must_see": ["10.42.88.99", "10.42.88.100", "admin@acme-corp.com", "ops@acme-corp.com"],
+      "entity_count_min": 4,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IP with SSN and credit card together",
+    "input": "Customer record: IP 10.42.88.50, SSN 482-39-1057, card 4532-0151-2345-6789",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.50", "482-39-1057", "4532-0151-2345-6789"],
+      "user_must_see": ["10.42.88.50", "482-39-1057", "4532-0151-2345-6789"],
+      "entity_count_min": 3,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

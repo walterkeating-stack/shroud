@@ -1,0 +1,123 @@
+[
+  {
+    "name": "VRF: ip vrf name",
+    "input": "ip vrf CUST-ALPHA-VRF",
+    "assertions": {
+      "llm_must_not_see": ["CUST-ALPHA-VRF"],
+      "user_must_see": ["CUST-ALPHA-VRF"],
+      "entity_count_min": 1,
+      "categories": ["vlan_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "VRF: definition",
+    "input": "vrf definition MGMT-VRF",
+    "assertions": {
+      "llm_must_not_see": ["MGMT-VRF"],
+      "user_must_see": ["MGMT-VRF"],
+      "entity_count_min": 1,
+      "categories": ["vlan_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "VRF: forwarding",
+    "input": "ip vrf forwarding PROD-VRF",
+    "assertions": {
+      "llm_must_not_see": ["PROD-VRF"],
+      "user_must_see": ["PROD-VRF"],
+      "entity_count_min": 1,
+      "categories": ["vlan_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Route distinguisher",
+    "input": "rd 65001:100",
+    "assertions": {
+      "llm_must_not_see": ["65001:100"],
+      "user_must_see": ["65001:100"],
+      "entity_count_min": 1,
+      "categories": ["vlan_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Route target export",
+    "input": "route-target export 65001:200",
+    "assertions": {
+      "llm_must_not_see": ["65001:200"],
+      "user_must_see": ["65001:200"],
+      "entity_count_min": 1,
+      "categories": ["vlan_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Route target import",
+    "input": "route-target import 65001:300",
+    "assertions": {
+      "llm_must_not_see": ["65001:300"],
+      "user_must_see": ["65001:300"],
+      "entity_count_min": 1,
+      "categories": ["vlan_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "VLAN trunk allowed range",
+    "input": "switchport trunk allowed vlan 100,200,300-400",
+    "assertions": {
+      "llm_must_not_see": ["100,200,300-400"],
+      "user_must_see": ["100,200,300-400"],
+      "entity_count_min": 1,
+      "categories": ["vlan_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Route-map name",
+    "input": "route-map RM-CUST-IN permit 10",
+    "assertions": {
+      "llm_must_not_see": ["RM-CUST-IN"],
+      "user_must_see": ["RM-CUST-IN"],
+      "entity_count_min": 1,
+      "categories": ["route_map"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Prefix-list name",
+    "input": "ip prefix-list PL-DEFAULT-ONLY seq 5 permit 0.0.0.0/0",
+    "assertions": {
+      "llm_must_not_see": ["PL-DEFAULT-ONLY"],
+      "user_must_see": ["PL-DEFAULT-ONLY"],
+      "entity_count_min": 1,
+      "categories": ["acl_name"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Access-list extended name",
+    "input": "ip access-list extended ACL-WAN-INBOUND",
+    "assertions": {
+      "llm_must_not_see": ["ACL-WAN-INBOUND"],
+      "user_must_see": ["ACL-WAN-INBOUND"],
+      "entity_count_min": 1,
+      "categories": ["acl_name"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Full VRF + interface block",
+    "input": "ip vrf CUST-ALPHA\n rd 65001:100\n route-target export 65001:100\n route-target import 65001:100\n!\ninterface GigabitEthernet0/1\n description LINK TO Customer Alpha via Dark Fiber\n ip vrf forwarding CUST-ALPHA\n ip address 10.99.1.1 255.255.255.252",
+    "assertions": {
+      "llm_must_not_see": ["CUST-ALPHA", "65001:100", "10.99.1.1"],
+      "user_must_see": ["CUST-ALPHA", "65001:100", "10.99.1.1"],
+      "entity_count_min": 4,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

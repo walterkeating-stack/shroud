@@ -1,0 +1,82 @@
+{
+  "name": "Mixed Document Formats",
+  "tests": [
+    {
+      "name": "JSON with PII values",
+      "input": "{\n  \"alert\": {\n    \"source_ip\": \"10.42.88.200\",\n    \"destination_ip\": \"10.100.10.50\",\n    \"user\": \"jsmith\",\n    \"email\": \"john.smith@acme-corp.com\",\n    \"severity\": \"critical\",\n    \"message\": \"Unauthorized SSH login attempt from 10.42.88.200 to 10.100.10.50\"\n  }\n}",
+      "assertions": {
+        "llm_must_not_see": ["10.42.88.200", "10.100.10.50", "john.smith@acme-corp.com"],
+        "user_must_see": ["10.42.88.200", "10.100.10.50", "john.smith@acme-corp.com"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "YAML with PII values",
+      "input": "---\nservice:\n  name: api-gateway\n  endpoints:\n    - host: 10.100.10.80\n      port: 8443\n    - host: 10.100.10.81\n      port: 8443\n  health_check: http://10.100.10.80:8443/healthz\n  contact: platform-team@acme-corp.com\n  dns: api.internal.acme-corp.net\n  tls:\n    cert: /etc/ssl/api.internal.acme-corp.net.pem\n    key: /etc/ssl/api.internal.acme-corp.net.key",
+      "assertions": {
+        "llm_must_not_see": ["10.100.10.80", "10.100.10.81", "platform-team@acme-corp.com"],
+        "user_must_see": ["10.100.10.80", "10.100.10.81", "platform-team@acme-corp.com"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Syslog entries with IPs and emails",
+      "input": "2024-03-24 10:15:32 ERROR [auth-service] [10.42.88.55] user john.smith@acme-corp.com failed login attempt 3/5 from 10.42.88.55\n2024-03-24 10:15:33 WARN  [auth-service] [10.42.88.55] account john.smith@acme-corp.com locked — notify security@acme-corp.com\n2024-03-24 10:15:34 INFO  [firewall] SRC=10.42.88.55 DST=10.100.10.50 PROTO=TCP SPT=44231 DPT=22 ACTION=DROP\n2024-03-24 10:16:01 INFO  [ids] Alert: SSH brute force from 10.42.88.55 targeting 10.100.10.50 — sig:2001219",
+      "assertions": {
+        "llm_must_not_see": ["10.42.88.55", "10.100.10.50", "john.smith@acme-corp.com", "security@acme-corp.com"],
+        "user_must_see": ["10.42.88.55", "10.100.10.50", "john.smith@acme-corp.com", "security@acme-corp.com"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Markdown table with IPs and emails",
+      "input": "## Server Inventory\n\n| Hostname | IP Address | Role | Contact |\n|----------|-----------|------|--------|\n| web-01.prod.acme.net | 10.100.10.50 | Web Frontend | devops@acme-corp.com |\n| web-02.prod.acme.net | 10.100.10.51 | Web Frontend | devops@acme-corp.com |\n| db-01.prod.acme.net | 10.100.20.10 | Primary DB | dba-team@acme-corp.com |\n| db-02.prod.acme.net | 10.100.20.11 | Replica DB | dba-team@acme-corp.com |\n| cache-01.prod.acme.net | 10.100.30.10 | Redis Primary | devops@acme-corp.com |",
+      "assertions": {
+        "llm_must_not_see": ["10.100.10.50", "10.100.10.51", "10.100.20.10", "devops@acme-corp.com", "dba-team@acme-corp.com"],
+        "user_must_see": ["10.100.10.50", "10.100.10.51", "10.100.20.10", "devops@acme-corp.com", "dba-team@acme-corp.com"],
+        "entity_count_min": 7,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "CSV-style data with PII columns",
+      "input": "hostname,ip,mac,location,contact_email,contact_phone\ncore-sw-01.dc-east.acme.net,10.0.0.1,aa:bb:cc:11:22:33,\"DC East Rack A3\",neteng@acme-corp.com,+1-408-555-1001\ncore-sw-02.dc-east.acme.net,10.0.0.2,aa:bb:cc:11:22:34,\"DC East Rack A4\",neteng@acme-corp.com,+1-408-555-1001\ndist-sw-01.dc-west.acme.net,10.0.1.1,aa:bb:cc:22:33:44,\"DC West Rack B1\",neteng-west@acme-corp.com,+1-650-555-2002\nacc-sw-01.office-sf.acme.net,10.10.100.1,aa:bb:cc:33:44:55,\"SF Office Floor 3\",it-support@acme-corp.com,+1-415-555-3003",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.1", "10.0.0.2", "neteng@acme-corp.com", "+1-408-555-1001"],
+        "user_must_see": ["10.0.0.1", "10.0.0.2", "neteng@acme-corp.com", "+1-408-555-1001"],
+        "entity_count_min": 8,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "XML/HTML with PII in attributes and content",
+      "input": "<server-config>\n  <host name=\"db-primary.internal.acme.net\" ip=\"10.100.20.10\" port=\"5432\">\n    <admin email=\"dba-team@acme-corp.com\" />\n    <replication partner=\"10.100.20.11\" />\n  </host>\n  <host name=\"cache-01.internal.acme.net\" ip=\"10.100.30.10\" port=\"6379\">\n    <admin email=\"devops@acme-corp.com\" />\n    <auth password=\"r3d1s-cl8st3r-p@ss\" />\n  </host>\n</server-config>",
+      "assertions": {
+        "llm_must_not_see": ["10.100.20.10", "10.100.20.11", "10.100.30.10", "dba-team@acme-corp.com", "r3d1s-cl8st3r-p@ss"],
+        "user_must_see": ["10.100.20.10", "10.100.20.11", "10.100.30.10", "dba-team@acme-corp.com"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Terraform/HCL-style config with PII",
+      "input": "resource \"aws_instance\" \"web\" {\n  ami           = \"ami-0c55b159cbfafe1f0\"\n  instance_type = \"t3.medium\"\n  private_ip    = \"10.100.10.50\"\n  subnet_id     = \"subnet-0bb1c79de3EXAMPLE\"\n\n  tags = {\n    Name    = \"web-01.prod.acme.net\"\n    Contact = \"devops@acme-corp.com\"\n  }\n}\n\nresource \"aws_db_instance\" \"primary\" {\n  engine         = \"postgres\"\n  instance_class = \"db.r6g.xlarge\"\n  username       = \"dbadmin\"\n  password       = \"Pr0d-DB-P@ssw0rd-2024!\"\n  address        = \"10.100.20.10\"\n}",
+      "assertions": {
+        "llm_must_not_see": ["10.100.10.50", "10.100.20.10", "devops@acme-corp.com", "Pr0d-DB-P@ssw0rd-2024!"],
+        "user_must_see": ["10.100.10.50", "10.100.20.10", "devops@acme-corp.com"],
+        "entity_count_min": 3,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

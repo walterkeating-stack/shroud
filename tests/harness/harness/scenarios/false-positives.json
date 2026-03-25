@@ -1,0 +1,148 @@
+[
+  {
+    "name": "Subnet masks should NOT be obfuscated",
+    "input": "Configure the interface with subnet mask 255.255.255.0 and gateway 10.42.88.1.",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.1"],
+      "user_must_see": ["255.255.255.0", "10.42.88.1"],
+      "entity_count_min": 1,
+      "entity_count_max": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "RFC 5737 test-net IPs ARE obfuscated (they appear in real configs)",
+    "input": "For testing purposes, use the documentation range 192.0.2.0/24 (TEST-NET-1). Example: 192.0.2.1 is a safe test address. Also 198.51.100.1 (TEST-NET-2) and 203.0.113.1 (TEST-NET-3).",
+    "assertions": {
+      "llm_must_not_see": ["192.0.2.1", "198.51.100.1", "203.0.113.1"],
+      "user_must_see": ["192.0.2.1", "198.51.100.1", "203.0.113.1"],
+      "entity_count_min": 3,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "example.com emails should NOT be obfuscated",
+    "input": "Send test emails to user@example.com and admin@example.org as specified in RFC 2606.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Localhost and ::1 should NOT be obfuscated",
+    "input": "The service binds to 127.0.0.1:8080 and [::1]:8080 for local development.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Common words that look like hostnames",
+    "input": "The system.config file was updated. Check the error.log for details. The build.gradle needs the new plugin.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Pure prose with no PII",
+    "input": "The quick brown fox jumps over the lazy dog. This sentence contains no personally identifiable information whatsoever.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "MAC addresses in ARP table should not be treated as PII",
+    "input": "ARP entry: 10.42.88.1 -> aa:bb:cc:dd:ee:ff at GigabitEthernet0/1",
+    "assertions": {
+      "llm_must_not_see": ["10.42.88.1"],
+      "user_must_see": ["10.42.88.1"],
+      "entity_count_min": 1,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Timestamps that look like IPs should NOT match",
+    "input": "The incident occurred at 2024.03.24 and was resolved by 2024.03.25. The system was deployed on 2023.12.01.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Version numbers should NOT match as IPs",
+    "input": "Upgrade from v17.09.04a to v17.12.01b. The firmware is version 3.14.159 and build 2.0.1-rc3.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Build numbers should NOT match as phone or PII",
+    "input": "Jenkins build 20240324 completed. Pipeline run 20240325-001 succeeded. Artifact ID: 20240101.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "VLAN IDs in prose should NOT match as phone numbers",
+    "input": "Move the server from VLAN 100 to VLAN 200. The management VLAN is 999 and the voice VLAN is 150.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Hex color codes should NOT match",
+    "input": "The primary brand color is #FF5733 and secondary is #3498DB. Use #FFFFFF for backgrounds and #000000 for text.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "UUIDs should NOT match as credit cards or PII",
+    "input": "Transaction ID: 550e8400-e29b-41d4-a716-446655440000. Session: 6ba7b810-9dad-11d1-80b4-00c04fd430c8. Request: f47ac10b-58cc-4372-a567-0e02b2c3d479.",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IPv4-like patterns in filenames SHOULD match the IP",
+    "input": "Download the backup from log-10.0.0.1-backup.tar.gz and compare with log-10.0.0.2-debug.tar.gz.",
+    "assertions": {
+      "llm_must_not_see": ["10.0.0.1", "10.0.0.2"],
+      "user_must_see": ["10.0.0.1", "10.0.0.2"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "MAC addresses in ARP output should match as MAC only",
+    "input": "show arp\nProtocol  Address          Age (min)  Hardware Addr   Type   Interface\nInternet  10.1.0.1                2   aa:bb:cc:dd:ee:ff  ARPA   Gi0/1\nInternet  10.1.0.2                5   00:1a:2b:3c:4d:5e  ARPA   Gi0/2\nInternet  10.1.0.3                1   ff:ee:dd:cc:bb:aa  ARPA   Gi0/3",
+    "assertions": {
+      "llm_must_not_see": ["10.1.0.1", "10.1.0.2", "10.1.0.3"],
+      "user_must_see": ["10.1.0.1", "10.1.0.2", "10.1.0.3"],
+      "entity_count_min": 3,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

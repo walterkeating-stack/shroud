@@ -1,0 +1,56 @@
+{
+  "name": "CGNAT Collision Regression",
+  "tests": [
+    {
+      "name": "Two IPs with same host bits in different /30 subnets",
+      "input": "Point-to-point links:\ninterface Gi0/0\n ip address 10.10.5.1 255.255.255.252\ninterface Gi0/1\n ip address 154.54.7.89 255.255.255.252\ninterface Gi0/2\n ip address 192.168.1.1 255.255.255.252",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.1", "154.54.7.89", "192.168.1.1"],
+        "user_must_see": ["10.10.5.1", "154.54.7.89", "192.168.1.1"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "IPs sharing host bits across /24 and /30 boundaries",
+      "input": "Network inventory:\n10.1.1.5/24 — management VLAN\n172.16.0.5/30 — P2P backbone link\n192.168.100.5/24 — server VLAN\n10.255.0.5/32 — loopback",
+      "assertions": {
+        "llm_must_not_see": ["10.1.1.5", "172.16.0.5", "192.168.100.5", "10.255.0.5"],
+        "user_must_see": ["10.1.1.5", "172.16.0.5", "192.168.100.5", "10.255.0.5"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Many subnets — CGNAT allocation overlap stress test",
+      "input": "Full network map:\n10.0.0.1/24 — core backbone\n10.0.1.1/24 — distribution layer\n10.0.2.1/24 — access layer A\n10.0.3.1/24 — access layer B\n10.10.0.1/24 — management\n10.10.1.1/24 — monitoring\n10.20.0.1/24 — voice VLAN\n10.20.1.1/24 — video VLAN\n10.30.0.1/24 — guest wifi\n10.30.1.1/24 — corporate wifi\n172.16.0.1/30 — ISP1 P2P\n172.16.0.5/30 — ISP2 P2P\n172.16.0.9/30 — IX peer 1\n172.16.0.13/30 — IX peer 2\n172.16.0.17/30 — IX peer 3\n192.168.1.1/24 — branch office 1\n192.168.2.1/24 — branch office 2\n192.168.3.1/24 — branch office 3\n192.168.4.1/24 — branch office 4\n192.168.5.1/24 — branch office 5\n10.100.0.1/24 — DC fabric leaf 1\n10.100.1.1/24 — DC fabric leaf 2\n10.100.2.1/24 — DC fabric leaf 3\n10.100.3.1/24 — DC fabric spine 1",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.1", "10.0.1.1", "10.0.2.1", "10.10.0.1", "172.16.0.1", "172.16.0.5", "192.168.1.1", "192.168.2.1", "10.100.0.1", "10.100.1.1"],
+        "user_must_see": ["10.0.0.1", "10.0.1.1", "10.0.2.1", "10.10.0.1", "172.16.0.1", "172.16.0.5", "192.168.1.1", "192.168.2.1", "10.100.0.1", "10.100.1.1"],
+        "no_cgnat_leak": true,
+        "no_cgnat_range_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Identical last octets across diverse subnets",
+      "input": "Devices with .254 gateway addresses:\n10.1.0.254 — VLAN 10 gateway\n10.2.0.254 — VLAN 20 gateway\n10.3.0.254 — VLAN 30 gateway\n172.16.1.254 — WAN segment A\n172.16.2.254 — WAN segment B\n192.168.10.254 — branch A\n192.168.20.254 — branch B",
+      "assertions": {
+        "llm_must_not_see": ["10.1.0.254", "10.2.0.254", "10.3.0.254", "172.16.1.254", "172.16.2.254", "192.168.10.254", "192.168.20.254"],
+        "user_must_see": ["10.1.0.254", "10.2.0.254", "10.3.0.254", "172.16.1.254", "172.16.2.254", "192.168.10.254", "192.168.20.254"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Mixed RFC1918 and public IPs — collision boundary test",
+      "input": "BGP peering and internal routing:\nneighbor 154.54.7.89 remote-as 65100\nneighbor 38.142.11.201 remote-as 65200\nneighbor 206.108.35.17 remote-as 65300\nip route 10.10.5.0 255.255.255.0 10.10.4.1\nip route 172.16.100.0 255.255.255.0 172.16.99.1\nip route 192.168.50.0 255.255.255.0 192.168.49.1",
+      "assertions": {
+        "llm_must_not_see": ["154.54.7.89", "38.142.11.201", "206.108.35.17", "10.10.5.0", "10.10.4.1", "172.16.100.0", "172.16.99.1"],
+        "user_must_see": ["154.54.7.89", "38.142.11.201", "206.108.35.17", "10.10.5.0", "10.10.4.1", "172.16.100.0", "172.16.99.1"],
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

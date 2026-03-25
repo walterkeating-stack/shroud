@@ -1,0 +1,110 @@
+[
+  {
+    "name": "IBAN: German",
+    "input": "Wire to IBAN: DE89370400440532013000",
+    "assertions": {
+      "llm_must_not_see": ["DE89370400440532013000"],
+      "user_must_see": ["DE89370400440532013000"],
+      "entity_count_min": 1,
+      "categories": ["iban"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IBAN: Austrian",
+    "input": "IBAN: AT611904300234573201",
+    "assertions": {
+      "llm_must_not_see": ["AT611904300234573201"],
+      "user_must_see": ["AT611904300234573201"],
+      "entity_count_min": 1,
+      "categories": ["iban"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IBAN: with spaces",
+    "input": "Pay to DE89 3704 0044 0532 0130 00",
+    "assertions": {
+      "llm_must_not_see": ["DE89 3704"],
+      "entity_count_min": 1,
+      "categories": ["iban"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GPS coordinate pair (Vienna)",
+    "input": "Office location: 48.2082, 16.3738",
+    "assertions": {
+      "llm_must_not_see": ["48.2082"],
+      "user_must_see": ["48.2082"],
+      "entity_count_min": 1,
+      "categories": ["gps_coordinate"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GPS coordinate: negative (Sydney)",
+    "input": "Site coordinates: -33.8688, 151.2093",
+    "assertions": {
+      "llm_must_not_see": ["-33.8688"],
+      "user_must_see": ["-33.8688"],
+      "entity_count_min": 1,
+      "categories": ["gps_coordinate"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "EU VAT: Austrian",
+    "input": "VAT number: ATU12345678",
+    "assertions": {
+      "llm_must_not_see": ["ATU12345678"],
+      "user_must_see": ["ATU12345678"],
+      "entity_count_min": 1,
+      "categories": ["national_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "EU VAT: German",
+    "input": "USt-IdNr: DE123456789",
+    "assertions": {
+      "llm_must_not_see": ["DE123456789"],
+      "user_must_see": ["DE123456789"],
+      "entity_count_min": 1,
+      "categories": ["national_id"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Circuit ID in description",
+    "input": "CID: VIE-ABC-12345/001",
+    "assertions": {
+      "llm_must_not_see": ["VIE-ABC-12345/001"],
+      "user_must_see": ["VIE-ABC-12345/001"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Org name in LINK TO description",
+    "input": "LINK TO Acme Corporation",
+    "assertions": {
+      "llm_must_not_see": ["Acme Corporation"],
+      "user_must_see": ["Acme Corporation"],
+      "entity_count_min": 1,
+      "categories": ["org_name"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Org name in CONNECTION FROM description",
+    "input": "CONNECTION FROM BigTel ISP",
+    "assertions": {
+      "llm_must_not_see": ["BigTel ISP"],
+      "user_must_see": ["BigTel ISP"],
+      "entity_count_min": 1,
+      "categories": ["org_name"],
+      "roundtrip": true
+    }
+  }
+]

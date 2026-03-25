@@ -19,10 +19,10 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run test:unit && npm run test:integration",
+    "test": "npm run test:unit && npm run test:integration; npm run test:openclaw",
     "test:unit": "vitest run",
-    "test:integration": "node ../test-harness/run.mjs --shroud-path .",
-    "test:openclaw": "node ../test-harness/run.mjs --openclaw --shroud-path .",
+    "test:integration": "node tests/harness/run.mjs",
+    "test:openclaw": "node tests/harness/run.mjs --openclaw",
     "test:all": "npm run test:unit && npm run test:integration && npm run test:openclaw",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",

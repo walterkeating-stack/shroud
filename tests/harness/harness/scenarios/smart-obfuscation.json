@@ -1,0 +1,106 @@
+[
+  {
+    "name": "Hostname role preservation — CORE RTR",
+    "input": "hostname CHI-CORE-RTR-01\ninterface GigabitEthernet0/0/0\n ip address 10.0.0.1 255.255.255.252\n description UPLINK TO NYC-CORE-RTR-02",
+    "assertions": {
+      "llm_must_not_see": ["CHI-CORE-RTR-01", "NYC-CORE-RTR-02", "10.0.0.1"],
+      "user_must_see": ["CHI-CORE-RTR-01", "NYC-CORE-RTR-02", "10.0.0.1"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Hostname role preservation — DIST SW",
+    "input": "hostname NYC-DIST-SW-02\ninterface Vlan100\n ip address 192.168.1.1 255.255.255.0",
+    "assertions": {
+      "llm_must_not_see": ["NYC-DIST-SW-02", "192.168.1.1"],
+      "user_must_see": ["NYC-DIST-SW-02", "192.168.1.1"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Domain consistency — email and hostname share domain",
+    "input": "hostname web-01.prod.acme-corp.net\n! Admin contact: admin@acme-corp.com\n! Portal: https://portal.acme-corp.com/status",
+    "assertions": {
+      "llm_must_not_see": ["acme-corp", "web-01.prod.acme-corp.net", "admin@acme-corp.com"],
+      "user_must_see": ["web-01.prod.acme-corp.net", "admin@acme-corp.com"],
+      "entity_count_min": 2,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Credential format — Cisco type-7 hex",
+    "input": "radius-server host 10.10.5.50 key 7 08354942071C11\ntacacs-server key 7 0835495D1D1C13",
+    "assertions": {
+      "llm_must_not_see": ["08354942071C11", "0835495D1D1C13", "10.10.5.50"],
+      "user_must_see": ["08354942071C11", "0835495D1D1C13", "10.10.5.50"],
+      "entity_count_min": 2,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Credential format — Cisco type-5 hash",
+    "input": "enable secret 5 $1$mERr$hx5rVt7rPNoS4wqbXKX7m0\nusername admin secret 5 $1$ab12$xYz789AbCdEfGhIjKlMn01",
+    "assertions": {
+      "llm_must_not_see": ["$1$mERr$hx5rVt7rPNoS4wqbXKX7m0", "$1$ab12$xYz789AbCdEfGhIjKlMn01"],
+      "user_must_see": ["$1$mERr$hx5rVt7rPNoS4wqbXKX7m0", "$1$ab12$xYz789AbCdEfGhIjKlMn01"],
+      "entity_count_min": 2,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Description topology keywords survive",
+    "input": "interface GigabitEthernet0/0/1\n description UPLINK TO CHI-CORE-RTR-01 VIA WAN\ninterface GigabitEthernet0/0/2\n description TRANSIT LINK TO NYC-EDGE-FW-03",
+    "assertions": {
+      "llm_must_not_see": ["CHI-CORE-RTR-01", "NYC-EDGE-FW-03"],
+      "user_must_see": ["CHI-CORE-RTR-01", "NYC-EDGE-FW-03"],
+      "entity_count_min": 2,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Route-map semantic preservation",
+    "input": "route-map RM-TRANSIT-COGENT-IN permit 10\n match ip address prefix-list PL-TRANSIT-COGENT\n set local-preference 100\nroute-map RM-PEER-NETFLIX-OUT permit 10\n set community 65001:100",
+    "assertions": {
+      "llm_must_not_see": ["RM-TRANSIT-COGENT-IN", "PL-TRANSIT-COGENT", "RM-PEER-NETFLIX-OUT"],
+      "user_must_see": ["RM-TRANSIT-COGENT-IN", "PL-TRANSIT-COGENT", "RM-PEER-NETFLIX-OUT"],
+      "entity_count_min": 3,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Site code is 3 letters",
+    "input": "hostname LAX-CORE-RTR-01\n!\nhostname FRA-EDGE-FW-02",
+    "assertions": {
+      "llm_must_not_see": ["LAX-CORE-RTR-01", "FRA-EDGE-FW-02"],
+      "user_must_see": ["LAX-CORE-RTR-01", "FRA-EDGE-FW-02"],
+      "entity_count_min": 2,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "DNS hierarchy preservation",
+    "input": "hostname core-rtr-01.prod.megacorp.net\nlogging host log-srv-01.prod.megacorp.net",
+    "assertions": {
+      "llm_must_not_see": ["core-rtr-01.prod.megacorp.net"],
+      "user_must_see": ["core-rtr-01.prod.megacorp.net"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "BGP ASN private range preservation",
+    "input": "router bgp 65001\n neighbor 10.0.0.1 remote-as 65002\n neighbor 10.0.0.5 remote-as 65003",
+    "assertions": {
+      "llm_must_not_see": ["10.0.0.1", "10.0.0.5"],
+      "user_must_see": ["10.0.0.1", "10.0.0.5"],
+      "entity_count_min": 3,
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

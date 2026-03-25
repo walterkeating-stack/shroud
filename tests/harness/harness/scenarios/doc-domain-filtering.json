@@ -1,0 +1,70 @@
+[
+  {
+    "name": "example.com email NOT obfuscated (RFC 2606)",
+    "input": "Contact user@example.com for docs",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "example.org email NOT obfuscated",
+    "input": "See test@example.org",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "example.net email NOT obfuscated",
+    "input": "admin@example.net is a placeholder",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Real domain email IS obfuscated",
+    "input": "admin@bigcorp.com is the real contact",
+    "assertions": {
+      "llm_must_not_see": ["admin@bigcorp.com"],
+      "user_must_see": ["admin@bigcorp.com"],
+      "entity_count_min": 1,
+      "categories": ["email"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IPv6 doc prefix 2001:db8:: filtered",
+    "input": "Example address: 2001:db8::1",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "IPv6 loopback ::1 filtered",
+    "input": "Loopback: ::1",
+    "assertions": {
+      "entity_count_min": 0,
+      "entity_count_max": 0,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Mix: doc email skipped, real IP obfuscated",
+    "input": "See example@example.com, server at 10.0.0.1",
+    "assertions": {
+      "llm_must_not_see": ["10.0.0.1"],
+      "user_must_see": ["10.0.0.1"],
+      "entity_count_min": 1,
+      "categories": ["ip_address"],
+      "no_cgnat_leak": true,
+      "roundtrip": true
+    }
+  }
+]

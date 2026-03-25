@@ -1,0 +1,59 @@
+{
+  "name": "NCG Carrier / Service Provider Configs",
+  "tests": [
+    {
+      "name": "PE-CE configs with customer circuit descriptions and contacts",
+      "input": "Show all customer-facing PE-CE interfaces on NYC-PE-01 with circuit details.\n\n--- NYC-PE-01 ---\nhostname NYC-PE-01\n!\ninterface GigabitEthernet0/0/1.100\n description CID:ACME-NYC-001 ORD:SO-2024-44891 CUST:Acme_Corp CONTACT:john.wallace@acme-corp.com +1-212-555-0147 BW:100M\n encapsulation dot1Q 100\n ip vrf forwarding VRF-ACME\n ip address 10.100.0.1 255.255.255.252\n service-policy input PM-CUST-100M\n service-policy output PM-CUST-100M\n!\ninterface GigabitEthernet0/0/1.200\n description CID:GLOB-NYC-042 ORD:SO-2024-51023 CUST:Globex_International CONTACT:maria.chen@globex.net +1-212-555-0293 BW:1G\n encapsulation dot1Q 200\n ip vrf forwarding VRF-GLOBEX\n ip address 10.100.1.1 255.255.255.252\n service-policy input PM-CUST-1G\n service-policy output PM-CUST-1G\n!\ninterface GigabitEthernet0/0/2.300\n description CID:INIT-NYC-007 ORD:SO-2023-82104 CUST:Initech_LLC CONTACT:bob.porter@initech.com +1-212-555-0381 BW:500M\n encapsulation dot1Q 300\n ip vrf forwarding VRF-INITECH\n ip address 10.100.2.1 255.255.255.252\n service-policy input PM-CUST-500M\n service-policy output PM-CUST-500M\n!\ninterface GigabitEthernet0/0/2.400\n description CID:UMBR-NYC-019 ORD:SO-2024-93012 CUST:Umbrella_Industries CONTACT:alice.wong@umbrella-ind.com +1-212-555-0512 BW:200M\n encapsulation dot1Q 400\n ip vrf forwarding VRF-UMBRELLA\n ip address 10.100.3.1 255.255.255.252\n service-policy input PM-CUST-200M\n service-policy output PM-CUST-200M",
+      "assertions": {
+        "llm_must_not_see": ["john.wallace@acme-corp.com", "maria.chen@globex.net", "bob.porter@initech.com", "alice.wong@umbrella-ind.com", "10.100.0.1", "10.100.1.1", "10.100.2.1", "10.100.3.1"],
+        "user_must_see": ["john.wallace@acme-corp.com", "maria.chen@globex.net", "bob.porter@initech.com", "alice.wong@umbrella-ind.com", "10.100.0.1", "10.100.1.1", "10.100.2.1", "10.100.3.1"],
+        "entity_count_min": 8,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Route-maps and prefix-lists with customer names",
+      "input": "Show all customer route-maps and prefix-lists on NYC-PE-01.\n\n--- NYC-PE-01 ---\nhostname NYC-PE-01\n!\nip prefix-list PL-CUST-ACME-IN seq 10 permit 172.20.0.0/16 le 24\nip prefix-list PL-CUST-ACME-IN seq 20 permit 172.21.0.0/16 le 24\nip prefix-list PL-CUST-ACME-IN seq 30 permit 192.168.50.0/24\n!\nip prefix-list PL-CUST-GLOBEX-IN seq 10 permit 10.50.0.0/16 le 24\nip prefix-list PL-CUST-GLOBEX-IN seq 20 permit 10.51.0.0/16 le 24\n!\nip prefix-list PL-CUST-INITECH-IN seq 10 permit 172.30.0.0/16 le 24\n!\nroute-map RM-CUST-ACME-IN permit 10\n match ip address prefix-list PL-CUST-ACME-IN\n set local-preference 200\n set community 65000:100 additive\nroute-map RM-CUST-ACME-IN deny 20\n!\nroute-map RM-CUST-ACME-OUT permit 10\n match community COMM-CUST-ACME\n!\nroute-map RM-CUST-GLOBEX-IN permit 10\n match ip address prefix-list PL-CUST-GLOBEX-IN\n set local-preference 200\n set community 65000:200 additive\nroute-map RM-CUST-GLOBEX-IN deny 20\n!\nroute-map RM-CUST-INITECH-IN permit 10\n match ip address prefix-list PL-CUST-INITECH-IN\n set local-preference 150\n set community 65000:300 additive\nroute-map RM-CUST-INITECH-IN deny 20\n!\nip community-list standard COMM-CUST-ACME permit 65000:100\nip community-list standard COMM-CUST-GLOBEX permit 65000:200\nip community-list standard COMM-CUST-INITECH permit 65000:300",
+      "assertions": {
+        "llm_must_not_see": ["RM-CUST-ACME-IN", "RM-CUST-GLOBEX-IN", "RM-CUST-INITECH-IN", "PL-CUST-ACME-IN", "PL-CUST-GLOBEX-IN", "PL-CUST-INITECH-IN"],
+        "user_must_see": ["RM-CUST-ACME-IN", "RM-CUST-GLOBEX-IN", "RM-CUST-INITECH-IN", "PL-CUST-ACME-IN", "PL-CUST-GLOBEX-IN", "PL-CUST-INITECH-IN"],
+        "entity_count_min": 4,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "BGP communities with customer identifiers and peering IPs",
+      "input": "Show BGP community assignments and PE-CE peering for all customers on CHI-PE-01.\n\n--- CHI-PE-01 ---\nhostname CHI-PE-01\n!\nrouter bgp 65000\n bgp router-id 10.255.1.20\n !\n address-family ipv4 vrf VRF-ACME\n  neighbor 10.100.10.2 remote-as 65100\n  neighbor 10.100.10.2 description CE_ACME-CHI-RTR-01\n  neighbor 10.100.10.2 password 0 AcmeCh1BGP!\n  neighbor 10.100.10.2 activate\n  neighbor 10.100.10.2 route-map RM-ACME-CE-IN in\n  neighbor 10.100.10.2 route-map RM-ACME-CE-OUT out\n !\n address-family ipv4 vrf VRF-GLOBEX\n  neighbor 10.100.11.2 remote-as 65200\n  neighbor 10.100.11.2 description CE_GLOBEX-CHI-RTR-01\n  neighbor 10.100.11.2 password 0 Gl0b3xCh1BGP!\n  neighbor 10.100.11.2 activate\n  neighbor 10.100.11.2 route-map RM-GLOBEX-CE-IN in\n  neighbor 10.100.11.2 route-map RM-GLOBEX-CE-OUT out\n !\n address-family ipv4 vrf VRF-WAYNE-ENT\n  neighbor 10.100.12.2 remote-as 65400\n  neighbor 10.100.12.2 description CE_WAYNE-CHI-RTR-01\n  neighbor 10.100.12.2 password 0 W@yn3Ch1BGP!\n  neighbor 10.100.12.2 activate\n  neighbor 10.100.12.2 route-map RM-WAYNE-CE-IN in\n  neighbor 10.100.12.2 route-map RM-WAYNE-CE-OUT out\n!\nip community-list standard COMM-ACME permit 65000:100\nip community-list standard COMM-ACME permit 65000:101\nip community-list standard COMM-GLOBEX permit 65000:200\nip community-list standard COMM-WAYNE permit 65000:400\nip community-list standard COMM-WAYNE permit 65000:401",
+      "assertions": {
+        "llm_must_not_see": ["10.255.1.20", "10.100.10.2", "10.100.11.2", "10.100.12.2", "AcmeCh1BGP!", "Gl0b3xCh1BGP!", "W@yn3Ch1BGP!"],
+        "user_must_see": ["10.255.1.20", "10.100.10.2", "10.100.11.2", "10.100.12.2", "AcmeCh1BGP!", "Gl0b3xCh1BGP!", "W@yn3Ch1BGP!"],
+        "entity_count_min": 7,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "QoS policy maps with customer-specific shaping",
+      "input": "Show QoS configs applied to customer interfaces on NYC-PE-01.\n\n--- NYC-PE-01 ---\nhostname NYC-PE-01\n!\nclass-map match-any CM-CUST-VOICE\n match dscp ef\n match dscp cs5\nclass-map match-any CM-CUST-VIDEO\n match dscp af41\n match dscp cs4\nclass-map match-any CM-CUST-CRITICAL\n match dscp af31\n match dscp cs3\n!\npolicy-map PM-CUST-100M\n class CM-CUST-VOICE\n  priority 10000\n class CM-CUST-VIDEO\n  bandwidth 20000\n class CM-CUST-CRITICAL\n  bandwidth 30000\n class class-default\n  fair-queue\n!\npolicy-map PM-CUST-ACME-SHAPE\n class class-default\n  shape average 100000000\n  service-policy PM-CUST-100M\n!\ninterface GigabitEthernet0/0/1.100\n description CID:ACME-NYC-001 CUST:Acme_Corp\n ip vrf forwarding VRF-ACME\n ip address 10.100.0.1 255.255.255.252\n service-policy output PM-CUST-ACME-SHAPE\n!\npolicy-map PM-CUST-1G\n class CM-CUST-VOICE\n  priority 100000\n class CM-CUST-VIDEO\n  bandwidth 200000\n class CM-CUST-CRITICAL\n  bandwidth 300000\n class class-default\n  fair-queue\n!\npolicy-map PM-CUST-GLOBEX-SHAPE\n class class-default\n  shape average 1000000000\n  service-policy PM-CUST-1G\n!\ninterface GigabitEthernet0/0/1.200\n description CID:GLOB-NYC-042 CUST:Globex_International\n ip vrf forwarding VRF-GLOBEX\n ip address 10.100.1.1 255.255.255.252\n service-policy output PM-CUST-GLOBEX-SHAPE",
+      "assertions": {
+        "llm_must_not_see": ["10.100.0.1", "10.100.1.1"],
+        "user_must_see": ["10.100.0.1", "10.100.1.1"],
+        "entity_count_min": 2,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Inter-POP WAN links with circuit IDs and provider contacts",
+      "input": "Show all inter-POP WAN links on CORE-P-NYC-01 with circuit and provider details.\n\n--- CORE-P-NYC-01 ---\nhostname CORE-P-NYC-01\n!\ninterface HundredGigE0/0/0\n description WAN_TO_CHI_CID:LUMEN-DWDM-44891_100G CONTACT:circuits@lumen.com +1-800-555-0100\n ip address 10.0.80.1 255.255.255.252\n ip ospf 100 area 0\n mpls ip\n mpls traffic-eng tunnels\n ip rsvp bandwidth 100000000\n load-interval 30\n!\ninterface HundredGigE0/0/1\n description WAN_TO_LAX_CID:ZAYO-WAVE-77201_100G CONTACT:noc@zayo.com +1-866-555-0200\n ip address 10.0.81.1 255.255.255.252\n ip ospf 100 area 0\n mpls ip\n mpls traffic-eng tunnels\n ip rsvp bandwidth 100000000\n load-interval 30\n!\ninterface TenGigE0/1/0\n description WAN_TO_FRA_CID:GTT-SUBSEA-10042_10G CONTACT:gtt-noc@gtt.net +44-20-555-0300\n ip address 10.0.82.1 255.255.255.252\n ip ospf 100 area 0\n mpls ip\n load-interval 30\n!\ninterface TenGigE0/1/1\n description WAN_TO_AMS_CID:EUNETWORKS-DK-20491_10G CONTACT:operations@eunetworks.com +31-20-555-0400\n ip address 10.0.83.1 255.255.255.252\n ip ospf 100 area 0\n mpls ip\n load-interval 30",
+      "assertions": {
+        "llm_must_not_see": ["10.0.80.1", "10.0.81.1", "10.0.82.1", "10.0.83.1", "circuits@lumen.com", "noc@zayo.com", "gtt-noc@gtt.net", "operations@eunetworks.com"],
+        "user_must_see": ["10.0.80.1", "10.0.81.1", "10.0.82.1", "10.0.83.1", "circuits@lumen.com", "noc@zayo.com", "gtt-noc@gtt.net", "operations@eunetworks.com"],
+        "entity_count_min": 8,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

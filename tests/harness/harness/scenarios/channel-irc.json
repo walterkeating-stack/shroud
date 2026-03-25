@@ -1,0 +1,35 @@
+{
+  "name": "IRC Channel Tests",
+  "tests": [
+    {
+      "name": "IP in IRC message",
+      "channel": "irc",
+      "input": "!check 10.42.0.1 — is this the gateway for VLAN 42?",
+      "assertions": {
+        "llm_must_not_see": ["10.42.0.1"],
+        "user_must_see": ["10.42.0.1"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Hostname in IRC",
+      "channel": "irc",
+      "input": "IRC-BOT-SRV-01 is down, reconnecting from 10.0.0.99",
+      "assertions": {
+        "llm_must_not_see": ["IRC-BOT-SRV-01", "10.0.0.99"],
+        "user_must_see": ["IRC-BOT-SRV-01", "10.0.0.99"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "Email in IRC PRIVMSG",
+      "channel": "irc",
+      "input": "msg sysadmin@legacy-corp.net about the certificate expiry on 10.1.1.50",
+      "assertions": {
+        "llm_must_not_see": ["sysadmin@legacy-corp.net", "10.1.1.50"],
+        "user_must_see": ["sysadmin@legacy-corp.net", "10.1.1.50"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

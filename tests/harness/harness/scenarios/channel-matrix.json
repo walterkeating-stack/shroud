@@ -1,0 +1,36 @@
+{
+  "name": "Matrix Channel Tests",
+  "tests": [
+    {
+      "name": "Email in Matrix room",
+      "channel": "matrix",
+      "input": "Invite platform@internal-infra.dev to the incident room",
+      "assertions": {
+        "llm_must_not_see": ["platform@internal-infra.dev"],
+        "user_must_see": ["platform@internal-infra.dev"],
+        "no_cgnat_leak": true
+      }
+    },
+    {
+      "name": "IPv6 address in Matrix (real, not doc prefix)",
+      "channel": "matrix",
+      "input": "The DNS resolver at 2a01:4f8:c010:abcd::1 is not responding",
+      "assertions": {
+        "llm_must_not_see": ["2a01:4f8:c010:abcd::1"],
+        "user_must_see": ["2a01:4f8:c010:abcd::1"],
+        "no_cgnat_leak": true,
+        "no_ula_leak": true
+      }
+    },
+    {
+      "name": "Multi-entity Matrix post",
+      "channel": "matrix",
+      "input": "Incident: server MTX-PROD-DB-01 (10.77.1.1) unreachable. Failover to MTX-PROD-DB-02 (10.77.1.2). Page dba@ops.internal.",
+      "assertions": {
+        "llm_must_not_see": ["MTX-PROD-DB-01", "10.77.1.1", "MTX-PROD-DB-02", "10.77.1.2", "dba@ops.internal"],
+        "user_must_see": ["10.77.1.1", "10.77.1.2"],
+        "no_cgnat_leak": true
+      }
+    }
+  ]
+}

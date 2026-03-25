@@ -1,0 +1,131 @@
+[
+  {
+    "name": "Generic sk- API key",
+    "input": "Use key sk-abc123def456ghi789jkl012mno345 for auth",
+    "assertions": {
+      "llm_must_not_see": ["sk-abc123def456ghi789jkl012mno345"],
+      "user_must_see": ["sk-abc123def456ghi789jkl012mno345"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Generic api- key",
+    "input": "api-abc123def456ghi789jkl012",
+    "assertions": {
+      "llm_must_not_see": ["api-abc123def456ghi789jkl012"],
+      "user_must_see": ["api-abc123def456ghi789jkl012"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "AWS access key ID (AKIA prefix)",
+    "input": "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE",
+    "assertions": {
+      "llm_must_not_see": ["AKIAIOSFODNN7EXAMPLE"],
+      "user_must_see": ["AKIAIOSFODNN7EXAMPLE"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "AWS secret access key",
+    "input": "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    "assertions": {
+      "llm_must_not_see": ["wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"],
+      "user_must_see": ["wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GCP API key (AIza prefix)",
+    "input": "key: AIzaSyA1234567890abcdefghijklmnopqrstuv",
+    "assertions": {
+      "llm_must_not_see": ["AIzaSyA1234567890abcdefghijklmnopqrstuv"],
+      "user_must_see": ["AIzaSyA1234567890abcdefghijklmnopqrstuv"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GitHub PAT (ghp_ prefix)",
+    "input": "github_pat_FAKEABCDEFGHIJKLMNOPQRSTUV",
+    "assertions": {
+      "llm_must_not_see": ["github_pat_FAKEABCDEFGHIJKLMNOPQRSTUV"],
+      "user_must_see": ["github_pat_FAKEABCDEFGHIJKLMNOPQRSTUV"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "GitLab token (glpat- prefix)",
+    "input": "glpat-ABCDEFGHIJKLMNOPQRSTUVwx",
+    "assertions": {
+      "llm_must_not_see": ["glpat-ABCDEFGHIJKLMNOPQRSTU"],
+      "user_must_see": ["glpat-ABCDEFGHIJKLMNOPQRSTUVwx"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "HashiCorp Vault token (hvs. prefix)",
+    "input": "hvs.ABCDEFGHIJKLMNOPQRSTUVWXyz",
+    "assertions": {
+      "llm_must_not_see": ["hvs.ABCDEFGHIJKLMNOPQRSTU"],
+      "user_must_see": ["hvs.ABCDEFGHIJKLMNOPQRSTUVWXyz"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "JWT three-part token",
+    "input": "Token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+    "assertions": {
+      "llm_must_not_see": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
+      "user_must_see": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
+      "entity_count_min": 1,
+      "categories": ["jwt"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Bearer token in Authorization header",
+    "input": "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.rWNcompleteFAKE",
+    "assertions": {
+      "llm_must_not_see": ["eyJhbGciOiJIUzI1NiJ9"],
+      "entity_count_min": 1,
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Generic token- key",
+    "input": "token-abc123def456ghi789jkl012",
+    "assertions": {
+      "llm_must_not_see": ["token-abc123def456ghi789jkl012"],
+      "user_must_see": ["token-abc123def456ghi789jkl012"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  },
+  {
+    "name": "Generic secret- key",
+    "input": "secret-abc123def456ghi789jkl012",
+    "assertions": {
+      "llm_must_not_see": ["secret-abc123def456ghi789jkl012"],
+      "user_must_see": ["secret-abc123def456ghi789jkl012"],
+      "entity_count_min": 1,
+      "categories": ["api_key"],
+      "roundtrip": true
+    }
+  }
+]

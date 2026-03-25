@@ -1,0 +1,60 @@
+{
+  "name": "Palo Alto Configurations",
+  "tests": [
+    {
+      "name": "Address objects with IPs",
+      "input": "set address WEB-SERVER-01 ip-netmask 10.100.10.50/32\nset address WEB-SERVER-02 ip-netmask 10.100.10.51/32\nset address DB-CLUSTER ip-netmask 10.100.20.0/24\nset address MGMT-SUBNET ip-netmask 10.10.5.0/24\nset address PARTNER-NETWORK ip-netmask 172.30.0.0/16\nset address DNS-PRIMARY ip-netmask 10.10.5.53/32\nset address DNS-SECONDARY ip-netmask 10.10.5.54/32",
+      "assertions": {
+        "llm_must_not_see": ["10.100.10.50", "10.100.10.51", "10.100.20.0", "10.10.5.53"],
+        "user_must_see": ["10.100.10.50", "10.100.10.51", "10.100.20.0", "10.10.5.53"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Security rules",
+      "input": "set rulebase security rules ALLOW-WEB-INBOUND from UNTRUST to DMZ source any destination WEB-SERVER-01 application web-browsing action allow log-end yes\nset rulebase security rules ALLOW-WEB-INBOUND from UNTRUST to DMZ source any destination WEB-SERVER-02 application ssl action allow log-end yes\nset rulebase security rules ALLOW-DB-ACCESS from DMZ to TRUST source WEB-SERVER-01 destination DB-CLUSTER application mysql action allow log-end yes\nset rulebase security rules DENY-DMZ-TO-MGMT from DMZ to MGMT source any destination MGMT-SUBNET application any action deny log-end yes\nset rulebase security rules ALLOW-MGMT-SSH from MGMT to any source 10.10.5.0/24 destination any application ssh action allow",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.0"],
+        "user_must_see": ["10.10.5.0"],
+        "entity_count_min": 1,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "NAT rules with source and destination translation",
+      "input": "set rulebase nat rules OUTBOUND-SNAT from TRUST to UNTRUST source 10.100.0.0/16 destination any service any sat type dynamic-ip-and-port translated-address 203.0.120.40\nset rulebase nat rules INBOUND-WEB-DNAT from UNTRUST to UNTRUST source any destination 203.0.120.41 service service-http sat type static-ip translated-address 10.100.10.50\nset rulebase nat rules INBOUND-MAIL-DNAT from UNTRUST to UNTRUST source any destination 203.0.120.42 service service-smtp sat type static-ip translated-address 10.100.30.25",
+      "assertions": {
+        "llm_must_not_see": ["203.0.120.40", "203.0.120.41", "203.0.120.42", "10.100.10.50", "10.100.30.25"],
+        "user_must_see": ["203.0.120.40", "203.0.120.41", "203.0.120.42", "10.100.10.50", "10.100.30.25"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Interface config with zones",
+      "input": "set network interface ethernet ethernet1/1 layer3 ip 203.0.120.34/30\nset network interface ethernet ethernet1/1 comment \"ISP1_CenturyLink\"\nset network interface ethernet ethernet1/2 layer3 ip 10.0.1.1/30\nset network interface ethernet ethernet1/2 comment \"CORE_SWITCH_LINK\"\nset network interface ethernet ethernet1/3 layer3 ip 10.100.10.1/24\nset network interface ethernet ethernet1/3 comment \"DMZ_SEGMENT\"\nset network interface ethernet ethernet1/4 layer3 ip 10.10.5.1/24\nset network interface ethernet ethernet1/4 comment \"MGMT_SEGMENT\"",
+      "assertions": {
+        "llm_must_not_see": ["203.0.120.34", "10.0.1.1", "10.100.10.1", "10.10.5.1"],
+        "user_must_see": ["203.0.120.34", "10.0.1.1", "10.100.10.1", "10.10.5.1"],
+        "entity_count_min": 4,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    },
+    {
+      "name": "Zone config with interfaces and log forwarding",
+      "input": "set zone UNTRUST network layer3 ethernet1/1\nset zone DMZ network layer3 ethernet1/3\nset zone TRUST network layer3 ethernet1/2\nset zone MGMT network layer3 ethernet1/4\nset log-settings syslog SYSLOG-SERVERS server SYSLOG-01 server 10.10.5.20\nset log-settings syslog SYSLOG-SERVERS server SYSLOG-02 server 10.10.5.21\nset deviceconfig system dns-setting servers primary 10.10.5.53\nset deviceconfig system dns-setting servers secondary 10.10.5.54\nset deviceconfig system ntp-servers primary-ntp-server ntp-server-address 10.10.5.10",
+      "assertions": {
+        "llm_must_not_see": ["10.10.5.20", "10.10.5.21", "10.10.5.53", "10.10.5.54", "10.10.5.10"],
+        "user_must_see": ["10.10.5.20", "10.10.5.21", "10.10.5.53", "10.10.5.54", "10.10.5.10"],
+        "entity_count_min": 5,
+        "no_cgnat_leak": true,
+        "roundtrip": true
+      }
+    }
+  ]
+}

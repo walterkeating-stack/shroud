@@ -1,0 +1,36 @@
+{
+  "name": "Webhook Channel Tests",
+  "note": "no_cgnat_leak is Socket Mode-only — HTTP webhook mode skips message_sending deobfuscation",
+  "tests": [
+    {
+      "name": "Alert webhook with IP",
+      "channel": "webhook",
+      "input": "{\"alert\": \"high_cpu\", \"host\": \"10.50.0.1\", \"hostname\": \"MONITOR-SRV-01\", \"value\": 99.2}",
+      "assertions": {
+        "llm_must_not_see": ["10.50.0.1", "MONITOR-SRV-01"],
+        "user_must_see": ["10.50.0.1"],
+        "no_cgnat_leak": "socket-mode-only"
+      }
+    },
+    {
+      "name": "Webhook with email payload",
+      "channel": "webhook",
+      "input": "{\"event\": \"user.login_failed\", \"email\": \"cto@startup.io\", \"ip\": \"10.0.1.55\", \"attempts\": 5}",
+      "assertions": {
+        "llm_must_not_see": ["cto@startup.io", "10.0.1.55"],
+        "user_must_see": ["cto@startup.io", "10.0.1.55"],
+        "no_cgnat_leak": "socket-mode-only"
+      }
+    },
+    {
+      "name": "Webhook with nested config",
+      "channel": "webhook",
+      "input": "Webhook payload:\nrouter ospf 1\n network 10.0.0.0 0.0.0.255 area 0\n network 172.16.0.0 0.0.255.255 area 1\n passive-interface default",
+      "assertions": {
+        "llm_must_not_see": ["10.0.0.0"],
+        "user_must_see": ["10.0.0.0"],
+        "no_cgnat_leak": "socket-mode-only"
+      }
+    }
+  ]
+}
