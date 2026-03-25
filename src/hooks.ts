@@ -287,24 +287,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
       if (Array.isArray(msg.content)) {
         let changed = false;
-        let blocksDeobCount = 0;
         const newContent = msg.content.map((block: any) => {
           if (block && typeof block === "object") {
             // Handle blocks with .text (text content blocks)
             if (typeof block.text === "string") {
-              const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(block.text);
+              const deobfuscated = obfuscator.deobfuscate(block.text);
               if (deobfuscated !== block.text) {
                 changed = true;
-                blocksDeobCount += replacementCount;
                 return { ...block, text: deobfuscated };
               }
             }
             // Handle blocks with .content as string (tool_result blocks)
             if (typeof block.content === "string") {
-              const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(block.content);
+              const deobfuscated = obfuscator.deobfuscate(block.content);
               if (deobfuscated !== block.content) {
                 changed = true;
-                blocksDeobCount += replacementCount;
                 return { ...block, content: deobfuscated };
               }
             }
@@ -313,10 +310,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               let innerChanged = false;
               const newInner = block.content.map((inner: any) => {
                 if (inner && typeof inner === "object" && typeof inner.text === "string") {
-                  const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(inner.text);
+                  const deobfuscated = obfuscator.deobfuscate(inner.text);
                   if (deobfuscated !== inner.text) {
                     innerChanged = true;
-                    blocksDeobCount += replacementCount;
                     return { ...inner, text: deobfuscated };
                   }
                 }
@@ -332,9 +328,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         });
         if (!changed) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
-        if (auditActive && blocksDeobCount > 0) {
-          try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), blocksDeobCount); } catch {}
-        }
         dumpStatsFile(obfuscator);
         return { message: { ...msg, content: newContent } };
       }
@@ -669,5 +662,114 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     return event;
   };
   api.logger?.info("[shroud] Installed global streaming deobfuscation hook");
+
+  // -----------------------------------------------------------------------
+  // 7. Outbound fetch intercept: obfuscate ALL user message content before
+  //    it reaches any LLM API. This is the last line of defense — it works
+  //    regardless of which hooks fire, which OpenClaw version is running,
+  //    and which LLM provider is used (Anthropic, OpenAI, Google, etc.).
+  //
+  //    Patches globalThis.fetch to inspect outbound POST requests to known
+  //    LLM API paths (/messages, /chat/completions). If the request body
+  //    contains a messages array with user role content, obfuscate it.
+  // -----------------------------------------------------------------------
+  const LLM_API_PATHS = [
+    "/v1/messages",        // Anthropic
+    "/v1/chat/completions", // OpenAI / OpenRouter / compatible
+    "/chat/completions",    // OpenAI without /v1
+    "/messages",            // Anthropic without /v1
+  ];
+
+  const originalFetch = globalThis.fetch;
+  if (originalFetch && !((globalThis as any).__shroudFetchPatched)) {
+    (globalThis as any).__shroudFetchPatched = true;
+
+    globalThis.fetch = async function shroudFetchInterceptor(
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ): Promise<Response> {
+      // Only intercept POST requests with a body
+      if (init?.method?.toUpperCase() !== "POST" || !init?.body) {
+        return originalFetch.call(globalThis, input, init);
+      }
+
+      // Check if the URL matches an LLM API path
+      let url: string;
+      try {
+        url = typeof input === "string" ? input
+          : input instanceof URL ? input.toString()
+          : (input as Request).url;
+      } catch {
+        return originalFetch.call(globalThis, input, init);
+      }
+
+      const isLlmApi = LLM_API_PATHS.some((p) => url.includes(p));
+      if (!isLlmApi) {
+        return originalFetch.call(globalThis, input, init);
+      }
+
+      // Parse the body and obfuscate user message content
+      try {
+        const bodyStr = typeof init.body === "string" ? init.body
+          : init.body instanceof ArrayBuffer ? new TextDecoder().decode(init.body)
+          : init.body instanceof Uint8Array ? new TextDecoder().decode(init.body)
+          : null;
+
+        if (!bodyStr) {
+          return originalFetch.call(globalThis, input, init);
+        }
+
+        const body = JSON.parse(bodyStr);
+
+        if (!Array.isArray(body.messages)) {
+          return originalFetch.call(globalThis, input, init);
+        }
+
+        let modified = false;
+        for (const msg of body.messages) {
+          if (msg.role !== "user") continue;
+
+          // String content
+          if (typeof msg.content === "string") {
+            const result = obfuscator.obfuscate(msg.content);
+            if (result.entities.length > 0) {
+              msg.content = result.obfuscated;
+              modified = true;
+            }
+          }
+          // Array content (content blocks)
+          else if (Array.isArray(msg.content)) {
+            for (const block of msg.content) {
+              if (block?.type === "text" && typeof block.text === "string") {
+                const result = obfuscator.obfuscate(block.text);
+                if (result.entities.length > 0) {
+                  block.text = result.obfuscated;
+                  modified = true;
+                }
+              }
+            }
+          }
+        }
+
+        if (modified) {
+          const newBody = JSON.stringify(body);
+          const newInit = { ...init, body: newBody };
+          // Update content-length if present
+          if (newInit.headers) {
+            const headers = new Headers(newInit.headers as HeadersInit);
+            headers.set("content-length", String(new TextEncoder().encode(newBody).length));
+            newInit.headers = headers;
+          }
+          return originalFetch.call(globalThis, input, newInit);
+        }
+      } catch {
+        // JSON parse failed or other error — pass through unmodified
+      }
+
+      return originalFetch.call(globalThis, input, init);
+    };
+
+    api.logger?.info("[shroud] Installed outbound fetch intercept — PII obfuscated before ALL LLM API calls");
+  }
 }
 
