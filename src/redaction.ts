@@ -29,14 +29,15 @@ export class RedactionFormatter {
     level: RedactionLevel,
   ): string {
     switch (level) {
-      case "full":
-        return fake;
-
       case "masked":
         return this._mask(real, category);
 
       case "stats":
         return this._placeholder(category);
+
+      case "full":
+      default:
+        return fake;
     }
   }
 

@@ -19,9 +19,8 @@ const MASK_PREFIXES: ReadonlySet<string> = new Set([
  * These should never be obfuscated — they're teaching/testing values.
  */
 const DOC_IP_PREFIXES = [
-  "192.0.2.",     // TEST-NET-1 (RFC 5737)
-  "198.51.100.",  // TEST-NET-2 (RFC 5737)
-  "203.0.113.",   // TEST-NET-3 (RFC 5737)
+  // RFC 5737 TEST-NETs removed: these appear in real configs as stand-in
+  // addresses and must be obfuscated when users paste their infrastructure.
   "233.252.0.",   // MCAST-TEST-NET (RFC 6676)
   "100.51.16.",   // Benchmarking (RFC 5180)
 ];
@@ -155,13 +154,16 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "phone_us",
-    pattern: /\b(?:\+1[\s\-]?)?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}\b/g,
+    // Supports dash, space, and dot separators: 555-123-4567, 555.123.4567, (408) 555-9182
+    pattern: /\b(?:\+1[\s\-.]?)?\(?\d{3}\)?[\s\-.]?\d{3}[\s\-.]?\d{4}\b/g,
     category: Category.PHONE,
     confidence: 0.8,
   },
   {
     name: "phone_intl",
-    pattern: /(?<!\w)\+\d{1,3}[\s\-]?\d{4,14}\b/g,
+    // International: +CC followed by 7-14 digits in groups separated by spaces/dashes
+    // Matches: +44 20 7946 0958, +61 2 8765 4321, +33 1 42 68 53 00, +14085559182
+    pattern: /(?<!\w)\+\d{1,3}[\s\-]?\d(?:[\s\-]?\d){6,13}(?!\d)/g,
     category: Category.PHONE,
     confidence: 0.75,
   },
@@ -212,7 +214,8 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- URLs and paths ---
   {
     name: "url",
-    pattern: /https?:\/\/[^\s<>"')\]]+/g,
+    // Exclude trailing punctuation (.,:;!?) that is likely sentence-ending, not part of URL
+    pattern: /https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?]/g,
     category: Category.URL,
     confidence: 0.9,
   },
@@ -243,6 +246,13 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 1.0,
   },
   {
+    // "snmp-server host 10.10.5.30 version 2c COMMUNITY_STRING"
+    name: "snmp_host_community",
+    pattern: /(?:snmp-server\s+host\s+\S+\s+(?:version\s+\d+[a-z]?\s+)?)(\S+)$/gm,
+    category: Category.SNMP_COMMUNITY,
+    confidence: 1.0,
+  },
+  {
     name: "snmp_auth_priv",
     pattern: /(?:auth\s+\S+\s+)(\S+)(?:\s+priv\s+\S+\s+\d*\s*)(\S+)/gi,
     category: Category.NETWORK_CREDENTIAL,
@@ -251,13 +261,14 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- Cisco secrets and hashes ---
   {
     name: "cisco_enable_secret",
-    pattern: /(?:enable\s+secret\s+\d+\s+)(\S+)/g,
+    // "enable secret 5 HASH" or "enable password Cisc0123!" (with or without type number)
+    pattern: /(?:enable\s+(?:secret|password)\s+(?:\d+\s+)?)(\S+)/g,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
   },
   {
     name: "cisco_password_line",
-    // "password 7 XXXX" or "password 0 XXXX"
+    // "password 7 XXXX" or "password 0 XXXX" (with explicit type number)
     pattern: /(?:password\s+(?:[057]\s+))(\S+)/g,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
@@ -309,6 +320,27 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   {
     name: "radius_key",
     pattern: /(?:radius-server\s+(?:host\s+\S+\s+)?key\s+(?:\d+\s+)?)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    // AAA server-private key: "server-private 10.10.5.50 key 7 045E0A0B0E3A2D44"
+    name: "aaa_server_private_key",
+    pattern: /(?:server-private\s+\S+\s+key\s+(?:\d+\s+)?)(\S+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 1.0,
+  },
+  {
+    // New-style TACACS/RADIUS standalone key line: " key 0 T@c@csK3y!"
+    name: "standalone_key",
+    pattern: /(?:^\s*key\s+(?:\d+\s+)?)(\S+)/gm,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+  {
+    // Junos/PAN-OS tacplus/radius secret: "server X secret VALUE" or "tacplus-server X secret VALUE"
+    name: "junos_tacplus_secret",
+    pattern: /(?:(?:tacplus-server|radius-server|server)\s+\S+\s+secret\s+)"([^"]+)"/g,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.0,
   },
@@ -425,7 +457,8 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "prefix_list_name",
-    pattern: /(?:ip\s+prefix-list\s+)(\S+)/g,
+    // Matches both definition ("ip prefix-list PL-X") and reference ("match ip address prefix-list PL-X")
+    pattern: /(?:(?:ip\s+)?prefix-list\s+)(\S+)/g,
     category: Category.ACL_NAME,
     confidence: 0.85,
   },
@@ -813,7 +846,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- VPN / IPSec / RADIUS ---
   {
     name: "vpn_preshared_key",
-    pattern: /(?:pre-shared-key|preshared-key|crypto\s+isakmp\s+key)\s+(?:\d+\s+)?(\S+)/gi,
+    pattern: /(?:pre-shared-key|preshared-key|crypto\s+isakmp\s+key|(?:with\s+)?PSK)\s+(?:\d+\s+)?(\S+)/gi,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 1.00,
   },
@@ -908,6 +941,40 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.85,
   },
 
+  // --- Prose/instruction credential patterns ---
+  {
+    // "with password VALUE", "using password VALUE" — in natural language instructions
+    name: "prose_password",
+    pattern: /(?:(?:with|using)\s+password\s+)(\S+)/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+  {
+    // "SNMP community: VALUE" or "community string: VALUE" — in prose/reports
+    name: "prose_snmp_community",
+    pattern: /(?:(?:SNMP\s+)?community(?:\s+string)?[:=]\s*)(\S+)/gi,
+    category: Category.SNMP_COMMUNITY,
+    confidence: 0.95,
+  },
+
+  // --- Environment variable secrets ---
+  {
+    // DB_PASSWORD=value, SMTP_PASSWORD=value, etc. (shell .env format)
+    name: "env_var_secret",
+    pattern: /(?:^|[\n;])\s*\w*(?:PASSWORD|PASSWD|SECRET|_KEY|_TOKEN)\w*\s*=\s*(\S+)/gmi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+
+  // --- XML/HCL attribute passwords ---
+  {
+    // password="value", secret="value", token="value" in XML/HCL/config attributes
+    name: "attribute_password",
+    pattern: /(?:password|passwd|secret|auth)\s*=\s*"([^"]+)"/gi,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+
   // --- Base64-encoded secrets ---
   {
     name: "base64_secret_assignment",
@@ -919,6 +986,144 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     name: "base64_prefixed",
     pattern: /\bbase64:[A-Za-z0-9+/]{8,}={0,2}/g,
     category: Category.API_KEY,
+    confidence: 0.85,
+  },
+
+  // --- VXLAN / VNI ---
+  {
+    // "vni 10100", "member vni 50000", "vxlan vni 10100"
+    name: "vxlan_vni",
+    pattern: /(?:(?:member\s+)?vni\s+|vxlan\s+vni\s+)(\d+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.90,
+  },
+
+  // --- Juniper VLAN ---
+  {
+    // "set vlans SERVERVLAN vlan-id 100"
+    name: "juniper_vlan_name",
+    pattern: /(?:set\s+vlans\s+)(\S+)/g,
+    category: Category.VLAN_ID,
+    confidence: 0.90,
+  },
+  {
+    // "vlan-id 100" (Juniper style)
+    name: "juniper_vlan_id",
+    pattern: /(?:vlan-id\s+)(\d+)/g,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+  {
+    // "vlan members SERVERVLAN" (Juniper interface vlan member reference)
+    name: "juniper_vlan_members",
+    pattern: /(?:vlan\s+members\s+)(\S+)/g,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- Standalone VLAN ID ---
+  {
+    // "switchport access vlan 100", "switchport trunk native vlan 100"
+    // Only match switchport context to avoid false positives on prose like "move to VLAN 100"
+    name: "switchport_vlan_id",
+    pattern: /(?:switchport\s+(?:access|trunk\s+native)\s+vlan\s+)(\d+)\b/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+  {
+    // "vlan 100" at start of line (config context, not prose)
+    name: "vlan_config_id",
+    pattern: /(?:^|\n)\s*vlan\s+(\d+)\s*$/gm,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- L2VPN VPN ID ---
+  {
+    // "vpn id 200"
+    name: "l2vpn_vpn_id",
+    pattern: /(?:vpn\s+id\s+)(\d+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- Cisco EIGRP AS ---
+  {
+    // "router eigrp 100"
+    name: "eigrp_as",
+    pattern: /(?:router\s+eigrp\s+)(\d+)/gi,
+    category: Category.BGP_ASN,
+    confidence: 0.90,
+  },
+
+  // --- MPLS label range ---
+  {
+    // "mpls label range 100 199"
+    name: "mpls_label_range",
+    pattern: /(?:mpls\s+label\s+range\s+)(\d+\s+\d+)/gi,
+    category: Category.VLAN_ID,
+    confidence: 0.85,
+  },
+
+  // --- Cisco banner ---
+  {
+    // "banner motd ^C ... ^C" or "banner login ^C ... ^C"
+    // Captures content between delimiter characters
+    name: "cisco_banner",
+    pattern: /(?:banner\s+(?:motd|login|exec)\s+(\S))\s*([\s\S]*?)\1/gm,
+    category: Category.ORG_NAME,
+    confidence: 0.85,
+  },
+
+  // --- NTP trusted key ---
+  {
+    // "ntp trusted-key 1" — the key ID reveals NTP infra
+    name: "ntp_trusted_key",
+    pattern: /(?:ntp\s+trusted-key\s+)(\d+)/g,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.80,
+  },
+
+  // --- Cisco line password (console/aux/vty without type number) ---
+  {
+    // "password VALUE" (without a type number prefix, i.e. not "password 7 XXX")
+    // Appears under "line con 0", "line aux 0", "line vty 0 15"
+    name: "cisco_line_password",
+    pattern: /(?:^\s*password\s+)(?![057]\s)(\S+)/gm,
+    category: Category.NETWORK_CREDENTIAL,
+    confidence: 0.95,
+  },
+
+  // --- RADIUS/TACACS server name ---
+  {
+    // "tacacs server TAC-PRI", "radius server RAD-01"
+    name: "tacacs_server_name",
+    pattern: /(?:tacacs\s+server\s+)(\S+)/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.85,
+  },
+  {
+    name: "radius_server_name",
+    pattern: /(?:radius\s+server\s+)(\S+)/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.85,
+  },
+
+  // --- Juniper firewall filter name ---
+  {
+    // "set firewall family inet filter FILTER-NAME"
+    name: "juniper_firewall_filter",
+    pattern: /(?:set\s+firewall\s+family\s+\S+\s+filter\s+)(\S+)/g,
+    category: Category.ACL_NAME,
+    confidence: 0.85,
+  },
+
+  // --- Palo Alto service group ---
+  {
+    // "set service-group SG-NAME"
+    name: "panos_service_group",
+    pattern: /(?:set\s+service-group\s+)(\S+)/g,
+    category: Category.ACL_NAME,
     confidence: 0.85,
   },
 
