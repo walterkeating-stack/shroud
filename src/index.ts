@@ -114,15 +114,9 @@ export default {
     ensureEventStreamPatched(api.logger);
 
     const config = resolveConfig(api.pluginConfig);
-    let obfuscator = new Obfuscator(config);
+    const obfuscator = new Obfuscator(config);
 
     registerHooks(api, obfuscator);
-
-    // Tools must always read from the shared global obfuscator — the same
-    // instance that hooks and streaming use. Using a closure over a local
-    // variable fails because OpenClaw loads the plugin multiple times and
-    // the first load's instance becomes the shared one.
-    const getObfuscator = () => (globalThis as any).__shroudObfuscator || obfuscator;
 
     // Register shroud_status tool
     api.registerTool({
@@ -138,7 +132,7 @@ export default {
         content: [
           {
             type: "text",
-            text: JSON.stringify(getObfuscator().getStats(), null, 2),
+            text: JSON.stringify(obfuscator.getStats(), null, 2),
           },
         ],
       }),
@@ -155,7 +149,7 @@ export default {
         additionalProperties: false,
       },
       handler: async () => {
-        getObfuscator().reset();
+        obfuscator.reset();
         return {
           content: [
             {
