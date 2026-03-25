@@ -287,21 +287,24 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
       if (Array.isArray(msg.content)) {
         let changed = false;
+        let blocksDeobCount = 0;
         const newContent = msg.content.map((block: any) => {
           if (block && typeof block === "object") {
             // Handle blocks with .text (text content blocks)
             if (typeof block.text === "string") {
-              const deobfuscated = obfuscator.deobfuscate(block.text);
+              const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(block.text);
               if (deobfuscated !== block.text) {
                 changed = true;
+                blocksDeobCount += replacementCount;
                 return { ...block, text: deobfuscated };
               }
             }
             // Handle blocks with .content as string (tool_result blocks)
             if (typeof block.content === "string") {
-              const deobfuscated = obfuscator.deobfuscate(block.content);
+              const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(block.content);
               if (deobfuscated !== block.content) {
                 changed = true;
+                blocksDeobCount += replacementCount;
                 return { ...block, content: deobfuscated };
               }
             }
@@ -310,9 +313,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               let innerChanged = false;
               const newInner = block.content.map((inner: any) => {
                 if (inner && typeof inner === "object" && typeof inner.text === "string") {
-                  const deobfuscated = obfuscator.deobfuscate(inner.text);
+                  const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(inner.text);
                   if (deobfuscated !== inner.text) {
                     innerChanged = true;
+                    blocksDeobCount += replacementCount;
                     return { ...inner, text: deobfuscated };
                   }
                 }
@@ -328,6 +332,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         });
         if (!changed) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
+        if (auditActive && blocksDeobCount > 0) {
+          try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), blocksDeobCount); } catch {}
+        }
         dumpStatsFile(obfuscator);
         return { message: { ...msg, content: newContent } };
       }
