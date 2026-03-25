@@ -1,6 +1,12 @@
-# Shroud — Community Edition
+<p align="center">
+  <img src="logo.png" alt="Shroud" width="160" height="160">
+</p>
 
-Privacy obfuscation plugin for [OpenClaw](https://openclaw.ai). Detects sensitive data (PII, network infrastructure, credentials) and replaces it with deterministic fake values before anything reaches the LLM. Tool calls still work because Shroud deobfuscates on the way back.
+<h1 align="center">Shroud — Community Edition</h1>
+
+<p align="center">
+  Privacy obfuscation plugin for <a href="https://openclaw.ai">OpenClaw</a>. Detects sensitive data (PII, network infrastructure, credentials) and replaces it with deterministic fake values before anything reaches the LLM. Tool calls still work because Shroud deobfuscates on the way back.
+</p>
 
 > **Open-source Community Edition** — free to use under Apache 2.0 license. [Enterprise Edition](#enterprise-edition) available with additional features for teams.
 
