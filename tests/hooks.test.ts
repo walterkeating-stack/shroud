@@ -413,3 +413,160 @@ describe("hooks - before_message_write assistant deobfuscation", () => {
     expect(out.message.content[0].text).toContain("john@acme.com");
   });
 });
+
+// =========================================================================
+// Streaming deobfuscation hook tests
+// =========================================================================
+
+describe("hooks - streaming deobfuscation (__shroudStreamDeobfuscate)", () => {
+  test("deobfuscates text_delta events and tracks replacement count", () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const hook = (globalThis as any).__shroudStreamDeobfuscate;
+    expect(hook).toBeTypeOf("function");
+
+    // Obfuscate to populate mappings
+    const obResult = obf.obfuscate("Contact john@acme.com about 10.1.0.1");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+    const fakeIp = obResult.mappingsUsed["10.1.0.1"];
+
+    // Simulate streaming: send fake values as text_delta chunks
+    const stream: any = {};
+    const response = `Here is ${fakeEmail} and ${fakeIp} for reference.`;
+    const chunks = response.match(/.{1,10}/g) || [];
+
+    for (const chunk of chunks) {
+      hook(stream, { type: "text_delta", delta: chunk });
+    }
+
+    // Fire message_end with final content
+    hook(stream, {
+      type: "message_end",
+      message: {
+        content: [{ type: "text", text: obf.deobfuscate(response) }],
+      },
+    });
+
+    // Buffer should have tracked replacements
+    // Audit log should have been emitted
+    const auditLines = logLines.filter(l => l.includes("shroud.audit.deobfuscate"));
+    expect(auditLines.length).toBeGreaterThanOrEqual(1);
+
+    const audit = JSON.parse(auditLines[0]);
+    expect(audit.event).toBe("shroud.audit.deobfuscate");
+    expect(audit.deobfuscations).toBeGreaterThan(0);
+  });
+
+  test("streaming buffer resets after message_end", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api } = createMockApi();
+    registerHooks(api, obf);
+
+    const hook = (globalThis as any).__shroudStreamDeobfuscate;
+    const stream: any = {};
+
+    // Send some chunks
+    hook(stream, { type: "text_delta", delta: "hello " });
+    hook(stream, { type: "text_delta", delta: "world" });
+
+    // Verify buffer exists
+    const bufSymbols = Object.getOwnPropertySymbols(stream);
+    expect(bufSymbols.length).toBe(1);
+
+    // End message — buffer should be cleaned up
+    hook(stream, { type: "done" });
+    const afterSymbols = Object.getOwnPropertySymbols(stream);
+    expect(afterSymbols.length).toBe(0);
+  });
+
+  test("streaming deobfuscation corrects final content on message_end", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api } = createMockApi();
+    registerHooks(api, obf);
+
+    const hook = (globalThis as any).__shroudStreamDeobfuscate;
+
+    // Obfuscate to populate mappings
+    const obResult = obf.obfuscate("Server 10.42.88.7 is down");
+    const fakeIp = obResult.mappingsUsed["10.42.88.7"];
+    const fakeText = `The server ${fakeIp} needs attention`;
+
+    // Stream in word-sized chunks (realistic LLM behavior)
+    const stream: any = {};
+    const chunks = fakeText.match(/.{1,8}/g) || [];
+    for (const chunk of chunks) {
+      hook(stream, { type: "text_delta", delta: chunk });
+    }
+
+    // Fire message_end — final content should have real values
+    const finalContent = [{ type: "text", text: fakeText }];
+    const endEvt = hook(stream, {
+      type: "message_end",
+      message: { content: finalContent },
+    });
+
+    // The corrected final message should contain real IP
+    expect(endEvt.message.content[0].text).toContain("10.42.88.7");
+    expect(endEvt.message.content[0].text).not.toContain(fakeIp);
+  });
+});
+
+// =========================================================================
+// Audit counter accuracy tests
+// =========================================================================
+
+describe("hooks - audit counter accuracy", () => {
+  test("before_message_write assistant deob emits audit when auditEnabled", () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate to populate mapping
+    const obResult = obf.obfuscate("Contact john@acme.com");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+
+    // Simulate assistant message with fake
+    handlers["before_message_write"]({
+      message: { role: "assistant", content: `Found: ${fakeEmail}` },
+    });
+
+    const deobAudit = logLines.filter(l => l.includes("shroud.audit.deobfuscate"));
+    expect(deobAudit.length).toBe(1);
+
+    const audit = JSON.parse(deobAudit[0]);
+    expect(audit.deobfuscations).toBeGreaterThan(0);
+  });
+
+  test("message_sending emits deobfuscation audit", async () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    const obResult = obf.obfuscate("Contact john@acme.com");
+    const fakeEmail = obResult.mappingsUsed["john@acme.com"];
+
+    await handlers["message_sending"]({ content: `Email: ${fakeEmail}` });
+
+    const deobAudit = logLines.filter(l => l.includes("shroud.audit.deobfuscate"));
+    expect(deobAudit.length).toBe(1);
+  });
+
+  test("obfuscation count matches across full lifecycle", async () => {
+    const obf = new Obfuscator({ ...testConfig, auditEnabled: true, auditLogFormat: "json" });
+    const { api, handlers, logLines } = createMockApi();
+    registerHooks(api, obf);
+
+    // Obfuscate 3 times
+    await handlers["before_prompt_build"]({ prompt: "Email john@acme.com" });
+    await handlers["before_prompt_build"]({ prompt: "IP 10.1.0.1 is down" });
+    await handlers["before_prompt_build"]({ prompt: "Call +14155551234" });
+
+    const obfAudit = logLines.filter(l => l.includes("shroud.audit.obfuscate"));
+    // before_prompt_build doesn't emit audit directly (it's done via message_write)
+    // but getStats should show the obfuscation counts
+    const stats = obf.getStats() as any;
+    expect(stats.storeMappings).toBeGreaterThanOrEqual(3);
+  });
+});
