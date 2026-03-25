@@ -276,9 +276,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // --- Assistant messages: DEOBFUSCATE (fakes → real values) ---
     if (role === "assistant") {
       if (typeof msg.content === "string") {
-        const deobfuscated = obfuscator.deobfuscate(msg.content);
+        const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(msg.content);
         if (deobfuscated === msg.content) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
+        if (auditActive && replacementCount > 0) {
+          try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount); } catch {}
+        }
         dumpStatsFile(obfuscator);
         return { message: { ...msg, content: deobfuscated } };
       }
@@ -625,6 +628,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     if (isEnd) {
       // Deobfuscate content blocks in the event's message/partial
+      let streamDeobCount = 0;
       const targets = [
         event.message, event.partial,
         event.assistantMessageEvent?.partial,
@@ -634,12 +638,24 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (target?.content && Array.isArray(target.content)) {
           for (const block of target.content) {
             if (block?.type === "text" && typeof block.text === "string") {
-              const deob = obfuscator.deobfuscate(block.text);
-              if (deob !== block.text) block.text = deob;
+              const { text: deob, replacementCount } = obfuscator.deobfuscateWithStats(block.text);
+              if (deob !== block.text) {
+                block.text = deob;
+                streamDeobCount += replacementCount;
+              }
             }
           }
         }
       }
+
+      // Audit: count streaming deobfuscations
+      if (streamDeobCount > 0 && auditActive) {
+        try {
+          emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), streamDeobCount);
+        } catch { /* best-effort */ }
+        dumpStatsFile(obfuscator);
+      }
+
       delete stream[SHROUD_BUF];
     }
 
