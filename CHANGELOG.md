@@ -13,8 +13,11 @@ All notable changes to this project will be documented in this file.
 - **Comprehensive audit/logging tests** — 18 new hook lifecycle tests covering streaming deobfuscation, audit counters, format variants, proof hashes
 
 ### Fixed
-- **Deobfuscation audit counter** — streaming and `before_message_write` paths now emit audit events (was showing 1 deob for 25 obfuscations)
-- **Streaming deobCount tracking** — count accumulated during chunks, not re-counted at message_end (which always found 0)
+- **CRITICAL: PII was reaching the LLM unobfuscated** — the `before_prompt_build` hook obfuscated the prompt but OpenClaw still sent raw user message content to the API. Fixed with `globalThis.fetch` intercept that obfuscates ALL messages (user, assistant, system, tool results) before any LLM API call. Works for every provider (Anthropic, OpenAI, Google) and every OpenClaw version.
+- **Deobfuscation audit counter** — streaming and `before_message_write` paths now emit audit events
+- **Streaming deobCount tracking** — count accumulated during chunks, not re-counted at message_end
+- **`deploy-local.sh`** — removed redundant pi-embedded prompt override patch (fetch intercept handles it), added root-owned V8 cache clear for systemd gateway
+- **OpenClaw sandbox test now verifies LLM payload** — `assertLlmDidNotSee` checks mock LLM request log for real PII values. This test would have caught the privacy leak.
 
 ### Changed
 - Package description: "for OpenClaw" → "for AI agents"

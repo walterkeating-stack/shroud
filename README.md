@@ -27,7 +27,7 @@
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
 | `message_sending` | Agent → User | Deobfuscate outbound messages (all channels) |
 
-> **Streaming deobfuscation:** On first load, Shroud patches pi-ai's EventStream to deobfuscate ALL LLM responses at the stream level — every provider (Anthropic, OpenAI, Google), every channel (Slack, WhatsApp, Telegram, etc.). A single gateway restart activates the patch.
+> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates PII in every message before it leaves the process. No PII reaches the LLM regardless of which OpenClaw version or hooks are available. On the inbound side, a patched EventStream deobfuscates streaming responses in real-time across all providers and channels.
 
 ## Install
 
@@ -247,16 +247,21 @@ alias shroud-stats="node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-st
 
 The CLI reads live stats from `/tmp/shroud-stats.json` (override with `SHROUD_STATS_FILE` env var). The stats file is updated by the running gateway on every obfuscation event.
 
-### Auto-patching on first install
+### How privacy works
 
-On first load, Shroud automatically patches pi-ai's `EventStream.push()` to enable streaming deobfuscation across all LLM providers and delivery channels. The patch:
+Shroud uses two runtime patches that work independently of OpenClaw's hook system:
 
+**Outbound (PII → LLM):** Patches `globalThis.fetch` to intercept all POST requests to LLM API endpoints (`/messages`, `/chat/completions`). Obfuscates every message in the request body — user, assistant, system, tool results — before the request leaves the process. Works for every LLM provider.
+
+**Inbound (LLM → User):** Patches pi-ai's `EventStream.push()` to deobfuscate streaming responses in real-time. Fake values are replaced with real values as they stream. The `deploy-local.sh` script applies this patch on first install.
+
+The EventStream patch:
 1. Backs up the original file (`.shroud-backup`)
 2. Injects a 4-line hook that calls `globalThis.__shroudStreamDeobfuscate`
-3. Clears the Node.js V8 compile cache
+3. Clears the Node.js V8 compile cache (including root-owned cache for systemd gateway)
 4. Triggers a gateway restart via SIGUSR1
 
-On subsequent loads, the patch is detected and skipped. To revert: restore the `.shroud-backup` file and restart.
+On subsequent loads, both patches are detected and skipped. To revert the EventStream patch: restore the `.shroud-backup` file and restart.
 
 ### Rule hit counters
 
