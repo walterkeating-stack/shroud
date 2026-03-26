@@ -15,6 +15,9 @@ import type { RedactionLevel } from "./redaction.js";
  *
  * Priority: env vars > pluginConfig > defaults.
  */
+export const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
+export const IS_TEST = process.env.NODE_ENV === "test";
+
 export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
   const raw: Record<string, unknown> =
     pluginConfig != null && typeof pluginConfig === "object"
