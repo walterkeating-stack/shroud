@@ -26,10 +26,11 @@
 | `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
 | `message_sending` | Agent → User | Deobfuscate outbound messages (all channels) |
+| `globalThis.__shroudDeobfuscate` | Agent → Channel | Global deobfuscation hook — called by OpenClaw before ANY channel send |
 
-> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates PII in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. No PII reaches the LLM. On the inbound side, streaming responses are deobfuscated in real-time via `EventStream.prototype.push()` — no OpenClaw file modifications needed.
+> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates PII in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. No PII reaches the LLM. On the channel delivery side, Shroud registers `globalThis.__shroudDeobfuscate` — a single function that OpenClaw calls before sending to ANY channel (Slack, WhatsApp, Signal, web, etc.). One hook, all channels, transparent no-op if Shroud isn't loaded.
 
-> **Requires OpenClaw 2026.3.24 or later.** Older versions do not call `message_sending` for Slack/WhatsApp channels, causing duplicate messages with fake tokens. Shroud 2.1+ is tested exclusively against OpenClaw 2026.3.24.
+> **Requires OpenClaw 2026.3.24 or later** with the channel delivery patch (see [OpenClaw patch](#openclaw-channel-delivery-patch) below).
 
 ## Install
 
@@ -239,9 +240,27 @@ Shroud uses runtime prototype patches — **no OpenClaw files are modified**:
 
 **Inbound (LLM → User):** Patches `EventStream.prototype.push()` to deobfuscate streaming responses in real-time. Fake values are replaced with real values as they stream.
 
-**Channel delivery:** On OpenClaw 2026.3.24+, the `message_sending` hook fires for ALL channels (Slack, WhatsApp, Telegram, etc.) and deobfuscates outbound messages. Older OpenClaw versions skip this hook for some channels, causing fake tokens in channel output.
+**Channel delivery:** Shroud registers `globalThis.__shroudDeobfuscate(text)` — a single global function that converts fake values back to real values. OpenClaw calls this once in its generic message delivery function, before sending to any channel. If Shroud isn't loaded, the function doesn't exist — transparent no-op. The `message_sending` hook provides a backup deobfuscation path.
 
 All patches are applied once at plugin load and are idempotent — subsequent loads detect and skip them.
+
+### OpenClaw channel delivery patch
+
+Shroud requires a one-line addition to OpenClaw's message delivery function — the single point where all outbound channel messages pass through. This covers ALL channels (Slack, WhatsApp, Signal, Telegram, web, etc.) with one change:
+
+```js
+// In OpenClaw's generic message delivery function:
+const deob = globalThis.__shroudDeobfuscate;
+if (deob && typeof text === 'string') text = deob(text);
+```
+
+**Why this works:**
+- **One change, all channels** — no per-channel hooks needed
+- **Transparent** — if Shroud isn't loaded, `globalThis.__shroudDeobfuscate` is `undefined`, the `if` is false, zero overhead
+- **All releases** — works on any OpenClaw version that sends channel messages through a common delivery path
+- **Last-moment deobfuscation** — fakes are replaced with real values at the latest possible point, just before the HTTP API call
+
+The `deploy-local.sh` script includes a post-install verification step that tests the full chain.
 
 ### Rule hit counters
 

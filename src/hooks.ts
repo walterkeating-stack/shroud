@@ -15,7 +15,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
@@ -25,6 +25,8 @@ const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
 }
+
+const MAPPINGS_FILE = process.env.SHROUD_MAPPINGS_FILE || "/tmp/shroud-mappings.json";
 
 function dumpStatsFile(fallback: Obfuscator): void {
   try {
@@ -36,6 +38,26 @@ function dumpStatsFile(fallback: Obfuscator): void {
     writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + "\n");
   } catch {
     // best-effort
+  }
+  // Also dump mapping table for child process fetch intercept
+  try {
+    const ob = getSharedObfuscator(fallback);
+    const store = (ob as any)._store;
+    if (store?.allMappings) {
+      const allMap = store.allMappings();
+      const mappings: Record<string, string> = {};
+      for (const [real, fake] of allMap) {
+        mappings[real] = fake;
+      }
+      const config = ob.config;
+      writeFileSync(MAPPINGS_FILE, JSON.stringify({
+        mappings,
+        secretKey: config.secretKey,
+        persistentSalt: config.persistentSalt,
+      }) + "\n");
+    }
+  } catch (e) {
+    try { writeFileSync(MAPPINGS_FILE + ".error", String(e) + "\n"); } catch {}
   }
 }
 
@@ -218,6 +240,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // instance while message_sending fires on another (via the delivery subsystem).
   // Without sharing, the delivery instance has an empty mapping store and
   // cannot deobfuscate CGNAT surrogates in outbound channel messages.
+  function stripSlackLinksForHook(text: string): string {
+    text = text.replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1");
+    text = text.replace(/<https?:\/\/[^|>]+\|([^>]*)>/g, "$1");
+    text = text.replace(/<(https?:\/\/[^>]+)>/g, "$1");
+    return text;
+  }
+
   if (process.env.NODE_ENV !== "test") {
     const g = globalThis as any;
     if (g.__shroudObfuscator) {
@@ -233,6 +262,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const config = ob().config;
   const auditActive = config.auditEnabled || config.verboseLogging;
 
+  // Write initial config to mappings file so the fetch preload in child
+  // processes can create a compatible obfuscator on the first API call.
+  try {
+    writeFileSync(MAPPINGS_FILE, JSON.stringify({
+      mappings: {},
+      secretKey: config.secretKey,
+      persistentSalt: config.persistentSalt,
+    }) + "\n");
+  } catch { /* best-effort */ }
+
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
   // -----------------------------------------------------------------------
@@ -245,20 +284,50 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
 
-    const prompt = event?.prompt;
-    if (typeof prompt !== "string" || !prompt) return;
+    let totalEntities = 0;
 
-    const result = ob().obfuscate(prompt);
-    if (result.entities.length === 0) return;
+    // Obfuscate the system prompt
+    const prompt = event?.prompt;
+    let obfuscatedPrompt: string | undefined;
+    if (typeof prompt === "string" && prompt) {
+      const cleaned = stripSlackLinksForHook(prompt);
+      const result = ob().obfuscate(cleaned);
+      if (result.entities.length > 0 || cleaned !== prompt) {
+        obfuscatedPrompt = result.entities.length > 0 ? result.obfuscated : cleaned;
+        totalEntities += result.entities.length;
+      }
+    }
+
+    // Pre-create mappings for PII in user messages WITHOUT mutating them.
+    // This ensures the fetch preload (in child process) has the mappings
+    // before the API call. The actual replacement happens in the preload.
+    api.logger?.info(`[shroud] event keys: ${Object.keys(event || {}).join(",")}`);
+    if (Array.isArray(event?.messages)) {
+      for (const msg of event.messages) {
+        const texts: string[] = [];
+        if (typeof msg.content === "string") texts.push(msg.content);
+        else if (Array.isArray(msg.content)) {
+          for (const b of msg.content) {
+            if (b?.type === "text" && typeof b.text === "string") texts.push(b.text);
+          }
+        }
+        for (const text of texts) {
+          const cleaned = stripSlackLinksForHook(text);
+          const result = ob().obfuscate(cleaned);
+          totalEntities += result.entities.length;
+          // Do NOT mutate — just creating mappings in the store
+        }
+      }
+    }
+
+    if (totalEntities === 0) return;
 
     dumpStatsFile(obfuscator);
     api.logger?.info(
-      `[shroud] before_prompt_build: obfuscated ${result.entities.length} entities`,
+      `[shroud] before_prompt_build: obfuscated ${totalEntities} entities (mappings synced)`,
     );
 
-    return {
-      prompt: result.obfuscated,
-    };
+    return obfuscatedPrompt ? { systemPrompt: obfuscatedPrompt } : undefined;
   });
 
   // -----------------------------------------------------------------------
@@ -280,6 +349,29 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     // --- Assistant messages: DEOBFUSCATE (fakes → real values) ---
     if (role === "assistant") {
+      // Import mappings created by the fetch preload (child process) so we can
+      // deobfuscate fakes that the preload generated independently.
+      try {
+        const raw = readFileSync(MAPPINGS_FILE, "utf-8");
+        const data = JSON.parse(raw.trim());
+        const preloadMappings = data?.mappings;
+        if (preloadMappings && typeof preloadMappings === "object") {
+          const store = (ob() as any)._store;
+          if (store?.put) {
+            for (const [real, fake] of Object.entries(preloadMappings)) {
+              if (typeof fake === "string" && store.getFake(real) === undefined) {
+                store.put(real, fake, "preload");
+              }
+            }
+          }
+        }
+      } catch {
+        // best-effort — file may not exist yet
+      }
+      const _raw = typeof msg.content === "string" ? msg.content :
+        Array.isArray(msg.content) ? msg.content.map((b: any) => b?.text || "").join("") : "";
+      if (_raw.length < 500) api.logger?.info(`[shroud][raw-assistant] ${_raw}`);
+
       if (typeof msg.content === "string") {
         const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content);
         if (deobfuscated === msg.content) return;
@@ -419,6 +511,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   api.on("before_tool_call", async (event: any) => {
     if (!event?.params || typeof event.params !== "object") return;
+
+    // Block the message tool for send actions. The gateway auto-delivers
+    // responses — using the message tool causes duplicate messages (one
+    // deobfuscated via streaming, one with fakes from the tool call).
+    if (event.toolName === "message") {
+      api.logger?.info(`[shroud] message tool call: action=${event.params?.action}`);
+      if (event.params?.action === "send") {
+        api.logger?.info("[shroud] blocked message tool send (prevents duplicate delivery)");
+        return { block: true, blockReason: "Response is delivered automatically. Do not use the message tool to send replies." };
+      }
+    }
+
 
     // Tool chain depth tracking
     const depth = ob().enterToolCall();
@@ -583,6 +687,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const SHROUD_BUF = Symbol("shroudStreamBuf");
 
   (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
+    // Streaming deobfuscation is DISABLED. On OpenClaw 2026.3.24+ with
+    // streaming: off, before_message_write handles all deobfuscation.
+    // The streaming buffer causes text artifacts when fake/real lengths
+    // differ — accumulated partial fakes persist in channel delivery
+    // alongside the corrected final text, producing duplicate content.
+    //
+    // The message_end handler below still runs to deobfuscate the final
+    // content blocks (partial/message), ensuring the delivered message
+    // has real values.
     const isTextDelta = event.type === "text_delta";
     const isMessageUpdateTextDelta = event.type === "message_update" &&
       event.assistantMessageEvent?.type === "text_delta";
@@ -640,8 +753,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ));
 
     if (isEnd) {
-      // Deobfuscate content blocks in the event's message/partial
-      // (corrects any partial fakes left from streaming)
       const targets = [
         event.message, event.partial,
         event.assistantMessageEvent?.partial,
@@ -652,7 +763,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           for (const block of target.content) {
             if (block?.type === "text" && typeof block.text === "string") {
               const deob = ob().deobfuscate(block.text);
-              if (deob !== block.text) block.text = deob;
+              if (deob !== block.text) {
+                block.text = deob;
+              }
             }
           }
         }
@@ -666,9 +779,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), streamDeobCount);
         } catch { /* best-effort */ }
       }
-      // Always dump stats on message_end to capture any counter changes
       dumpStatsFile(obfuscator);
-
       delete stream[SHROUD_BUF];
     }
 
@@ -677,7 +788,24 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.logger?.info("[shroud] Installed global streaming deobfuscation hook");
 
   // -----------------------------------------------------------------------
-  // 7. Outbound fetch intercept: obfuscate ALL user message content before
+  // 7. Global deobfuscation hook for OpenClaw channel delivery.
+  //    OpenClaw calls this once, in its generic message-delivery function,
+  //    before sending to ANY channel (Slack, WhatsApp, Signal, web, etc.).
+  //    Transparent: if Shroud isn't loaded the global doesn't exist — no-op.
+  //    Works on all past + present releases with a single 3-line patch:
+  //
+  //      const deob = globalThis.__shroudDeobfuscate;
+  //      if (deob && typeof text === 'string') text = deob(text);
+  //
+  // -----------------------------------------------------------------------
+  (globalThis as any).__shroudDeobfuscate = (text: string): string => {
+    if (typeof text !== "string") return text;
+    return ob().deobfuscate(text);
+  };
+  api.logger?.info("[shroud] Registered globalThis.__shroudDeobfuscate for channel delivery");
+
+  // -----------------------------------------------------------------------
+  // 8. Outbound fetch intercept: obfuscate ALL user message content before
   //    it reaches any LLM API. This is the last line of defense — it works
   //    regardless of which hooks fire, which OpenClaw version is running,
   //    and which LLM provider is used (Anthropic, OpenAI, Google, etc.).
@@ -700,6 +828,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   ];
 
   const originalFetch = globalThis.fetch;
+  api.logger?.info(`[shroud][fetch-guard] hasFetch=${!!originalFetch} patched=${!!(globalThis as any).__shroudFetchPatched}`);
   if (originalFetch && !((globalThis as any).__shroudFetchPatched)) {
     (globalThis as any).__shroudFetchPatched = true;
 
