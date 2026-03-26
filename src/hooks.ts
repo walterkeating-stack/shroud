@@ -685,10 +685,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   //    contains a messages array with user role content, obfuscate it.
   // -----------------------------------------------------------------------
   const LLM_API_PATHS = [
-    "/v1/messages",        // Anthropic
-    "/v1/chat/completions", // OpenAI / OpenRouter / compatible
-    "/chat/completions",    // OpenAI without /v1
-    "/messages",            // Anthropic without /v1
+    "/v1/messages",             // Anthropic
+    "/v1/chat/completions",     // OpenAI / OpenRouter / compatible
+    "/chat/completions",        // OpenAI without /v1
+    "/messages",                // Anthropic without /v1
+    "/responses",               // OpenAI Responses API / Codex
+    "/codex/responses",         // OpenAI Codex
+    ":streamGenerateContent",   // Google Gemini (v1internal:streamGenerateContent)
+    ":generateContent",         // Google Gemini (non-streaming)
+    "/v1beta/models/",          // Google AI Studio
+    "/v1/models/",              // Google Vertex AI
   ];
 
   const originalFetch = globalThis.fetch;
@@ -732,13 +738,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
         const body = JSON.parse(bodyStr);
 
-        if (!Array.isArray(body.messages)) {
-          return originalFetch.call(globalThis, input, init);
-        }
-
         let modified = false;
 
-        // Obfuscate system prompt
+        // Obfuscate system prompt (Anthropic format)
         if (typeof body.system === "string") {
           const result = ob().obfuscate(body.system);
           if (result.entities.length > 0) {
@@ -755,6 +757,39 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               }
             }
           }
+        }
+
+        // Obfuscate system instruction (Google format)
+        if (body.system_instruction) {
+          const si = body.system_instruction;
+          if (si.parts && Array.isArray(si.parts)) {
+            for (const part of si.parts) {
+              if (typeof part.text === "string") {
+                const result = ob().obfuscate(part.text);
+                if (result.entities.length > 0) { part.text = result.obfuscated; modified = true; }
+              }
+            }
+          }
+        }
+
+        // Obfuscate instructions (OpenAI Responses format)
+        if (typeof body.instructions === "string") {
+          const result = ob().obfuscate(body.instructions);
+          if (result.entities.length > 0) { body.instructions = result.obfuscated; modified = true; }
+        }
+
+        // Determine message array — Anthropic/OpenAI use "messages", Google uses "contents"
+        const messageArray = Array.isArray(body.messages) ? body.messages
+          : Array.isArray(body.contents) ? body.contents
+          : Array.isArray(body.input) ? body.input  // OpenAI Responses
+          : null;
+
+        if (!messageArray) {
+          if (modified) {
+            const newBody = JSON.stringify(body);
+            return originalFetch.call(globalThis, input, { ...init, body: newBody });
+          }
+          return originalFetch.call(globalThis, input, init);
         }
 
         // Obfuscate ALL messages — user, assistant, tool results, everything.
@@ -781,23 +816,37 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             : { text, modified: false };
         }
 
-        for (const msg of body.messages) {
-          // Only obfuscate user messages and tool results.
-          // Assistant messages contain deobfuscated text (real values restored
-          // by streaming deobfuscation) — re-obfuscating them creates a second
-          // fake that the LLM echoes back alongside the first.
-          if (msg.role === "assistant") continue;
+        for (const msg of messageArray) {
+          // Skip assistant/model messages — they contain deobfuscated text
+          if (msg.role === "assistant" || msg.role === "model") continue;
 
+          // Anthropic/OpenAI: string content
           if (typeof msg.content === "string") {
             const r = obfuscateText(msg.content);
             if (r.modified) { msg.content = r.text; modified = true; }
-          } else if (Array.isArray(msg.content)) {
+          }
+          // Anthropic/OpenAI: array content blocks
+          else if (Array.isArray(msg.content)) {
             for (const block of msg.content) {
               if (block?.type === "text" && typeof block.text === "string") {
                 const r = obfuscateText(block.text);
                 if (r.modified) { block.text = r.text; modified = true; }
               }
             }
+          }
+          // Google: parts array
+          if (Array.isArray(msg.parts)) {
+            for (const part of msg.parts) {
+              if (typeof part.text === "string") {
+                const r = obfuscateText(part.text);
+                if (r.modified) { part.text = r.text; modified = true; }
+              }
+            }
+          }
+          // OpenAI Responses: string input items
+          if (typeof msg.text === "string") {
+            const r = obfuscateText(msg.text);
+            if (r.modified) { msg.text = r.text; modified = true; }
           }
         }
 
