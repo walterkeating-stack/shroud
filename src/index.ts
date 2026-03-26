@@ -88,20 +88,12 @@ function patchEventStreamPrototype(logger: any): void {
         // Try requiring from the file's own directory (no exports restriction from parent)
         const mod = localRequire("./event-stream.js");
         EventStream = mod?.EventStream ?? mod?.default?.EventStream;
-        if (EventStream) {
-          logger?.info(`[shroud] Found EventStream via direct file path: ${candidate}`);
-          break;
-        }
+        if (EventStream) break;
       } catch { /* try next */ }
     }
   }
 
-  if (!EventStream?.prototype?.push) {
-    logger?.info(
-      "[shroud] Could not locate EventStream class — streaming deobfuscation unavailable",
-    );
-    return;
-  }
+  if (!EventStream?.prototype?.push) return;
 
   // Wrap prototype.push with the deobfuscation hook
   const originalPush = EventStream.prototype.push;
@@ -116,9 +108,6 @@ function patchEventStreamPrototype(logger: any): void {
   // Mark as patched to prevent double-wrapping
   (globalThis as any)[PATCH_MARKER] = true;
 
-  logger?.info(
-    "[shroud] Patched EventStream.prototype.push — zero-file streaming deobfuscation active",
-  );
 }
 
 export default {
@@ -176,8 +165,11 @@ export default {
       },
     });
 
-    api.logger?.info(
-      "[shroud] Plugin loaded — native TypeScript, no proxy required.",
-    );
+    // Single load confirmation — used by test harness to verify plugin loaded.
+    // Only logs once per process (suppressed on subsequent agent loads).
+    if (!(globalThis as any).__shroudLoadLogged) {
+      (globalThis as any).__shroudLoadLogged = true;
+      api.logger?.info("[shroud] Plugin loaded.");
+    }
   },
 };

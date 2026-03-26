@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.2] - 2026-03-27
+
+### Changed
+- **Silent plugin load** — removed all info-level log lines during plugin initialization. Only one "Plugin loaded." line per process (suppressed on subsequent agent loads). Eliminates noisy log spam in the TUI and gateway stderr.
+
 ## [2.2.1] - 2026-03-26
 
 ### Fixed
