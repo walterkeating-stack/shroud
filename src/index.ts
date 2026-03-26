@@ -5,113 +5,95 @@
  * and deobfuscates responses before they reach the user.
  */
 
-import { existsSync, readFileSync, writeFileSync, copyFileSync, readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { createRequire } from "node:module";
 import { resolveConfig } from "./config.js";
 import { Obfuscator } from "./obfuscator.js";
 import { registerHooks } from "./hooks.js";
 
 // ---------------------------------------------------------------------------
-// Runtime self-patch: ensure pi-ai's EventStream.push() has the
-// Shroud deobfuscation hook. Runs once on first load; subsequent loads
-// detect the patch and skip. If patching occurs, the user is told to restart.
+// Runtime prototype patch: wrap EventStream.prototype.push() with the
+// Shroud deobfuscation hook. No file reads, no file writes, no cache
+// clearing, no restarts needed. Works across OpenClaw versions because
+// it patches the live prototype at import time.
 // ---------------------------------------------------------------------------
-const PATCH_MARKER = "__shroudStreamDeobfuscate";
-const PATCH_CODE = [
-  "        // Shroud deobfuscation hook (injected by shroud-privacy plugin)",
-  "        const deob = globalThis.__shroudStreamDeobfuscate;",
-  "        if (deob && event && typeof event === 'object') {",
-  "            event = deob(this, event);",
-  "        }",
-].join("\n");
+const PATCH_MARKER = "__shroudEventStreamPatched";
 
-function findEventStreamPath(logger: any): string | null {
+function patchEventStreamPrototype(logger: any): void {
+  // Already patched by another plugin instance — skip
+  if ((globalThis as any)[PATCH_MARKER]) return;
+
+  let EventStream: any = null;
+
+  // Strategy 1: direct ESM import via createRequire
   try {
     const esmRequire = createRequire(import.meta.url);
-    const cache = esmRequire.cache;
-    if (!cache) return null;
+    const mod = esmRequire("@mariozechner/pi-ai/dist/utils/event-stream.js");
+    EventStream = mod?.EventStream ?? mod?.default?.EventStream;
+  } catch {
+    // Not resolvable from Shroud's own location — try from OpenClaw
+  }
 
-    // Find OpenClaw's install root from require.cache
-    for (const key of Object.keys(cache)) {
-      const idx = key.indexOf("/openclaw/");
-      if (idx === -1) continue;
-      const root = key.slice(0, idx + "/openclaw/".length);
-      const candidate = join(root, "node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js");
-      if (existsSync(candidate)) return candidate;
-    }
-  } catch {}
+  // Strategy 2: walk require.cache to find OpenClaw's install root
+  if (!EventStream) {
+    try {
+      const esmRequire = createRequire(import.meta.url);
+      const cache = esmRequire.cache;
+      if (cache) {
+        for (const key of Object.keys(cache)) {
+          const idx = key.indexOf("/openclaw/");
+          if (idx === -1) continue;
+          const root = key.slice(0, idx + "/openclaw/".length);
+          try {
+            const req2 = createRequire(root + "package.json");
+            const mod = req2("@mariozechner/pi-ai/dist/utils/event-stream.js");
+            EventStream = mod?.EventStream ?? mod?.default?.EventStream;
+            if (EventStream) break;
+          } catch { /* try next */ }
+        }
+      }
+    } catch { /* no cache access */ }
+  }
 
-  return null;
-}
+  // Strategy 3: resolve from process.argv[1] (the OpenClaw binary)
+  if (!EventStream && process.argv[1]) {
+    try {
+      const binRequire = createRequire(process.argv[1]);
+      const mod = binRequire("@mariozechner/pi-ai/dist/utils/event-stream.js");
+      EventStream = mod?.EventStream ?? mod?.default?.EventStream;
+    } catch { /* not found from binary location */ }
+  }
 
-function ensureEventStreamPatched(logger: any): void {
-  const esPath = findEventStreamPath(logger);
-  if (!esPath) {
-    logger?.info("[shroud] Could not locate pi-ai event-stream.js — streaming deobfuscation unavailable");
+  if (!EventStream?.prototype?.push) {
+    logger?.info(
+      "[shroud] Could not locate EventStream class — streaming deobfuscation unavailable",
+    );
     return;
   }
 
-  try {
-    const content = readFileSync(esPath, "utf8");
-
-    // Already patched
-    if (content.includes(PATCH_MARKER)) return;
-
-    // Back up original
-    const backupPath = esPath + ".shroud-backup";
-    if (!existsSync(backupPath)) {
-      copyFileSync(esPath, backupPath);
+  // Wrap prototype.push with the deobfuscation hook
+  const originalPush = EventStream.prototype.push;
+  EventStream.prototype.push = function shroudPatchedPush(event: any) {
+    const deob = (globalThis as any).__shroudStreamDeobfuscate;
+    if (deob && event && typeof event === "object") {
+      event = deob(this, event);
     }
+    return originalPush.call(this, event);
+  };
 
-    // Patch: insert hook after "push(event) {"
-    const target = "    push(event) {";
-    if (!content.includes(target)) {
-      logger?.warn("[shroud] Could not find push(event) in event-stream.js — patch skipped");
-      return;
-    }
+  // Mark as patched to prevent double-wrapping
+  (globalThis as any)[PATCH_MARKER] = true;
 
-    const patched = content.replace(target, target + "\n" + PATCH_CODE);
-    writeFileSync(esPath, patched);
-
-    // Clear Node.js V8 compile cache
-    const cacheDir = process.env.NODE_COMPILE_CACHE || "/tmp/node-compile-cache";
-    if (existsSync(cacheDir)) {
-      try {
-        const uid = process.getuid?.() ?? "";
-        for (const entry of readdirSync(cacheDir)) {
-          const full = join(cacheDir, entry);
-          if (uid && entry.endsWith(`-${uid}`)) {
-            rmSync(full, { recursive: true, force: true });
-          }
-        }
-      } catch {}
-    }
-
-    logger?.warn(
-      "[shroud] Patched pi-ai EventStream for streaming deobfuscation. Restarting gateway...",
-    );
-
-    // Auto-restart: send SIGUSR1 to self after a short delay.
-    // OpenClaw handles SIGUSR1 as a graceful restart signal.
-    setTimeout(() => {
-      try {
-        process.kill(process.pid, "SIGUSR1");
-      } catch {
-        logger?.warn("[shroud] Auto-restart failed. Run: openclaw gateway restart");
-      }
-    }, 3000);
-  } catch (err) {
-    logger?.warn(`[shroud] Failed to patch event-stream.js: ${String(err)}`);
-  }
+  logger?.info(
+    "[shroud] Patched EventStream.prototype.push — zero-file streaming deobfuscation active",
+  );
 }
 
 export default {
   id: "shroud-privacy",
   name: "Shroud",
   register(api: any) {
-    // Ensure pi-ai is patched for streaming deobfuscation
-    ensureEventStreamPatched(api.logger);
+    // Patch EventStream prototype for streaming deobfuscation (no file I/O)
+    patchEventStreamPrototype(api.logger);
 
     const config = resolveConfig(api.pluginConfig);
     const obfuscator = new Obfuscator(config);

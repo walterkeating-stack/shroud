@@ -5,7 +5,7 @@
  * Architecture (lean, no insanity):
  *   1. npm-installs OpenClaw ONCE into a cached sandbox dir (~/.cache/shroud-test/openclaw-<version>)
  *   2. Copies Shroud plugin into sandbox extensions
- *   3. Applies patches (EventStream + prompt override) — same as deploy-local.sh
+ *   3. Applies patches (prompt override only — EventStream is patched at runtime)
  *   4. Starts ONE mock LLM server
  *   5. Runs ~10 smoke tests via `openclaw agent --local --message ...`
  *   6. Verifies plugin loaded, hooks fired, stats/logging work
@@ -142,30 +142,12 @@ export class OpenClawRunner {
     this._log("Shroud plugin installed");
   }
 
-  // ── Patches (EventStream + prompt override) ───────────────
+  // ── Patches (prompt override only — EventStream is patched at runtime) ──
 
   _applyPatches() {
     let patchCount = 0;
 
-    // Patch 1: EventStream.push() for streaming deobfuscation
-    const esPath = this._findEventStream();
-    if (esPath && !readFileSync(esPath, "utf-8").includes("__shroudStreamDeobfuscate")) {
-      let code = readFileSync(esPath, "utf-8");
-      const target = "    push(event) {";
-      if (code.includes(target)) {
-        const hook = [
-          "        // Shroud deobfuscation hook",
-          "        const deob = globalThis.__shroudStreamDeobfuscate;",
-          "        if (deob && event && typeof event === 'object') {",
-          "            event = deob(this, event);",
-          "        }",
-        ].join("\n");
-        writeFileSync(esPath, code.replace(target, target + "\n" + hook));
-        patchCount++;
-      }
-    }
-
-    // Patch 2: pi-embedded prompt override
+    // Patch: pi-embedded prompt override
     const distDir = join(this.sandboxDir, "node_modules", "openclaw", "dist");
     try {
       const files = readdirSync(distDir).filter(f => f.startsWith("pi-embedded-") && f.endsWith(".js"));
@@ -188,21 +170,6 @@ export class OpenClawRunner {
     } catch {}
 
     this._log(`Applied ${patchCount} patch(es)`);
-  }
-
-  _findEventStream() {
-    const candidate = join(
-      this.sandboxDir, "node_modules", "openclaw",
-      "node_modules", "@mariozechner", "pi-ai", "dist", "utils", "event-stream.js",
-    );
-    if (existsSync(candidate)) return candidate;
-
-    // Fallback: hoisted
-    const hoisted = join(
-      this.sandboxDir, "node_modules",
-      "@mariozechner", "pi-ai", "dist", "utils", "event-stream.js",
-    );
-    return existsSync(hoisted) ? hoisted : null;
   }
 
   // ── Config ────────────────────────────────────────────────
