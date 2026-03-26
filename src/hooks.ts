@@ -231,6 +231,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     return text;
   }
 
+  const isFirstLoad = !(globalThis as any).__shroudObfuscator;
   if (!IS_TEST) {
     const g = globalThis as any;
     if (g.__shroudObfuscator) {
@@ -696,7 +697,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     return event;
   };
-  api.logger?.info("[shroud] Installed global streaming deobfuscation hook");
 
   // -----------------------------------------------------------------------
   // 7. Global deobfuscation hook for channel delivery (defense-in-depth).
@@ -708,7 +708,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (typeof text !== "string") return text;
     return ob().deobfuscate(text);
   };
-  api.logger?.info("[shroud] Registered globalThis.__shroudDeobfuscate for channel delivery");
 
   // -----------------------------------------------------------------------
   // 8. Fetch intercept — the universal privacy boundary.
@@ -738,7 +737,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   ];
 
   const originalFetch = globalThis.fetch;
-  api.logger?.info(`[shroud][fetch-guard] hasFetch=${!!originalFetch} patched=${!!(globalThis as any).__shroudFetchPatched}`);
   if (originalFetch && !((globalThis as any).__shroudFetchPatched)) {
     (globalThis as any).__shroudFetchPatched = true;
 
@@ -1210,7 +1208,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       return response;
     }
 
-    api.logger?.info("[shroud] Installed outbound fetch intercept — PII obfuscated before ALL LLM API calls");
   }
 }
 
