@@ -103,38 +103,16 @@ Other methods: `reset`, `stats`, `health`, `configure`, `shutdown`.
 git clone https://github.com/walterkeating-stack/shroud.git
 cd shroud
 npm install && npm run build
-bash deploy-local.sh     # → OpenClaw (~/.openclaw/extensions/)
+openclaw plugins install --path .
+openclaw gateway restart
 ```
 
 ## Updating
 
-OpenClaw doesn't have a `plugins update` command yet, so updating requires removing the old install first. A helper script is included:
-
 ```bash
-# Update to latest version (preserves your config)
-bash scripts/update-openclaw-plugin.sh
-
-# Update to a specific version
-bash scripts/update-openclaw-plugin.sh <version>
-```
-
-The script saves your plugin config from `openclaw.json`, removes the old extension, reinstalls from npm, restores your config, and restarts the gateway.
-
-### Manual update
-
-If you prefer to do it manually:
-
-```bash
-# 1. Remove old plugin files
-rm -rf ~/.openclaw/extensions/shroud-privacy
-
-# 2. Reinstall (this resets your plugin config to defaults)
+# Remove old plugin, reinstall from npm, restart
+openclaw plugins remove shroud-privacy
 openclaw plugins install shroud-privacy
-
-# 3. Re-apply your config in ~/.openclaw/openclaw.json
-#    (under plugins.entries."shroud-privacy".config)
-
-# 4. Restart
 openclaw gateway restart
 ```
 
@@ -478,7 +456,7 @@ npm run lint      # type-check without emitting
 
 ```bash
 npm run build
-bash deploy-local.sh   # → OpenClaw (~/.openclaw/extensions/shroud-privacy/)
+openclaw plugins install --path .
 openclaw gateway restart
 ```
 
@@ -491,8 +469,8 @@ openclaw gateway restart
 # 2. Update CHANGELOG.md
 # 3. Commit and tag
 git add -A
-git commit -m "Release v1.x.y"
-git tag v1.x.y
+git commit -m "release: vX.Y.Z"
+git tag vX.Y.Z
 git push && git push --tags
 ```
 
