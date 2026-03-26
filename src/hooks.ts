@@ -22,9 +22,14 @@ import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 
 const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
 
-function dumpStatsFile(obfuscator: Obfuscator): void {
+function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
+  return (globalThis as any).__shroudObfuscator || fallback;
+}
+
+function dumpStatsFile(fallback: Obfuscator): void {
   try {
-    const stats = obfuscator.getStats() as Record<string, unknown>;
+    const ob = getSharedObfuscator(fallback);
+    const stats = ob.getStats() as Record<string, unknown>;
     stats.updatedAt = new Date().toISOString();
     stats.source = "openclaw";
     stats.pid = process.pid;
@@ -222,7 +227,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
   }
 
-  const config = obfuscator.config;
+  // All hook closures must use the shared obfuscator, not the local parameter.
+  // OpenClaw loads the plugin multiple times; only one instance has the mappings.
+  const ob = () => getSharedObfuscator(obfuscator);
+  const config = ob().config;
   const auditActive = config.auditEnabled || config.verboseLogging;
 
   // -----------------------------------------------------------------------
@@ -232,14 +240,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     // Reset tool depth at the start of each turn — tool calls from the
     // previous turn are complete, so the counter should not carry over.
-    if (obfuscator.toolDepth > 0) {
-      obfuscator.resetToolDepth();
+    if (ob().toolDepth > 0) {
+      ob().resetToolDepth();
     }
 
     const prompt = event?.prompt;
     if (typeof prompt !== "string" || !prompt) return;
 
-    const result = obfuscator.obfuscate(prompt);
+    const result = ob().obfuscate(prompt);
     if (result.entities.length === 0) return;
 
     dumpStatsFile(obfuscator);
@@ -272,7 +280,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // --- Assistant messages: DEOBFUSCATE (fakes → real values) ---
     if (role === "assistant") {
       if (typeof msg.content === "string") {
-        const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(msg.content);
+        const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content);
         if (deobfuscated === msg.content) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
         if (auditActive && replacementCount > 0) {
@@ -287,7 +295,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (block && typeof block === "object") {
             // Handle blocks with .text (text content blocks)
             if (typeof block.text === "string") {
-              const deobfuscated = obfuscator.deobfuscate(block.text);
+              const deobfuscated = ob().deobfuscate(block.text);
               if (deobfuscated !== block.text) {
                 changed = true;
                 return { ...block, text: deobfuscated };
@@ -295,7 +303,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             }
             // Handle blocks with .content as string (tool_result blocks)
             if (typeof block.content === "string") {
-              const deobfuscated = obfuscator.deobfuscate(block.content);
+              const deobfuscated = ob().deobfuscate(block.content);
               if (deobfuscated !== block.content) {
                 changed = true;
                 return { ...block, content: deobfuscated };
@@ -306,7 +314,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               let innerChanged = false;
               const newInner = block.content.map((inner: any) => {
                 if (inner && typeof inner === "object" && typeof inner.text === "string") {
-                  const deobfuscated = obfuscator.deobfuscate(inner.text);
+                  const deobfuscated = ob().deobfuscate(inner.text);
                   if (deobfuscated !== inner.text) {
                     innerChanged = true;
                     return { ...inner, text: deobfuscated };
@@ -332,7 +340,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     // --- Non-assistant messages: OBFUSCATE (real values → fakes) ---
     if (typeof msg.content === "string") {
-      const result = obfuscator.obfuscate(msg.content);
+      const result = ob().obfuscate(msg.content);
       if (result.entities.length === 0) return;
       dumpStatsFile(obfuscator);
       if (auditActive) {
@@ -351,7 +359,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (block && typeof block === "object") {
           // Handle blocks with .text (text content blocks)
           if (typeof block.text === "string") {
-            const result = obfuscator.obfuscate(block.text);
+            const result = ob().obfuscate(block.text);
             if (result.entities.length > 0) {
               changed = true;
               allResults.push(result);
@@ -360,7 +368,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
           // Handle blocks with .content as string (tool_result blocks)
           if (typeof block.content === "string") {
-            const result = obfuscator.obfuscate(block.content);
+            const result = ob().obfuscate(block.content);
             if (result.entities.length > 0) {
               changed = true;
               allResults.push(result);
@@ -373,7 +381,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             const innerResults: ObfuscationResult[] = [];
             const newInner = block.content.map((inner: any) => {
               if (inner && typeof inner === "object" && typeof inner.text === "string") {
-                const result = obfuscator.obfuscate(inner.text);
+                const result = ob().obfuscate(inner.text);
                 if (result.entities.length > 0) {
                   innerChanged = true;
                   innerResults.push(result);
@@ -412,7 +420,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (!event?.params || typeof event.params !== "object") return;
 
     // Tool chain depth tracking
-    const depth = obfuscator.enterToolCall();
+    const depth = ob().enterToolCall();
     if (depth > config.maxToolDepth) {
       api.logger?.warn(
         `[shroud][depth] Tool chain depth ${depth} exceeds max ${config.maxToolDepth} — possible infinite recursion`,
@@ -425,7 +433,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
     const serialized = JSON.stringify(event.params);
-    const deobfuscated = obfuscator.deobfuscate(serialized);
+    const deobfuscated = ob().deobfuscate(serialized);
 
     if (serialized === deobfuscated) return;
 
@@ -447,10 +455,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (!event?.message) return;
 
     // Exit tool depth
-    obfuscator.exitToolCall();
+    ob().exitToolCall();
 
     const obfuscated = walkStrings(event.message, (s) => {
-      const result = obfuscator.obfuscate(s);
+      const result = ob().obfuscate(s);
       return result.obfuscated;
     });
 
@@ -469,7 +477,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // String content — direct deobfuscation
     if (typeof event.content === "string") {
       if (auditActive) {
-        const { text: deobfuscated, replacementCount } = obfuscator.deobfuscateWithStats(event.content);
+        const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(event.content);
         if (deobfuscated === event.content) return;
         try {
           emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount);
@@ -478,7 +486,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         return { content: deobfuscated };
       }
 
-      const deobfuscated = obfuscator.deobfuscate(event.content);
+      const deobfuscated = ob().deobfuscate(event.content);
       if (deobfuscated === event.content) return;
 
       api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
@@ -492,11 +500,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const newContent = event.content.map((block: any) => {
         if (block && typeof block === "object") {
           if (typeof block.text === "string") {
-            const deob = obfuscator.deobfuscate(block.text);
+            const deob = ob().deobfuscate(block.text);
             if (deob !== block.text) { changed = true; return { ...block, text: deob }; }
           }
           if (typeof block.content === "string") {
-            const deob = obfuscator.deobfuscate(block.content);
+            const deob = ob().deobfuscate(block.content);
             if (deob !== block.content) { changed = true; return { ...block, content: deob }; }
           }
         }
@@ -517,9 +525,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     description: "Show Shroud privacy plugin status: active rules, per-rule hit counts, store size, and config summary.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => {
-      const stats = obfuscator.config;
+      const stats = ob().config;
       const overrides = stats.detectorOverrides;
-      const obStats = obfuscator.getStats() as any;
+      const obStats = ob().getStats() as any;
 
       const rules = BUILTIN_PATTERNS.map((p) => {
         const ov = overrides[p.name];
@@ -573,8 +581,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const SHROUD_BUF = Symbol("shroudStreamBuf");
 
   (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
-    // Always use the shared obfuscator — the closure may reference a different instance
-    const ob = (globalThis as any).__shroudObfuscator || obfuscator;
     const isTextDelta = event.type === "text_delta";
     const isMessageUpdateTextDelta = event.type === "message_update" &&
       event.assistantMessageEvent?.type === "text_delta";
@@ -589,7 +595,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (!chunk) return event;
 
       buf.raw += chunk;
-      const { text: deob, replacementCount } = ob.deobfuscateWithStats(buf.raw);
+      const { text: deob, replacementCount } = ob().deobfuscateWithStats(buf.raw);
       buf.deobCount = replacementCount; // track cumulative replacements
 
       // Emit the new portion of the deobfuscated buffer
@@ -637,7 +643,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (target?.content && Array.isArray(target.content)) {
           for (const block of target.content) {
             if (block?.type === "text" && typeof block.text === "string") {
-              const deob = ob.deobfuscate(block.text);
+              const deob = ob().deobfuscate(block.text);
               if (deob !== block.text) block.text = deob;
             }
           }
@@ -727,7 +733,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
         // Obfuscate system prompt
         if (typeof body.system === "string") {
-          const result = obfuscator.obfuscate(body.system);
+          const result = ob().obfuscate(body.system);
           if (result.entities.length > 0) {
             body.system = result.obfuscated;
             modified = true;
@@ -735,7 +741,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         } else if (Array.isArray(body.system)) {
           for (const block of body.system) {
             if (block?.type === "text" && typeof block.text === "string") {
-              const result = obfuscator.obfuscate(block.text);
+              const result = ob().obfuscate(block.text);
               if (result.entities.length > 0) {
                 block.text = result.obfuscated;
                 modified = true;
@@ -748,7 +754,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // Skip text that's already fully obfuscated (all known real values
         // replaced) to avoid double-obfuscation when before_prompt_build
         // already processed the prompt.
-        const allMappings = obfuscator["_store"]?.allMappings?.() ?? new Map();
+        const allMappings = ob()["_store"]?.allMappings?.() ?? new Map();
         const knownReals = allMappings.size > 0 ? new Set(allMappings.keys()) : null;
 
         function needsObfuscation(text: string): boolean {
@@ -762,7 +768,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
         function obfuscateText(text: string): { text: string; modified: boolean } {
           if (!needsObfuscation(text)) return { text, modified: false };
-          const result = obfuscator.obfuscate(text);
+          const result = ob().obfuscate(text);
           return result.entities.length > 0
             ? { text: result.obfuscated, modified: true }
             : { text, modified: false };
