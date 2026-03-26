@@ -27,17 +27,23 @@
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
 | `message_sending` | Agent → User | Deobfuscate outbound messages (all channels) |
 
-> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates PII in every message before it leaves the process. No PII reaches the LLM regardless of which OpenClaw version or hooks are available. On the inbound side, a patched EventStream deobfuscates streaming responses in real-time across all providers and channels.
+> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates PII in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. No PII reaches the LLM. On the inbound side, streaming responses are deobfuscated in real-time via `EventStream.prototype.push()` — no OpenClaw file modifications needed.
+
+> **Requires OpenClaw 2026.3.24 or later.** Older versions do not call `message_sending` for Slack/WhatsApp channels, causing duplicate messages with fake tokens. Shroud 2.1+ is tested exclusively against OpenClaw 2026.3.24.
 
 ## Install
 
-### OpenClaw
+### OpenClaw (2026.3.24+)
 
 ```bash
+# Ensure you're on OpenClaw 2026.3.24 or later
+openclaw --version
+
+# Install Shroud
 openclaw plugins install shroud-privacy
 ```
 
-That's it. Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`.
+Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`. No OpenClaw file modifications needed — Shroud uses runtime prototype patches only.
 
 ### Any agent (via APP)
 
@@ -74,7 +80,7 @@ node node_modules/shroud-privacy/app-server.mjs node_modules/shroud-privacy/dist
 
 Handshake (server writes on startup):
 ```json
-{"app":"1.0","engine":"shroud","version":"2.0.21","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
+{"app":"1.0","engine":"shroud","version":"2.1.0","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
 ```
 
 Obfuscate:
@@ -249,13 +255,15 @@ The CLI reads live stats from `/tmp/shroud-stats.json` (override with `SHROUD_ST
 
 ### How privacy works
 
-Shroud uses two runtime prototype patches — no OpenClaw files are modified:
+Shroud uses runtime prototype patches — **no OpenClaw files are modified**:
 
-**Outbound (PII → LLM):** Patches `globalThis.fetch` to intercept all POST requests to LLM API endpoints (`/messages`, `/chat/completions`). Obfuscates every message in the request body — user, assistant, system, tool results — before the request leaves the process. Works for every LLM provider.
+**Outbound (PII → LLM):** Patches `globalThis.fetch` to intercept all POST requests to LLM API endpoints (`/messages`, `/chat/completions`). Obfuscates every message in the request body — user, assistant, system, tool results — before the request leaves the process. Strips Slack `<mailto:>` markup to prevent PII leaking through chat formatting. Re-obfuscates deobfuscated assistant messages in conversation history to prevent multi-turn PII leaks. Works for every LLM provider.
 
-**Inbound (LLM → User):** Patches `EventStream.prototype.push()` at import time to deobfuscate streaming responses in real-time. Fake values are replaced with real values as they stream. No file modifications, no backups, no cache clearing needed.
+**Inbound (LLM → User):** Patches `EventStream.prototype.push()` to deobfuscate streaming responses in real-time. Fake values are replaced with real values as they stream.
 
-Both patches are applied once at plugin load and are idempotent — subsequent loads detect and skip them.
+**Channel delivery:** On OpenClaw 2026.3.24+, the `message_sending` hook fires for ALL channels (Slack, WhatsApp, Telegram, etc.) and deobfuscates outbound messages. Older OpenClaw versions skip this hook for some channels, causing fake tokens in channel output.
+
+All patches are applied once at plugin load and are idempotent — subsequent loads detect and skip them.
 
 ### Rule hit counters
 
@@ -383,7 +391,7 @@ APP is an open protocol for adding privacy obfuscation to any AI agent. Shroud i
 On startup, the server writes a single JSON line to stdout:
 
 ```json
-{"app":"1.0","engine":"shroud","version":"2.0.21","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
+{"app":"1.0","engine":"shroud","version":"2.1.0","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
 ```
 
 The agent must read this line before sending requests. Fields:

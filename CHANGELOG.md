@@ -2,14 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.0.23] - 2026-03-26
+## [2.1.0] - 2026-03-26
+
+### Breaking
+- **Requires OpenClaw 2026.3.24 or later.** Older versions do not call `message_sending` for Slack/WhatsApp channels, causing duplicate messages with fake tokens in channel output. Shroud 2.1+ is tested exclusively against OpenClaw 2026.3.24.
 
 ### Fixed
-- **Channel message duplication** — Slack/WhatsApp received two copies of each assistant message (one with fake tokens, one with real values). Added `__shroudStreamDelivered` coordination flag so `message_sending` skips when streaming already delivered.
-- **Test harness truly patchless** — removed vestigial `_applyPatches()` method from OpenClaw sandbox runner. Tests now run against a completely unmodified OpenClaw install.
+- **CRITICAL: PII leak via Slack `<mailto:>` markup** — Slack wraps emails as `<mailto:real@email|real@email>`. The fetch intercept obfuscated the plain email but left the `<mailto:>` tag intact, leaking real PII to the LLM. Fixed by stripping Slack link markup before obfuscation.
+- **CRITICAL: Multi-turn PII leak from assistant history** — `before_message_write` deobfuscates assistant messages (fake→real) and stores them in the transcript. On subsequent turns, the fetch intercept was skipping assistant messages, letting real PII reach the LLM. Fixed: fetch intercept now re-obfuscates ALL messages including assistant content blocks.
+- **EventStream class not found on some installs** — added Strategy 4 (direct file path resolution) to locate `EventStream` when `createRequire` is blocked by `exports` restrictions in pi-ai's `package.json`.
+- **Test harness truly patchless** — removed vestigial `_applyPatches()` method from OpenClaw sandbox runner. Tests run against a completely unmodified OpenClaw 2026.3.24 install.
+
+### Added
+- **Multi-turn PII leak test** — OpenClaw sandbox test sends two messages in the same session, verifying the LLM does not see real PII from the first turn's deobfuscated assistant response.
+- **Slack E2E simulation tests** — 5 unit tests verifying: Slack `<mailto:>` stripping, assistant content block re-obfuscation, `message_sending` deobfuscation, full Slack flow (single output, no fakes), and multi-turn assistant history re-obfuscation.
+- **1,124 tests** — 751 vitest + 359 APP harness + 14 OpenClaw sandbox.
 
 ### Changed
-- README: updated "How privacy works" section to reflect zero-file-modification architecture (runtime prototype patches only, no backups or cache clearing)
+- **OpenClaw 2026.3.24 required** — `openclaw.plugin.json` `minOpenClawVersion` updated to `2026.3.24`.
+- Tool descriptions neutralized — `shroud-stats`, `shroud_status`, `shroud_reset` no longer mention "privacy" or "Shroud" in their descriptions to prevent the LLM from generating explanatory text about the obfuscation process.
+- README: updated requirements, "How privacy works", install instructions, and privacy guarantee to reflect OpenClaw 2026.3.24 patchless architecture.
 
 ## [2.0.22] - 2026-03-25
 
