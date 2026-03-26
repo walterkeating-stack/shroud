@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.1] - 2026-03-26
+
+### Fixed
+- **Channel delivery sending fake text instead of real values.** Slack, WhatsApp, TUI, and all other channels were receiving obfuscated (fake) text because deobfuscation happened too late in the pipeline. The LLM's response now goes through the fetch intercept's per-block SSE deobfuscation before OpenClaw processes it — every channel receives real text automatically with zero OpenClaw patches.
+- **New PII from LLM echoed by user was not obfuscated.** The `needsObfuscation` guard in the fetch intercept skipped messages that didn't contain known real values from the store. If the LLM generated a new email and the user echoed it back, the email passed through to the LLM unobfuscated. Removed the guard — all messages are now always obfuscated.
+
+### Added
+- **Fetch response deobfuscation with per-block flushing.** The fetch intercept now handles both directions: obfuscates the request (existing) and deobfuscates the response (new). SSE streaming responses are processed via a `TransformStream` that buffers text deltas per content block. On `content_block_stop`, the accumulated text is deobfuscated and flushed. Non-PII blocks stream with zero delay. PII blocks delay by the time it takes for one content block to complete (~0.5-1s). Works with `streaming: "on"` and `streaming: "off"`.
+- **12 new fetch response deobfuscation tests** covering: single/multiple PII types, multi-block responses, tool use preservation, PII split across deltas, large responses (500+ chunks), JSON responses, empty blocks, multi-turn LLM-generated email echo.
+
+### Changed
+- **Removed child-process fetch preload architecture.** The `MAPPINGS_FILE` sync mechanism (`/tmp/shroud-mappings.json`) is no longer used. Obfuscation and deobfuscation both happen in the main process via the fetch intercept.
+- **`message_sending` hook always returns `{ content }`.** Previously returned `undefined` when deobfuscation was a no-op, causing OpenClaw to fall back to the original (fake) delivery payload.
+- **1,150 tests** — 777 vitest + 359 APP harness + 14 OpenClaw sandbox.
+
 ## [2.2.0] - 2026-03-26
 
 ### Added

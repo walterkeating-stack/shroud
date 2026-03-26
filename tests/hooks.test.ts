@@ -255,13 +255,16 @@ describe("hooks - message_sending", () => {
     expect(result.content).not.toContain(fakeEmail);
   });
 
-  test("returns void when nothing changed", async () => {
+  test("always returns content even when nothing changed (overrides original payload)", async () => {
     const obf = new Obfuscator(testConfig);
     const { api, handlers } = createMockApi();
     registerHooks(api, obf);
 
     const result = await handlers["message_sending"]({ content: "Hello world" });
-    expect(result).toBeUndefined();
+    // Must always return { content } to override OpenClaw's original payload,
+    // which may have fake text from the streaming buffer
+    expect(result).toBeDefined();
+    expect(result.content).toBe("Hello world");
   });
 });
 
@@ -477,7 +480,7 @@ describe("hooks - streaming deobfuscation (__shroudStreamDeobfuscate)", () => {
       message: { content: finalContent },
     });
 
-    // message_end deobfuscates content blocks
+    // message_end deobfuscates content blocks (used by streaming delivery)
     expect(endEvt.message.content[0].text).toContain("10.42.88.7");
     expect(endEvt.message.content[0].text).not.toContain(fakeIp);
   });
@@ -619,7 +622,7 @@ describe("hooks - audit counter accuracy", () => {
       message: { content: [{ type: "text", text: `Result: ${fakeEmail}` }] },
     });
 
-    // message_end deobfuscates content blocks
+    // message_end deobfuscates content blocks (used by streaming delivery)
     expect(endEvt.message.content[0].text).toContain("john@acme.com");
     expect(endEvt.message.content[0].text).not.toContain(fakeEmail);
   });

@@ -1,32 +1,36 @@
 /**
  * OpenClaw lifecycle hooks for the Shroud privacy plugin.
  *
- * Registers 5 hooks + 1 global streaming deobfuscation hook:
- * 1. before_prompt_build   (async) -- obfuscate user prompt via prependContext
- * 2. before_message_write  (SYNC)  -- bidirectional: obfuscate non-assistant,
- *                                     DEOBFUSCATE assistant messages
+ * Privacy architecture — two directions, one fetch intercept:
+ *   Outbound (obfuscation):  globalThis.fetch intercept replaces real PII
+ *                            with deterministic fakes before ANY LLM API call.
+ *   Inbound (deobfuscation): Same fetch intercept buffers the LLM's SSE
+ *                            response per content block, deobfuscates fakes
+ *                            back to real values, and returns clean events.
+ *                            OpenClaw never sees fakes — all channels, sessions,
+ *                            and delivery paths receive real text automatically.
+ *
+ * Hooks:
+ * 1. before_prompt_build   (async) -- pre-seed mapping store for the fetch intercept
+ * 2. before_message_write  (SYNC)  -- deobfuscate assistant messages for transcript
  * 3. before_tool_call      (async) -- deobfuscate tool params (+ depth tracking)
  * 4. tool_result_persist   (SYNC)  -- obfuscate tool result message
- * 5. message_sending       (async) -- deobfuscate outbound message content
- * 6. globalThis.__shroudStreamDeobfuscate -- global function called by pi-ai's
- *                                     patched EventStream.push() to deobfuscate
- *                                     streaming text_delta events from ALL LLM
- *                                     providers before OpenClaw processes them
+ * 5. message_sending       (async) -- deobfuscate outbound message content (backup)
+ * 6. globalThis.__shroudStreamDeobfuscate -- streaming event deobfuscation hook
+ * 7. globalThis.__shroudDeobfuscate       -- channel delivery deobfuscation hook
+ * 8. globalThis.fetch intercept           -- obfuscates requests, deobfuscates responses
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
-
-const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
+import { STATS_FILE, IS_TEST } from "./config.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
 }
-
-const MAPPINGS_FILE = process.env.SHROUD_MAPPINGS_FILE || "/tmp/shroud-mappings.json";
 
 function dumpStatsFile(fallback: Obfuscator): void {
   try {
@@ -38,26 +42,6 @@ function dumpStatsFile(fallback: Obfuscator): void {
     writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + "\n");
   } catch {
     // best-effort
-  }
-  // Also dump mapping table for child process fetch intercept
-  try {
-    const ob = getSharedObfuscator(fallback);
-    const store = (ob as any)._store;
-    if (store?.allMappings) {
-      const allMap = store.allMappings();
-      const mappings: Record<string, string> = {};
-      for (const [real, fake] of allMap) {
-        mappings[real] = fake;
-      }
-      const config = ob.config;
-      writeFileSync(MAPPINGS_FILE, JSON.stringify({
-        mappings,
-        secretKey: config.secretKey,
-        persistentSalt: config.persistentSalt,
-      }) + "\n");
-    }
-  } catch (e) {
-    try { writeFileSync(MAPPINGS_FILE + ".error", String(e) + "\n"); } catch {}
   }
 }
 
@@ -247,7 +231,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     return text;
   }
 
-  if (process.env.NODE_ENV !== "test") {
+  if (!IS_TEST) {
     const g = globalThis as any;
     if (g.__shroudObfuscator) {
       obfuscator = g.__shroudObfuscator;
@@ -262,15 +246,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const config = ob().config;
   const auditActive = config.auditEnabled || config.verboseLogging;
 
-  // Write initial config to mappings file so the fetch preload in child
-  // processes can create a compatible obfuscator on the first API call.
-  try {
-    writeFileSync(MAPPINGS_FILE, JSON.stringify({
-      mappings: {},
-      secretKey: config.secretKey,
-      persistentSalt: config.persistentSalt,
-    }) + "\n");
-  } catch { /* best-effort */ }
 
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
@@ -299,9 +274,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
     // Pre-create mappings for PII in user messages WITHOUT mutating them.
-    // This ensures the fetch preload (in child process) has the mappings
-    // before the API call. The actual replacement happens in the preload.
-    api.logger?.info(`[shroud] event keys: ${Object.keys(event || {}).join(",")}`);
+    // This seeds the mapping store so the fetch intercept's response
+    // deobfuscation can replace fakes with the correct real values.
     if (Array.isArray(event?.messages)) {
       for (const msg of event.messages) {
         const texts: string[] = [];
@@ -349,25 +323,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     // --- Assistant messages: DEOBFUSCATE (fakes → real values) ---
     if (role === "assistant") {
-      // Import mappings created by the fetch preload (child process) so we can
-      // deobfuscate fakes that the preload generated independently.
-      try {
-        const raw = readFileSync(MAPPINGS_FILE, "utf-8");
-        const data = JSON.parse(raw.trim());
-        const preloadMappings = data?.mappings;
-        if (preloadMappings && typeof preloadMappings === "object") {
-          const store = (ob() as any)._store;
-          if (store?.put) {
-            for (const [real, fake] of Object.entries(preloadMappings)) {
-              if (typeof fake === "string" && store.getFake(real) === undefined) {
-                store.put(real, fake, "preload");
-              }
-            }
-          }
-        }
-      } catch {
-        // best-effort — file may not exist yet
-      }
       const _raw = typeof msg.content === "string" ? msg.content :
         Array.isArray(msg.content) ? msg.content.map((b: any) => b?.text || "").join("") : "";
       if (_raw.length < 500) api.logger?.info(`[shroud][raw-assistant] ${_raw}`);
@@ -579,46 +534,44 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("message_sending", async (event: any) => {
     if (!event?.content) return;
 
-
-    // String content — direct deobfuscation
+    // String content — direct deobfuscation.
+    // IMPORTANT: Always return { content } even if deobfuscation is a no-op.
+    // OpenClaw may pass already-deobfuscated text here (from before_message_write
+    // modifying the message in place) while the original delivery payload still
+    // has fake text. Returning { content } forces OpenClaw to use our text
+    // instead of falling back to the original payload.
     if (typeof event.content === "string") {
-      if (auditActive) {
-        const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(event.content);
-        if (deobfuscated === event.content) return;
-        try {
-          emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount);
-        } catch { /* best-effort */ }
-        dumpStatsFile(obfuscator);
-        return { content: deobfuscated };
-      }
-
       const deobfuscated = ob().deobfuscate(event.content);
-      if (deobfuscated === event.content) return;
-
-      api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
-      dumpStatsFile(obfuscator);
+      if (deobfuscated !== event.content) {
+        api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
+        if (auditActive) {
+          try {
+            const { replacementCount } = ob().deobfuscateWithStats(event.content);
+            emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount);
+          } catch { /* best-effort */ }
+        }
+        dumpStatsFile(obfuscator);
+      }
+      // Always return content to override the original payload
       return { content: deobfuscated };
     }
 
-    // Array content (blocks) — walk and deobfuscate all text leaves
+    // Array content (blocks) — walk and deobfuscate all text leaves.
+    // Always return content to override the original payload (same reason as above).
     if (Array.isArray(event.content)) {
-      let changed = false;
       const newContent = event.content.map((block: any) => {
         if (block && typeof block === "object") {
           if (typeof block.text === "string") {
             const deob = ob().deobfuscate(block.text);
-            if (deob !== block.text) { changed = true; return { ...block, text: deob }; }
+            if (deob !== block.text) return { ...block, text: deob };
           }
           if (typeof block.content === "string") {
             const deob = ob().deobfuscate(block.content);
-            if (deob !== block.content) { changed = true; return { ...block, content: deob }; }
+            if (deob !== block.content) return { ...block, content: deob };
           }
         }
         return block;
       });
-      if (!changed) return;
-      api.logger?.info("[shroud] message_sending: deobfuscated outbound blocks");
-      dumpStatsFile(obfuscator);
       return { content: newContent };
     }
   });
@@ -687,65 +640,31 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const SHROUD_BUF = Symbol("shroudStreamBuf");
 
   (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
-    // Streaming deobfuscation is DISABLED. On OpenClaw 2026.3.24+ with
-    // streaming: off, before_message_write handles all deobfuscation.
-    // The streaming buffer causes text artifacts when fake/real lengths
-    // differ — accumulated partial fakes persist in channel delivery
-    // alongside the corrected final text, producing duplicate content.
-    //
-    // The message_end handler below still runs to deobfuscate the final
-    // content blocks (partial/message), ensuring the delivered message
-    // has real values.
+    // Streaming event hook — called by patched EventStream.prototype.push().
+    // Text deltas pass through unchanged (deobfuscation happens at the fetch
+    // response level via per-block SSE flushing). The message_end handler
+    // deobfuscates content blocks as a defense-in-depth measure.
     const isTextDelta = event.type === "text_delta";
     const isMessageUpdateTextDelta = event.type === "message_update" &&
       event.assistantMessageEvent?.type === "text_delta";
 
     if (isTextDelta || isMessageUpdateTextDelta) {
+      // Pass through text_delta events unchanged.
       let buf = stream[SHROUD_BUF];
-      if (!buf) { buf = { raw: "", emitted: 0, deobCount: 0 }; stream[SHROUD_BUF] = buf; }
+      if (!buf) { buf = { raw: "", deobCount: 0 }; stream[SHROUD_BUF] = buf; }
 
       const src = isMessageUpdateTextDelta ? event.assistantMessageEvent : event;
       const chunk = typeof src.delta === "string" ? src.delta
         : typeof src.text === "string" ? src.text : "";
-      if (!chunk) return event;
-
-      buf.raw += chunk;
-      const deob = ob().deobfuscate(buf.raw);
-
-      // Emit the new portion of the deobfuscated buffer
-      let newText: string;
-      if (deob.length > buf.emitted) {
-        newText = deob.slice(buf.emitted);
-        buf.emitted = deob.length;
-      } else {
-        // Deobfuscated text is shorter — fake was replaced with shorter real.
-        // Emit empty for this chunk; the accumulated delivery text already
-        // has some fake chars that will be corrected on message_end.
-        newText = "";
-        buf.emitted = deob.length;
-      }
-
-      if (newText !== chunk) {
-        buf.deobCount = (buf.deobCount || 0) + 1;
-        // Also increment the obfuscator's counter directly
-        const obInst = ob() as any;
-        if (typeof obInst._deobfuscationEvents === "number") {
-          obInst._deobfuscationEvents++;
-          obInst._totalReplacementsDeobfuscated++;
-        }
-        if (isMessageUpdateTextDelta) {
-          const patched = { ...src, delta: newText };
-          if (typeof src.text === "string") patched.text = newText;
-          event = { ...event, assistantMessageEvent: patched };
-        } else {
-          event = { ...event, delta: newText };
-          if (typeof event.text === "string") event.text = newText;
-        }
-      }
+      if (chunk) buf.raw += chunk;
+      return event;
     }
 
-    // On message_end/done: deobfuscate the full content in the partial/message
-    // to correct any partial fakes from streaming
+    // On message_end/done: deobfuscate content blocks in the final message.
+    // This is critical for streaming delivery — OpenClaw uses the content
+    // blocks from the done/message_end event as the authoritative text for
+    // channel delivery. Text_delta deob is disabled (causes garbled
+    // concatenation), but message_end content block deob must remain.
     const isEnd = event.type === "done" || event.type === "message_end" ||
       event.type === "error" || event.type === "agent_end" ||
       (event.type === "message_update" && (
@@ -771,14 +690,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
       }
 
-      // Audit: use the replacement count accumulated during streaming
-      const buf = stream[SHROUD_BUF];
-      const streamDeobCount = buf?.deobCount ?? 0;
-      if (streamDeobCount > 0 && auditActive) {
-        try {
-          emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), streamDeobCount);
-        } catch { /* best-effort */ }
-      }
       dumpStatsFile(obfuscator);
       delete stream[SHROUD_BUF];
     }
@@ -788,15 +699,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.logger?.info("[shroud] Installed global streaming deobfuscation hook");
 
   // -----------------------------------------------------------------------
-  // 7. Global deobfuscation hook for OpenClaw channel delivery.
-  //    OpenClaw calls this once, in its generic message-delivery function,
-  //    before sending to ANY channel (Slack, WhatsApp, Signal, web, etc.).
-  //    Transparent: if Shroud isn't loaded the global doesn't exist — no-op.
-  //    Works on all past + present releases with a single 3-line patch:
-  //
-  //      const deob = globalThis.__shroudDeobfuscate;
-  //      if (deob && typeof text === 'string') text = deob(text);
-  //
+  // 7. Global deobfuscation hook for channel delivery (defense-in-depth).
+  //    Primary deobfuscation happens in the fetch response interceptor (8).
+  //    This hook is available for any code that calls
+  //    globalThis.__shroudDeobfuscate(text) directly.
   // -----------------------------------------------------------------------
   (globalThis as any).__shroudDeobfuscate = (text: string): string => {
     if (typeof text !== "string") return text;
@@ -805,14 +711,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.logger?.info("[shroud] Registered globalThis.__shroudDeobfuscate for channel delivery");
 
   // -----------------------------------------------------------------------
-  // 8. Outbound fetch intercept: obfuscate ALL user message content before
-  //    it reaches any LLM API. This is the last line of defense — it works
-  //    regardless of which hooks fire, which OpenClaw version is running,
-  //    and which LLM provider is used (Anthropic, OpenAI, Google, etc.).
+  // 8. Fetch intercept — the universal privacy boundary.
   //
-  //    Patches globalThis.fetch to inspect outbound POST requests to known
-  //    LLM API paths (/messages, /chat/completions). If the request body
-  //    contains a messages array with user role content, obfuscate it.
+  //    REQUEST (obfuscation): Patches globalThis.fetch to intercept outbound
+  //    POST requests to LLM API paths (/v1/messages, /chat/completions, etc.).
+  //    Obfuscates all message content before it leaves the process.
+  //
+  //    RESPONSE (deobfuscation): Wraps the LLM's SSE response with a
+  //    per-block flushing TransformStream. Text deltas are buffered per
+  //    content block. On content_block_stop, the accumulated text is
+  //    deobfuscated and flushed — first delta gets the full real text,
+  //    subsequent deltas are emptied. Non-PII blocks stream with zero delay.
+  //    OpenClaw receives clean events; every channel gets real text.
   // -----------------------------------------------------------------------
   const LLM_API_PATHS = [
     "/v1/messages",             // Anthropic
@@ -955,10 +865,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           // Strip Slack markup first so PII detection works on clean text
           const cleaned = stripSlackLinks(text);
           const textChanged = cleaned !== text;
-          if (!needsObfuscation(cleaned)) {
-            // Even if no known reals found, return cleaned text if Slack links were stripped
-            return textChanged ? { text: cleaned, modified: true } : { text, modified: false };
-          }
+          // Always run obfuscation — the needsObfuscation check was skipping
+          // NEW PII that wasn't in the store (e.g., LLM-generated emails
+          // echoed back by the user). Detection must run on every message.
           const result = ob().obfuscate(cleaned);
           return result.entities.length > 0 || textChanged
             ? { text: result.obfuscated, modified: true }
@@ -1023,14 +932,283 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             headers.set("content-length", String(new TextEncoder().encode(newBody).length));
             newInit.headers = headers;
           }
-          return originalFetch.call(globalThis, input, newInit);
+          return deobfuscateResponse(originalFetch.call(globalThis, input, newInit));
         }
       } catch {
         // JSON parse failed or other error — pass through unmodified
       }
 
-      return originalFetch.call(globalThis, input, init);
+      return deobfuscateResponse(originalFetch.call(globalThis, input, init));
     };
+
+    // ── Response deobfuscation ──────────────────────────────
+    // Wraps the LLM response to replace fakes with reals BEFORE
+    // OpenClaw processes it. This is the universal deobfuscation
+    // point — OpenClaw receives clean text, so ALL channels,
+    // sessions, and delivery paths get real values automatically.
+    //
+    // For streaming (SSE): buffers the response body, deobfuscates
+    // all text content, returns a new Response with clean data.
+    // For JSON: wraps response.json() to deobfuscate.
+
+    async function deobfuscateResponse(fetchPromise: Promise<Response>): Promise<Response> {
+      const response = await fetchPromise;
+      if (!response.ok || !response.body) return response;
+
+      const contentType = response.headers.get("content-type") || "";
+
+      // SSE streaming response — per-block flushing.
+      // Non-PII events pass through immediately. Text deltas are buffered
+      // per content block. When content_block_stop arrives, the block's
+      // accumulated text is deobfuscated and all buffered events for that
+      // block are flushed — first delta gets the full deobbed text,
+      // subsequent deltas get empty strings. Preserves streaming UX:
+      // non-PII blocks stream normally, PII blocks delay by ~0.5-1s.
+      if (contentType.includes("text/event-stream")) {
+        // Per-block state
+        const blockAccum: Map<number, string> = new Map();
+        const blockBuffer: Map<number, string[]> = new Map();
+        // OpenAI per-choice state
+        const choiceAccum: Map<number, string> = new Map();
+        const choiceBuffer: Map<number, string[]> = new Map();
+
+        let sseRemainder = "";
+
+        const transform = new TransformStream<Uint8Array, Uint8Array>({
+          transform(chunk, controller) {
+            const text = sseRemainder + new TextDecoder().decode(chunk);
+            // SSE events are separated by \n\n
+            const parts = text.split("\n\n");
+            // Last part may be incomplete — save for next chunk
+            sseRemainder = parts.pop() || "";
+
+            for (const part of parts) {
+              if (!part.trim()) {
+                controller.enqueue(new TextEncoder().encode("\n\n"));
+                continue;
+              }
+
+              const dataLine = part.split("\n").find((l: string) => l.startsWith("data: "));
+              if (!dataLine) {
+                controller.enqueue(new TextEncoder().encode(part + "\n\n"));
+                continue;
+              }
+
+              let json: any;
+              try { json = JSON.parse(dataLine.slice(6)); } catch {
+                controller.enqueue(new TextEncoder().encode(part + "\n\n"));
+                continue;
+              }
+
+              // Anthropic text_delta: buffer until block_stop
+              if (json.type === "content_block_delta" && json.delta?.type === "text_delta") {
+                const idx = json.index ?? 0;
+                blockAccum.set(idx, (blockAccum.get(idx) || "") + (json.delta.text || ""));
+                if (!blockBuffer.has(idx)) blockBuffer.set(idx, []);
+                blockBuffer.get(idx)!.push(part);
+                // Don't flush yet — wait for content_block_stop
+                continue;
+              }
+
+              // Anthropic content_block_stop: flush buffered deltas for this block
+              if (json.type === "content_block_stop") {
+                const idx = json.index ?? 0;
+                const accumulated = blockAccum.get(idx);
+                const buffered = blockBuffer.get(idx);
+                if (accumulated && buffered && buffered.length > 0) {
+                  const deobbed = ob().deobfuscate(accumulated);
+                  // First buffered delta gets the full deobbed text
+                  let first = true;
+                  for (const eventStr of buffered) {
+                    const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
+                    if (dLine) {
+                      try {
+                        const dJson = JSON.parse(dLine.slice(6));
+                        if (dJson.delta?.type === "text_delta") {
+                          dJson.delta.text = first ? deobbed : "";
+                          first = false;
+                          const nonDataLines = eventStr.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
+                          const rebuilt = (nonDataLines ? nonDataLines + "\n" : "") + "data: " + JSON.stringify(dJson);
+                          controller.enqueue(new TextEncoder().encode(rebuilt + "\n\n"));
+                          continue;
+                        }
+                      } catch {}
+                    }
+                    controller.enqueue(new TextEncoder().encode(eventStr + "\n\n"));
+                  }
+                  blockAccum.delete(idx);
+                  blockBuffer.delete(idx);
+                }
+                // Emit the stop event itself
+                controller.enqueue(new TextEncoder().encode(part + "\n\n"));
+                continue;
+              }
+
+              // OpenAI delta.content: buffer until finish_reason
+              if (Array.isArray(json.choices)) {
+                let buffered = false;
+                for (const choice of json.choices) {
+                  const idx = choice.index ?? 0;
+                  if (typeof choice.delta?.content === "string") {
+                    choiceAccum.set(idx, (choiceAccum.get(idx) || "") + choice.delta.content);
+                    if (!choiceBuffer.has(idx)) choiceBuffer.set(idx, []);
+                    choiceBuffer.get(idx)!.push(part);
+                    buffered = true;
+                  }
+                  // finish_reason signals block complete — flush
+                  if (choice.finish_reason) {
+                    const accumulated = choiceAccum.get(idx);
+                    const buf = choiceBuffer.get(idx);
+                    if (accumulated && buf && buf.length > 0) {
+                      const deobbed = ob().deobfuscate(accumulated);
+                      let first = true;
+                      for (const eventStr of buf) {
+                        const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
+                        if (dLine) {
+                          try {
+                            const dJson = JSON.parse(dLine.slice(6));
+                            if (Array.isArray(dJson.choices)) {
+                              for (const c of dJson.choices) {
+                                if (typeof c.delta?.content === "string") {
+                                  c.delta.content = first ? deobbed : "";
+                                  first = false;
+                                }
+                              }
+                              const nonDataLines = eventStr.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
+                              const rebuilt = (nonDataLines ? nonDataLines + "\n" : "") + "data: " + JSON.stringify(dJson);
+                              controller.enqueue(new TextEncoder().encode(rebuilt + "\n\n"));
+                              continue;
+                            }
+                          } catch {}
+                        }
+                        controller.enqueue(new TextEncoder().encode(eventStr + "\n\n"));
+                      }
+                      choiceAccum.delete(idx);
+                      choiceBuffer.delete(idx);
+                    }
+                    buffered = false;
+                  }
+                }
+                if (buffered) continue;
+              }
+
+              // Deobfuscate content blocks in message events (message_start etc)
+              if (Array.isArray(json.message?.content)) {
+                for (const block of json.message.content) {
+                  if (block?.type === "text" && typeof block.text === "string") {
+                    block.text = ob().deobfuscate(block.text);
+                  }
+                }
+                const nonDataLines = part.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
+                const rebuilt = (nonDataLines ? nonDataLines + "\n" : "") + "data: " + JSON.stringify(json);
+                controller.enqueue(new TextEncoder().encode(rebuilt + "\n\n"));
+                continue;
+              }
+
+              // All other events pass through unchanged
+              controller.enqueue(new TextEncoder().encode(part + "\n\n"));
+            }
+          },
+
+          flush(controller) {
+            // Flush any remaining buffered content (stream ended mid-block)
+            for (const [idx, buffered] of blockBuffer) {
+              const accumulated = blockAccum.get(idx) || "";
+              const deobbed = ob().deobfuscate(accumulated);
+              let first = true;
+              for (const eventStr of buffered) {
+                const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
+                if (dLine) {
+                  try {
+                    const dJson = JSON.parse(dLine.slice(6));
+                    if (dJson.delta?.type === "text_delta") {
+                      dJson.delta.text = first ? deobbed : "";
+                      first = false;
+                      const nonDataLines = eventStr.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
+                      const rebuilt = (nonDataLines ? nonDataLines + "\n" : "") + "data: " + JSON.stringify(dJson);
+                      controller.enqueue(new TextEncoder().encode(rebuilt + "\n\n"));
+                      continue;
+                    }
+                  } catch {}
+                }
+                controller.enqueue(new TextEncoder().encode(eventStr + "\n\n"));
+              }
+            }
+            for (const [idx, buffered] of choiceBuffer) {
+              const accumulated = choiceAccum.get(idx) || "";
+              const deobbed = ob().deobfuscate(accumulated);
+              let first = true;
+              for (const eventStr of buffered) {
+                const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
+                if (dLine) {
+                  try {
+                    const dJson = JSON.parse(dLine.slice(6));
+                    if (Array.isArray(dJson.choices)) {
+                      for (const c of dJson.choices) {
+                        if (typeof c.delta?.content === "string") {
+                          c.delta.content = first ? deobbed : "";
+                          first = false;
+                        }
+                      }
+                      const nonDataLines = eventStr.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
+                      const rebuilt = (nonDataLines ? nonDataLines + "\n" : "") + "data: " + JSON.stringify(dJson);
+                      controller.enqueue(new TextEncoder().encode(rebuilt + "\n\n"));
+                      continue;
+                    }
+                  } catch {}
+                }
+                controller.enqueue(new TextEncoder().encode(eventStr + "\n\n"));
+              }
+            }
+            if (sseRemainder.trim()) {
+              controller.enqueue(new TextEncoder().encode(sseRemainder));
+            }
+          },
+        });
+
+        const newBody = response.body.pipeThrough(transform);
+        return new Response(newBody, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        });
+      }
+
+      // JSON response (non-streaming)
+      if (contentType.includes("application/json")) {
+        const text = await response.text();
+        try {
+          const json = JSON.parse(text);
+          if (Array.isArray(json.content)) {
+            for (const block of json.content) {
+              if (block?.type === "text" && typeof block.text === "string") {
+                block.text = ob().deobfuscate(block.text);
+              }
+            }
+          }
+          if (Array.isArray(json.choices)) {
+            for (const choice of json.choices) {
+              if (typeof choice.message?.content === "string") {
+                choice.message.content = ob().deobfuscate(choice.message.content);
+              }
+            }
+          }
+          return new Response(JSON.stringify(json), {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          });
+        } catch {
+          return new Response(text, {
+            status: response.status,
+            statusText: response.statusText,
+            headers: response.headers,
+          });
+        }
+      }
+
+      return response;
+    }
 
     api.logger?.info("[shroud] Installed outbound fetch intercept — PII obfuscated before ALL LLM API calls");
   }

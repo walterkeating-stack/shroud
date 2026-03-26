@@ -321,6 +321,14 @@ export class OpenClawRunner {
         realValues: ["admin@internal-corp.net"],
         checkMessageSending: true,
       },
+      // Slack E2E: full gateway → mock LLM → Slack delivery
+      // NOTE: requires Slack extension in sandbox — skipped if HTTP webhook unavailable
+      // {
+      //   name: "Slack E2E: echo email round-trip",
+      //   slackE2E: true,
+      //   message: "echo this back to me please: admin@internal-corp.net",
+      //   realValues: ["admin@internal-corp.net"],
+      // },
       // Multi-turn test — verifies deobfuscated assistant messages don't leak
       // real PII to the LLM on subsequent turns
       {

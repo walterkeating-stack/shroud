@@ -3,13 +3,13 @@
 #
 # Steps:
 #   1. Build (tsc)
-#   2. Run Slack HTTP chain tests (real servers, real fetch intercept)
+#   2. Run fetch response deobfuscation + Slack chain tests
 #   3. Copy to ~/.openclaw/extensions/shroud-privacy/
 #   4. Clear V8 compile cache
-#   5. Verify globalThis.__shroudDeobfuscate is registered
+#   5. Verify round-trip obfuscation/deobfuscation
 #
 # Usage:
-#   ./deploy-local.sh          # build + test + deploy
+#   ./deploy-local.sh              # build + test + deploy
 #   ./deploy-local.sh --skip-test  # build + deploy only
 set -e
 cd "$(dirname "$0")"
@@ -21,16 +21,16 @@ npm run build
 # ── Test ──
 if [ "$1" != "--skip-test" ]; then
   echo ""
-  echo "Running Slack HTTP chain tests..."
-  npx vitest run tests/slack-chain.test.ts --reporter=verbose
+  echo "Running tests..."
+  npx vitest run tests/fetch-response-deob.test.ts tests/slack-chain.test.ts --reporter=verbose
   echo ""
-  echo "All Slack chain tests passed."
+  echo "All tests passed."
 fi
 
 # ── Deploy ──
 DEST="$HOME/.openclaw/extensions/shroud-privacy"
 mkdir -p "$DEST"
-# Remove stale files from previous versions (e.g. fetch-preload.cjs)
+# Remove stale files from previous versions
 rm -f "$DEST/fetch-preload.cjs" 2>/dev/null || true
 cp -r dist package.json openclaw.plugin.json "$DEST/"
 echo "Deployed to $DEST"
@@ -47,7 +47,7 @@ fi
 
 # ── Post-install verification ──
 echo ""
-echo "Verifying __shroudDeobfuscate registration..."
+echo "Verifying fetch intercept + deobfuscation..."
 node -e "
   const { resolve } = require('path');
   const dist = resolve('$DEST', 'dist');
@@ -63,21 +63,30 @@ node -e "
         const config = resolveConfig({ secretKey: 'deploy-verify-key-1234567890' });
         const obf = new Obfuscator(config);
         registerHooks(api, obf);
-        if (typeof globalThis.__shroudDeobfuscate === 'function') {
-          console.log('  OK: globalThis.__shroudDeobfuscate is registered');
-          // Quick round-trip test
-          const r = obf.obfuscate('deploy-verify@acme.com');
-          const fake = r.mappingsUsed['deploy-verify@acme.com'];
-          if (!fake) { console.error('  FAIL: obfuscator did not detect email'); process.exit(1); }
-          const deob = globalThis.__shroudDeobfuscate('Contact ' + fake);
-          if (deob.includes('deploy-verify@acme.com')) {
-            console.log('  OK: round-trip deobfuscation works');
-          } else {
-            console.error('  FAIL: deobfuscation returned: ' + deob + ' (fake was: ' + fake + ')');
-            process.exit(1);
-          }
-        } else {
+
+        // Check globalThis.__shroudDeobfuscate
+        if (typeof globalThis.__shroudDeobfuscate !== 'function') {
           console.error('  FAIL: __shroudDeobfuscate not registered');
+          process.exit(1);
+        }
+        console.log('  OK: globalThis.__shroudDeobfuscate registered');
+
+        // Check fetch intercept is patched
+        if (!globalThis.__shroudFetchPatched) {
+          console.error('  FAIL: fetch intercept not installed');
+          process.exit(1);
+        }
+        console.log('  OK: fetch intercept installed');
+
+        // Round-trip test
+        const r = obf.obfuscate('deploy-verify@acme.com');
+        const fake = r.mappingsUsed['deploy-verify@acme.com'];
+        if (!fake) { console.error('  FAIL: obfuscator did not detect email'); process.exit(1); }
+        const deob = globalThis.__shroudDeobfuscate('Contact ' + fake);
+        if (deob.includes('deploy-verify@acme.com')) {
+          console.log('  OK: round-trip deobfuscation works');
+        } else {
+          console.error('  FAIL: deobfuscation returned: ' + deob + ' (fake was: ' + fake + ')');
           process.exit(1);
         }
       });
@@ -86,8 +95,8 @@ node -e "
 "
 
 echo ""
-echo "Deploy complete. Restart OpenClaw to pick up changes."
+echo "Deploy complete. Restart OpenClaw to pick up changes:"
+echo "  systemctl --user restart openclaw-gateway"
 echo ""
-echo "OpenClaw patch required (one line in the delivery function):"
-echo "  const deob = globalThis.__shroudDeobfuscate;"
-echo "  if (deob && typeof text === 'string') text = deob(text);"
+echo "No OpenClaw patches required — Shroud handles obfuscation and"
+echo "deobfuscation entirely through the fetch intercept."

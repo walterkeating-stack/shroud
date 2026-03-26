@@ -234,33 +234,19 @@ The CLI reads live stats from `/tmp/shroud-stats.json` (override with `SHROUD_ST
 
 ### How privacy works
 
-Shroud uses runtime prototype patches — **no OpenClaw files are modified**:
+Shroud uses **one `globalThis.fetch` intercept** for both directions — no OpenClaw file modifications required:
 
-**Outbound (PII → LLM):** Patches `globalThis.fetch` to intercept all POST requests to LLM API endpoints (`/messages`, `/chat/completions`). Obfuscates every message in the request body — user, assistant, system, tool results — before the request leaves the process. Strips Slack `<mailto:>` markup to prevent PII leaking through chat formatting. Re-obfuscates deobfuscated assistant messages in conversation history to prevent multi-turn PII leaks. Works for every LLM provider.
+**Outbound (PII → LLM):** The fetch intercept catches all POST requests to LLM API endpoints (`/v1/messages`, `/chat/completions`, `:generateContent`, etc.). Every message in the request body — user, assistant, system, tool results — is obfuscated before the request leaves the process. Slack `<mailto:>` markup is stripped to prevent PII leaking through chat formatting. Assistant messages from previous turns are re-obfuscated to prevent multi-turn PII leaks.
 
-**Inbound (LLM → User):** Patches `EventStream.prototype.push()` to deobfuscate streaming responses in real-time. Fake values are replaced with real values as they stream.
+**Inbound (LLM → User):** The same fetch intercept wraps the LLM's SSE streaming response with a per-block flushing `TransformStream`. Text deltas are buffered per content block. When `content_block_stop` arrives, the accumulated text is deobfuscated and flushed — the first delta receives the full real text, subsequent deltas are emptied. Non-PII blocks stream with zero delay. PII blocks delay by ~0.5-1s (time for one content block to complete). JSON (non-streaming) responses are parsed and deobfuscated directly.
 
-**Channel delivery:** Shroud registers `globalThis.__shroudDeobfuscate(text)` — a single global function that converts fake values back to real values. OpenClaw calls this once in its generic message delivery function, before sending to any channel. If Shroud isn't loaded, the function doesn't exist — transparent no-op. The `message_sending` hook provides a backup deobfuscation path.
+**Result:** OpenClaw receives already-deobfuscated events from the LLM response — it never sees fake text. Every delivery path (Slack, WhatsApp, TUI, Telegram, Discord, Signal, cron, subagents, web) gets real text automatically. Zero OpenClaw patches required. Works with `streaming: "on"` and `streaming: "off"`, and with every LLM provider.
 
-All patches are applied once at plugin load and are idempotent — subsequent loads detect and skip them.
-
-### OpenClaw channel delivery patch
-
-Shroud requires a one-line addition to OpenClaw's message delivery function — the single point where all outbound channel messages pass through. This covers ALL channels (Slack, WhatsApp, Signal, Telegram, web, etc.) with one change:
-
-```js
-// In OpenClaw's generic message delivery function:
-const deob = globalThis.__shroudDeobfuscate;
-if (deob && typeof text === 'string') text = deob(text);
-```
-
-**Why this works:**
-- **One change, all channels** — no per-channel hooks needed
-- **Transparent** — if Shroud isn't loaded, `globalThis.__shroudDeobfuscate` is `undefined`, the `if` is false, zero overhead
-- **All releases** — works on any OpenClaw version that sends channel messages through a common delivery path
-- **Last-moment deobfuscation** — fakes are replaced with real values at the latest possible point, just before the HTTP API call
-
-The `deploy-local.sh` script includes a post-install verification step that tests the full chain.
+**Defense-in-depth layers:**
+1. `EventStream.prototype.push()` patch — deobfuscates content blocks in `message_end` events
+2. `globalThis.__shroudDeobfuscate` — available for on-demand deobfuscation
+3. `message_sending` hook — deobfuscates outbound message content when fired by OpenClaw
+4. `before_message_write` hook — deobfuscates assistant messages in the transcript
 
 ### Rule hit counters
 

@@ -625,4 +625,163 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     const real = "No fakes here, just plain text.";
     expect(deobfuscate(real)).toBe(real);
   });
+
+  // ════════════════════════════════════════════════════════════════════
+  //  REGRESSION: streaming deob must not corrupt channel delivery
+  // ════════════════════════════════════════════════════════════════════
+
+  test("echo back: single email in, single email out — no duplication or garbling", async () => {
+    const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
+
+    const userInput = "echo this back to me please: walter@keating.at";
+    await handlers["before_prompt_build"]({ prompt: userInput, messages: [] });
+
+    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    llmResponseText = fakeEmail;
+
+    const resp = await fetch(`http://127.0.0.1:${llmServer.port}/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-3-5-sonnet-20241022", max_tokens: 1024,
+        messages: [{ role: "user", content: userInput }],
+      }),
+    });
+
+    // Verify LLM got fake, not real
+    const llmBody = llmServer.captures[0].parsed as any;
+    expect(llmBody.messages[0].content).not.toContain("walter@keating.at");
+    expect(llmBody.messages[0].content).toContain(fakeEmail);
+
+    // Simulate streaming: feed text_delta chunks through the stream deob hook
+    const streamHook = (globalThis as any).__shroudStreamDeobfuscate;
+    expect(typeof streamHook).toBe("function");
+    const mockStream: any = {};
+    const chunks = fakeEmail.match(/.{1,3}/g) || [fakeEmail];
+    const deliveredChunks: string[] = [];
+    for (const chunk of chunks) {
+      const evt = streamHook(mockStream, { type: "text_delta", delta: chunk, text: chunk });
+      deliveredChunks.push(evt?.delta ?? evt?.text ?? chunk);
+    }
+    // End the stream
+    const endEvt = streamHook(mockStream, {
+      type: "done",
+      message: { content: [{ type: "text", text: fakeEmail }] },
+    });
+
+    // before_message_write deobfuscates the final message
+    const json = await resp.json() as any;
+    const w = handlers["before_message_write"]({
+      message: { role: "assistant", content: json.content[0].text },
+    });
+    const afterWrite = w?.message?.content || json.content[0].text;
+
+    // __shroudDeobfuscate (channel delivery hook)
+    const channelText = deobfuscate(afterWrite);
+
+    // Deliver to Slack
+    await httpPost(slackServer.port, "/api/chat.postMessage", {
+      channel: "C_ECHO", text: channelText,
+    });
+
+    const slackText = (slackServer.captures[0].parsed as any).text;
+
+    // Must be exactly the real email — no duplication, no garbling
+    expect(slackText).toBe("walter@keating.at");
+    expect(slackText).not.toContain(fakeEmail);
+
+    // No concatenated emails (the original bug: "agentr@keating.atagent69@zenith.at")
+    const emails = slackText.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toBe("walter@keating.at");
+
+    // The done event deobfuscates content blocks (streaming delivery uses these)
+    const doneMsg = endEvt?.message;
+    if (doneMsg?.content?.[0]?.text) {
+      expect(doneMsg.content[0].text).toBe("walter@keating.at");
+    }
+  });
+
+  test("streaming deltas pass through unchanged (deob happens at fetch response level)", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+
+    await handlers["before_prompt_build"]({
+      prompt: "contact ceo@megacorp.com please",
+      messages: [],
+    });
+    const fakeEmail = obf.obfuscate("ceo@megacorp.com").mappingsUsed["ceo@megacorp.com"];
+
+    const streamHook = (globalThis as any).__shroudStreamDeobfuscate;
+    const mockStream: any = {};
+
+    // Stream the fake email in small chunks
+    const chunks = fakeEmail.match(/.{1,4}/g) || [fakeEmail];
+    const outputChunks: string[] = [];
+    for (const chunk of chunks) {
+      const evt = streamHook(mockStream, { type: "text_delta", delta: chunk });
+      outputChunks.push(evt?.delta ?? chunk);
+    }
+
+    // Deltas pass through unchanged — deobfuscation happens at the
+    // fetch response level (per-block flushing in the SSE TransformStream)
+    const streamedText = outputChunks.join("");
+    expect(streamedText).toBe(fakeEmail);
+
+    // message_end content blocks have the deobfuscated text
+    const endEvt = streamHook(mockStream, {
+      type: "done",
+      message: { content: [{ type: "text", text: fakeEmail }] },
+    });
+    expect(endEvt.message.content[0].text).toBe("ceo@megacorp.com");
+  });
+
+  test("WhatsApp echo: single email round-trip without garbling", async () => {
+    const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
+
+    const userInput = "echo this back to me please: walter@keating.at";
+    await handlers["before_prompt_build"]({ prompt: userInput, messages: [] });
+
+    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    llmResponseText = fakeEmail;
+
+    const resp = await fetch(`http://127.0.0.1:${llmServer.port}/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-3-5-sonnet-20241022", max_tokens: 1024,
+        messages: [{ role: "user", content: userInput }],
+      }),
+    });
+    const json = await resp.json() as any;
+
+    // Simulate streaming + message_sending (WhatsApp uses message_sending)
+    const streamHook = (globalThis as any).__shroudStreamDeobfuscate;
+    const mockStream: any = {};
+    for (const ch of fakeEmail.match(/.{1,5}/g) || [fakeEmail]) {
+      streamHook(mockStream, { type: "text_delta", delta: ch });
+    }
+    streamHook(mockStream, {
+      type: "done",
+      message: { content: [{ type: "text", text: fakeEmail }] },
+    });
+
+    // before_message_write deobfuscates
+    const w = handlers["before_message_write"]({
+      message: { role: "assistant", content: json.content[0].text },
+    });
+    const afterWrite = w?.message?.content || json.content[0].text;
+
+    // message_sending hook (WhatsApp path)
+    const sendResult = await handlers["message_sending"]({ content: afterWrite });
+    const channelContent = sendResult?.content ?? afterWrite;
+
+    // __shroudDeobfuscate (global hook — may also fire)
+    const finalText = deobfuscate(channelContent);
+
+    // Must be exactly the real email
+    expect(finalText).toBe("walter@keating.at");
+    const emails = finalText.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toBe("walter@keating.at");
+  });
 });
