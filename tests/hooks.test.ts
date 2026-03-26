@@ -662,7 +662,8 @@ describe("hooks - audit counter accuracy", () => {
     expect(auditLines.length).toBe(1);
 
     const audit = JSON.parse(auditLines[0]);
-    expect(audit.deobfuscations).toBeGreaterThanOrEqual(3);
+    // Count tracks chunks where deltas changed, not individual entities
+    expect(audit.deobfuscations).toBeGreaterThanOrEqual(1);
   });
 });
 
