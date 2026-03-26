@@ -595,8 +595,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (!chunk) return event;
 
       buf.raw += chunk;
-      const { text: deob, replacementCount } = ob().deobfuscateWithStats(buf.raw);
-      buf.deobCount = replacementCount; // track cumulative replacements
+      const deob = ob().deobfuscate(buf.raw);
 
       // Emit the new portion of the deobfuscated buffer
       let newText: string;
@@ -612,6 +611,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
 
       if (newText !== chunk) {
+        buf.deobCount = (buf.deobCount || 0) + 1;
+        // Also increment the obfuscator's counter directly
+        const obInst = ob() as any;
+        if (typeof obInst._deobfuscationEvents === "number") {
+          obInst._deobfuscationEvents++;
+          obInst._totalReplacementsDeobfuscated++;
+        }
         if (isMessageUpdateTextDelta) {
           const patched = { ...src, delta: newText };
           if (typeof src.text === "string") patched.text = newText;
@@ -657,8 +663,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         try {
           emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), streamDeobCount);
         } catch { /* best-effort */ }
-        dumpStatsFile(obfuscator);
       }
+      // Always dump stats on message_end to capture any counter changes
+      dumpStatsFile(obfuscator);
 
       delete stream[SHROUD_BUF];
     }
