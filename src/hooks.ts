@@ -474,6 +474,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("message_sending", async (event: any) => {
     if (!event?.content) return;
 
+    // If streaming deobfuscation already delivered this message to channels,
+    // skip to avoid duplicate delivery (one with fakes, one with real values).
+    if ((globalThis as any).__shroudStreamDelivered) {
+      (globalThis as any).__shroudStreamDelivered = false;
+      return;
+    }
+
     // String content — direct deobfuscation
     if (typeof event.content === "string") {
       if (auditActive) {
@@ -580,6 +587,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // but the final message will be correct.
   const SHROUD_BUF = Symbol("shroudStreamBuf");
 
+  // Track whether streaming deobfuscation delivered content for the current
+  // message. When streaming is active, the channel already received the
+  // deobfuscated deltas in real time — message_sending must not re-deliver.
+  const g = globalThis as any;
+  g.__shroudStreamDelivered = false;
+
   (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
     const isTextDelta = event.type === "text_delta";
     const isMessageUpdateTextDelta = event.type === "message_update" &&
@@ -668,6 +681,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       dumpStatsFile(obfuscator);
 
       delete stream[SHROUD_BUF];
+
+      // Signal that streaming already delivered deobfuscated content to channels.
+      // message_sending checks this to avoid duplicate delivery.
+      g.__shroudStreamDelivered = true;
     }
 
     return event;
