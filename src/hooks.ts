@@ -244,6 +244,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ob().resetToolDepth();
     }
 
+
     const prompt = event?.prompt;
     if (typeof prompt !== "string" || !prompt) return;
 
@@ -474,12 +475,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("message_sending", async (event: any) => {
     if (!event?.content) return;
 
-    // If streaming deobfuscation already delivered this message to channels,
-    // skip to avoid duplicate delivery (one with fakes, one with real values).
-    if ((globalThis as any).__shroudStreamDelivered) {
-      (globalThis as any).__shroudStreamDelivered = false;
-      return;
-    }
 
     // String content — direct deobfuscation
     if (typeof event.content === "string") {
@@ -529,7 +524,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   api.registerTool({
     name: "shroud-stats",
-    description: "Show Shroud privacy plugin status: active rules, per-rule hit counts, store size, and config summary.",
+    description: "Show plugin diagnostics: rule status, counters, and configuration summary.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
     handler: async () => {
       const stats = ob().config;
@@ -586,12 +581,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // overflow chunks. Partial fakes may briefly appear during streaming
   // but the final message will be correct.
   const SHROUD_BUF = Symbol("shroudStreamBuf");
-
-  // Track whether streaming deobfuscation delivered content for the current
-  // message. When streaming is active, the channel already received the
-  // deobfuscated deltas in real time — message_sending must not re-deliver.
-  const g = globalThis as any;
-  g.__shroudStreamDelivered = false;
 
   (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
     const isTextDelta = event.type === "text_delta";
@@ -681,10 +670,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       dumpStatsFile(obfuscator);
 
       delete stream[SHROUD_BUF];
-
-      // Signal that streaming already delivered deobfuscated content to channels.
-      // message_sending checks this to avoid duplicate delivery.
-      g.__shroudStreamDelivered = true;
     }
 
     return event;
@@ -825,29 +810,62 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           return false;
         }
 
+        // Strip Slack mrkdwn link formatting before obfuscation.
+        // Slack wraps emails as <mailto:X|DISPLAY> and URLs as <URL|DISPLAY>,
+        // splitting PII across tag boundaries. If left in, the obfuscator
+        // replaces the plain email but leaves <mailto:real@email|...> intact,
+        // leaking real PII to the LLM.
+        function stripSlackLinks(text: string): string {
+          text = text.replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1");
+          text = text.replace(/<https?:\/\/[^|>]+\|([^>]*)>/g, "$1");
+          text = text.replace(/<(https?:\/\/[^>]+)>/g, "$1");
+          return text;
+        }
+
         function obfuscateText(text: string): { text: string; modified: boolean } {
-          if (!needsObfuscation(text)) return { text, modified: false };
-          const result = ob().obfuscate(text);
-          return result.entities.length > 0
+          // Strip Slack markup first so PII detection works on clean text
+          const cleaned = stripSlackLinks(text);
+          const textChanged = cleaned !== text;
+          if (!needsObfuscation(cleaned)) {
+            // Even if no known reals found, return cleaned text if Slack links were stripped
+            return textChanged ? { text: cleaned, modified: true } : { text, modified: false };
+          }
+          const result = ob().obfuscate(cleaned);
+          return result.entities.length > 0 || textChanged
             ? { text: result.obfuscated, modified: true }
             : { text, modified: false };
         }
 
         for (const msg of messageArray) {
-          // Skip assistant/model messages — they contain deobfuscated text
-          if (msg.role === "assistant" || msg.role === "model") continue;
+          // Assistant/model messages may contain deobfuscated text (real PII)
+          // from before_message_write. Must re-obfuscate to prevent leaking
+          // real values to the LLM in subsequent turns.
 
           // Anthropic/OpenAI: string content
           if (typeof msg.content === "string") {
             const r = obfuscateText(msg.content);
-            if (r.modified) { msg.content = r.text; modified = true; }
+            if (r.modified) {
+              msg.content = r.text; modified = true;
+            } else if (msg.role === "assistant" || msg.role === "model") {
+              const result = ob().obfuscate(msg.content);
+              if (result.entities.length > 0) {
+                msg.content = result.obfuscated; modified = true;
+              }
+            }
           }
           // Anthropic/OpenAI: array content blocks
           else if (Array.isArray(msg.content)) {
+            const isAssistant = msg.role === "assistant" || msg.role === "model";
             for (const block of msg.content) {
               if (block?.type === "text" && typeof block.text === "string") {
                 const r = obfuscateText(block.text);
                 if (r.modified) { block.text = r.text; modified = true; }
+                else if (isAssistant) {
+                  const result = ob().obfuscate(block.text);
+                  if (result.entities.length > 0) {
+                    block.text = result.obfuscated; modified = true;
+                  }
+                }
               }
             }
           }

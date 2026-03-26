@@ -6,6 +6,8 @@
  */
 
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { resolveConfig } from "./config.js";
 import { Obfuscator } from "./obfuscator.js";
 import { registerHooks } from "./hooks.js";
@@ -63,6 +65,37 @@ function patchEventStreamPrototype(logger: any): void {
     } catch { /* not found from binary location */ }
   }
 
+  // Strategy 4: find the file on disk via known paths (bypasses exports restriction)
+  if (!EventStream) {
+    const candidates = [
+      // From OpenClaw's npm global install
+      process.argv[1] && join(dirname(dirname(process.argv[1])), "lib", "node_modules", "openclaw", "node_modules", "@mariozechner", "pi-ai", "dist", "utils", "event-stream.js"),
+      // From npm global prefix
+      join(process.env.HOME || "/root", ".npm-global", "lib", "node_modules", "openclaw", "node_modules", "@mariozechner", "pi-ai", "dist", "utils", "event-stream.js"),
+      // Common global locations
+      "/usr/local/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js",
+      "/usr/lib/node_modules/openclaw/node_modules/@mariozechner/pi-ai/dist/utils/event-stream.js",
+    ].filter(Boolean) as string[];
+
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) continue;
+      try {
+        // Use dynamic import to load the ESM module directly by file path
+        const fileUrl = "file://" + candidate;
+        // We can't use top-level await, so use createRequire with the file's own dir
+        // to bypass the parent package.json exports
+        const localRequire = createRequire(candidate);
+        // Try requiring from the file's own directory (no exports restriction from parent)
+        const mod = localRequire("./event-stream.js");
+        EventStream = mod?.EventStream ?? mod?.default?.EventStream;
+        if (EventStream) {
+          logger?.info(`[shroud] Found EventStream via direct file path: ${candidate}`);
+          break;
+        }
+      } catch { /* try next */ }
+    }
+  }
+
   if (!EventStream?.prototype?.push) {
     logger?.info(
       "[shroud] Could not locate EventStream class — streaming deobfuscation unavailable",
@@ -104,7 +137,7 @@ export default {
     api.registerTool({
       name: "shroud_status",
       description:
-        "Show Shroud privacy stats: entity counts, session info, audit status",
+        "Show plugin diagnostics: entity counts, session info, status",
       inputSchema: {
         type: "object",
         properties: {},
@@ -124,7 +157,7 @@ export default {
     api.registerTool({
       name: "shroud_reset",
       description:
-        "Clear all Shroud mappings and start a fresh privacy session",
+        "Clear all plugin mappings and start a fresh session",
       inputSchema: {
         type: "object",
         properties: {},
