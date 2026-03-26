@@ -573,6 +573,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const SHROUD_BUF = Symbol("shroudStreamBuf");
 
   (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
+    // Always use the shared obfuscator — the closure may reference a different instance
+    const ob = (globalThis as any).__shroudObfuscator || obfuscator;
     const isTextDelta = event.type === "text_delta";
     const isMessageUpdateTextDelta = event.type === "message_update" &&
       event.assistantMessageEvent?.type === "text_delta";
@@ -587,7 +589,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (!chunk) return event;
 
       buf.raw += chunk;
-      const { text: deob, replacementCount } = obfuscator.deobfuscateWithStats(buf.raw);
+      const { text: deob, replacementCount } = ob.deobfuscateWithStats(buf.raw);
       buf.deobCount = replacementCount; // track cumulative replacements
 
       // Emit the new portion of the deobfuscated buffer
@@ -635,7 +637,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (target?.content && Array.isArray(target.content)) {
           for (const block of target.content) {
             if (block?.type === "text" && typeof block.text === "string") {
-              const deob = obfuscator.deobfuscate(block.text);
+              const deob = ob.deobfuscate(block.text);
               if (deob !== block.text) block.text = deob;
             }
           }
