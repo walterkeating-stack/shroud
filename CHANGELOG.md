@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.23] - 2026-03-26
+
+### Fixed
+- **Channel message duplication** — Slack/WhatsApp received two copies of each assistant message (one with fake tokens, one with real values). Added `__shroudStreamDelivered` coordination flag so `message_sending` skips when streaming already delivered.
+- **Test harness truly patchless** — removed vestigial `_applyPatches()` method from OpenClaw sandbox runner. Tests now run against a completely unmodified OpenClaw install.
+
+### Changed
+- README: updated "How privacy works" section to reflect zero-file-modification architecture (runtime prototype patches only, no backups or cache clearing)
+
 ## [2.0.22] - 2026-03-25
 
 ### Added

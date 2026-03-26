@@ -249,19 +249,13 @@ The CLI reads live stats from `/tmp/shroud-stats.json` (override with `SHROUD_ST
 
 ### How privacy works
 
-Shroud uses two runtime patches that work independently of OpenClaw's hook system:
+Shroud uses two runtime prototype patches — no OpenClaw files are modified:
 
 **Outbound (PII → LLM):** Patches `globalThis.fetch` to intercept all POST requests to LLM API endpoints (`/messages`, `/chat/completions`). Obfuscates every message in the request body — user, assistant, system, tool results — before the request leaves the process. Works for every LLM provider.
 
-**Inbound (LLM → User):** Patches pi-ai's `EventStream.push()` to deobfuscate streaming responses in real-time. Fake values are replaced with real values as they stream. The `deploy-local.sh` script applies this patch on first install.
+**Inbound (LLM → User):** Patches `EventStream.prototype.push()` at import time to deobfuscate streaming responses in real-time. Fake values are replaced with real values as they stream. No file modifications, no backups, no cache clearing needed.
 
-The EventStream patch:
-1. Backs up the original file (`.shroud-backup`)
-2. Injects a 4-line hook that calls `globalThis.__shroudStreamDeobfuscate`
-3. Clears the Node.js V8 compile cache (including root-owned cache for systemd gateway)
-4. Triggers a gateway restart via SIGUSR1
-
-On subsequent loads, both patches are detected and skipped. To revert the EventStream patch: restore the `.shroud-backup` file and restart.
+Both patches are applied once at plugin load and are idempotent — subsequent loads detect and skip them.
 
 ### Rule hit counters
 

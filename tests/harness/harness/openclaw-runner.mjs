@@ -17,8 +17,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import {
-  mkdirSync, writeFileSync, cpSync, existsSync, readFileSync,
-  readdirSync, rmSync,
+  mkdirSync, writeFileSync, cpSync, existsSync, readFileSync, rmSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir, homedir } from "node:os";
@@ -58,7 +57,6 @@ export class OpenClawRunner {
       await this._startMockLlm();
       this._setupState();
       this._installShroudPlugin();
-      this._applyPatches();
       this._writeConfig();
       await this._runScenarios();
     } finally {
@@ -140,36 +138,6 @@ export class OpenClawRunner {
     }
 
     this._log("Shroud plugin installed");
-  }
-
-  // ── Patches (prompt override only — EventStream is patched at runtime) ──
-
-  _applyPatches() {
-    let patchCount = 0;
-
-    // Patch: pi-embedded prompt override
-    const distDir = join(this.sandboxDir, "node_modules", "openclaw", "dist");
-    try {
-      const files = readdirSync(distDir).filter(f => f.startsWith("pi-embedded-") && f.endsWith(".js"));
-      for (const file of files) {
-        const filePath = join(distDir, file);
-        let code = readFileSync(filePath, "utf-8");
-        if (code.includes("hookResult.prompt")) continue;
-
-        code = code.replace(
-          "systemPrompt: promptBuildResult?.systemPrompt",
-          "prompt: promptBuildResult?.prompt ?? legacyResult?.prompt, systemPrompt: promptBuildResult?.systemPrompt",
-        );
-        code = code.replace(
-          "if (hookResult?.prependContext) {",
-          "if (hookResult?.prompt) { effectivePrompt = hookResult.prompt; } else if (hookResult?.prependContext) {",
-        );
-        writeFileSync(filePath, code);
-        patchCount++;
-      }
-    } catch {}
-
-    this._log(`Applied ${patchCount} patch(es)`);
   }
 
   // ── Config ────────────────────────────────────────────────
