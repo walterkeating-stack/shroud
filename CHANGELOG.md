@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.0] - 2026-03-26
+
+### Added
+- **`globalThis.__shroudDeobfuscate` — single global hook for all channel delivery.** Replaces per-channel deobfuscation with one function that OpenClaw calls before ANY channel send (Slack, WhatsApp, Signal, web, etc.). Transparent no-op if Shroud isn't loaded. Works on all OpenClaw releases with a one-line patch to the delivery function.
+- **Real Slack HTTP test chain** — 11 tests with two real HTTP servers (mock LLM + mock Slack API). Exercises the full pipeline: real `fetch()` intercepted by fetch guard → real `http.request` to Slack. Tests include: E2E happy path, Slack mailto markup, LLM-invented CGNAT IPs, truncated fakes, non-string input, mixed real+fake, multi-turn re-obfuscation, concurrent 3-channel delivery, JSON structure preservation, two private subnets, idempotency.
+- **Post-install verification** — `deploy-local.sh` now runs the Slack chain tests after deployment to verify the full pipeline works.
+
+### Changed
+- **Channel delivery architecture** — channel deobfuscation now flows through `globalThis.__shroudDeobfuscate` (one global hook) instead of relying solely on the `message_sending` hook. The `message_sending` hook remains as a backup path.
+- `fetch-preload.cjs` superseded — the child-process fetch preload script is no longer needed. The global deobfuscation hook covers all channels from the main process.
+
 ## [2.1.0] - 2026-03-26
 
 ### Breaking
