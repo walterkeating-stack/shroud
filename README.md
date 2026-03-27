@@ -21,11 +21,13 @@
 
 | Hook | Direction | What happens |
 |------|-----------|-------------|
-| `before_prompt_build` | User → LLM | Obfuscate user prompt, prepend privacy context |
-| `before_message_write` | Any → History | Obfuscate non-assistant messages; deobfuscate assistant messages |
+| `globalThis.fetch` intercept | User → LLM | Obfuscate all outbound LLM API requests; deobfuscate SSE responses per content block |
+| `before_prompt_build` | User → LLM | Pre-seed mapping store so the fetch intercept has mappings ready |
+| `before_message_write` | Any → History | Deobfuscate assistant messages for transcript; re-obfuscate on next turn |
 | `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
-| `message_sending` | Agent → User | Deobfuscate outbound messages (all channels) |
+| `message_sending` | Agent → User | Deobfuscate outbound messages (backup — fetch intercept handles primary deob) |
+| `globalThis.__shroudStreamDeobfuscate` | LLM → Agent | Streaming event deobfuscation hook |
 | `globalThis.__shroudDeobfuscate` | Agent → Channel | Global deobfuscation hook — called by OpenClaw before ANY channel send |
 
 > **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates detected PII in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. Detected PII never reaches the LLM. Detection covers 100+ entity types; see [SECURITY.md](SECURITY.md) for known limitations. On the channel delivery side, Shroud registers `globalThis.__shroudDeobfuscate` — a single function that OpenClaw calls before sending to ANY channel (Slack, WhatsApp, Signal, web, etc.). One hook, all channels, transparent no-op if Shroud isn't loaded.
