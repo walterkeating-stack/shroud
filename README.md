@@ -28,7 +28,7 @@
 | `message_sending` | Agent → User | Deobfuscate outbound messages (all channels) |
 | `globalThis.__shroudDeobfuscate` | Agent → Channel | Global deobfuscation hook — called by OpenClaw before ANY channel send |
 
-> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates PII in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. No PII reaches the LLM. On the channel delivery side, Shroud registers `globalThis.__shroudDeobfuscate` — a single function that OpenClaw calls before sending to ANY channel (Slack, WhatsApp, Signal, web, etc.). One hook, all channels, transparent no-op if Shroud isn't loaded.
+> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates detected PII in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. Detected PII never reaches the LLM. Detection covers 100+ entity types; see [SECURITY.md](SECURITY.md) for known limitations. On the channel delivery side, Shroud registers `globalThis.__shroudDeobfuscate` — a single function that OpenClaw calls before sending to ANY channel (Slack, WhatsApp, Signal, web, etc.). One hook, all channels, transparent no-op if Shroud isn't loaded.
 
 > **Requires OpenClaw 2026.3.24 or later** with the channel delivery patch (see [OpenClaw patch](#openclaw-channel-delivery-patch) below).
 
