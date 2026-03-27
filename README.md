@@ -2,27 +2,72 @@
   <img src="logo.png" alt="Shroud" width="160" height="160">
 </p>
 
-<h1 align="center">Shroud — Community Edition</h1>
+<h1 align="center">Shroud</h1>
 
 <p align="center">
-  Privacy obfuscation for AI agents. Detects sensitive data (PII, network infrastructure, credentials) and replaces it with deterministic fake values before anything reaches the LLM. Tool calls still work because Shroud deobfuscates on the way back. Works with <a href="https://openclaw.ai">OpenClaw</a> (plugin) or any agent via the Agent Privacy Protocol (APP).
+  <strong>Privacy and infrastructure protection for AI agents.</strong><br>
+  Prevents sensitive data from reaching LLMs — PII, network topology, credentials, OT/SCADA identifiers, and internal infrastructure details are replaced with deterministic fakes before any API call leaves the process. Responses are deobfuscated transparently so users and tools see real values.
 </p>
 
-> **Open-source Community Edition** — free to use under Apache 2.0 license. [Enterprise Edition](#enterprise-edition) available with additional features for teams.
+<p align="center">
+  <a href="#install">Install</a> &middot;
+  <a href="#why-shroud">Why Shroud</a> &middot;
+  <a href="#configure">Configure</a> &middot;
+  <a href="#agent-privacy-protocol-app">APP Protocol</a> &middot;
+  <a href="CHANGELOG.md">Changelog</a>
+</p>
+
+> Apache 2.0 &middot; Zero runtime dependencies &middot; Works with [OpenClaw](https://openclaw.ai) or any agent via [APP](#agent-privacy-protocol-app)
+
+---
+
+## Why Shroud
+
+Frontier LLMs are transformative for infrastructure operations — network troubleshooting, incident response, change planning, compliance audits. But every prompt you send is an API call to a third party. Without protection, you're transmitting:
+
+- **Network topology** — subnets, VLANs, BGP ASNs, OSPF areas, interface descriptions, ACL names, route-maps
+- **Device identities** — hostnames, management IPs, SNMP communities, firmware versions
+- **Credentials** — API keys, connection strings, PSKs, enable secrets, TACACS/RADIUS shared keys
+- **OT/SCADA identifiers** — Modbus addresses, OPC-UA endpoints, IEC 61850 IED names, historian tags, BACnet device IDs
+- **Customer PII** — emails, phone numbers, national IDs, credit cards, physical addresses
+- **Internal URLs** — wiki pages, Jira tickets, admin portals, API endpoints
+
+Shroud sits between your agent and the LLM. It detects all of the above (100+ entity types), replaces each with a deterministic format-preserving fake, and reverses the mapping on the way back. The LLM reasons over realistic-looking data. Your real infrastructure stays private.
+
+### Who needs this
+
+| Sector | What leaks without Shroud |
+|--------|--------------------------|
+| **Telecoms & ISPs** | MPLS topologies, BGP peering, customer CPE configs, circuit IDs |
+| **Energy & utilities** | SCADA/ICS endpoints, substation IPs, OPC-UA tags, DNP3 addresses |
+| **Transport & aviation** | ATC sector IDs, NAV frequencies, signalling network topology |
+| **Banking & finance** | Internal API endpoints, database connection strings, customer PII |
+| **Healthcare** | Patient identifiers, internal system hostnames, API credentials |
+| **Government & defence** | Classified network segments, device inventories, operational IPs |
+| **Any enterprise** | Internal URLs, credentials, employee PII, customer data |
+
+### Regulatory context
+
+If you process personal data of EU residents, **GDPR Article 32** requires "appropriate technical measures" to protect it. Sending unredacted PII to a third-party LLM API is a data transfer — Shroud ensures detected PII never leaves your process. Similar obligations exist under CCPA, HIPAA, PCI-DSS, and sector-specific regulations (NIS2, NERC CIP, IEC 62443).
+
+Shroud does not guarantee compliance — regex-based detection has limitations (see [SECURITY.md](SECURITY.md)). But it is a meaningful technical control that reduces exposure.
+
+---
 
 ## What it does
 
-1. **Detects** 100+ entity types: emails, IPs, phones, API keys, hostnames, SNMP communities, BGP ASNs, credit cards, SSNs, file paths, URLs, person/org/location names, VLANs, route-maps, ACLs, OSPF IDs, IBANs, JWTs, PEM certs, GPS coordinates, ICS/SCADA identifiers, Palo Alto/Check Point/Juniper/Fortinet/F5 config secrets, and custom regex patterns.
+1. **Detects** 100+ entity types: emails, IPs, phones, API keys, hostnames, SNMP communities, BGP ASNs, credit cards, SSNs, file paths, URLs, person/org/location names, VLANs, route-maps, ACLs, OSPF IDs, IBANs, JWTs, PEM certs, GPS coordinates, ICS/SCADA identifiers, vendor-specific secrets (Cisco, Juniper, Palo Alto, Check Point, Fortinet, F5, Arista), and custom regex patterns.
 2. **Replaces** each value with a deterministic fake (same input + key = same fake every time). Fakes are format-preserving: IPv4 stays in CGNAT range (`100.64.0.0/10`), IPv6 uses ULA range (`fd00::/8`), emails keep `@domain` structure, credit cards pass Luhn, etc.
-3. **Deobfuscates** LLM responses and tool parameters so the user sees real values and tools receive real arguments.
-4. **Audit logs** every obfuscation/deobfuscation event with counts, categories, char deltas, and optional proof hashes — never logging raw sensitive values.
+3. **Passes through public URLs** — external URLs (arxiv.org, docs.stripe.com, etc.) are not obfuscated. Shroud resolves FQDNs via DNS: public IPs pass through, RFC 1918 / NXDOMAIN / internal IPs are obfuscated. Well-known platforms (GitHub, YouTube, Wikipedia, etc.) are always passed through.
+4. **Deobfuscates** LLM responses and tool parameters so the user sees real values and tools receive real arguments.
+5. **Audit logs** every event with counts, categories, char deltas, and optional proof hashes — never logging raw sensitive values.
 
 ### Hook lifecycle
 
 | Hook | Direction | What happens |
 |------|-----------|-------------|
 | `globalThis.fetch` intercept | User → LLM | Obfuscate all outbound LLM API requests; deobfuscate SSE responses per content block |
-| `before_prompt_build` | User → LLM | Pre-seed mapping store so the fetch intercept has mappings ready |
+| `before_prompt_build` | User → LLM | Warm DNS cache for URL classification; pre-seed mapping store |
 | `before_message_write` | Any → History | Deobfuscate assistant messages for transcript; re-obfuscate on next turn |
 | `before_tool_call` | LLM → Tool | Deobfuscate tool parameters + track tool chain depth |
 | `tool_result_persist` | Tool → History | Obfuscate tool results before storing |
@@ -30,27 +75,26 @@
 | `globalThis.__shroudStreamDeobfuscate` | LLM → Agent | Streaming event deobfuscation hook |
 | `globalThis.__shroudDeobfuscate` | Agent → Channel | Global deobfuscation hook — called by OpenClaw before ANY channel send |
 
-> **Privacy guarantee:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates detected PII in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. Detected PII never reaches the LLM. Detection covers 100+ entity types; see [SECURITY.md](SECURITY.md) for known limitations. On the channel delivery side, Shroud registers `globalThis.__shroudDeobfuscate` — a single function that OpenClaw calls before sending to ANY channel (Slack, WhatsApp, Signal, web, etc.). One hook, all channels, transparent no-op if Shroud isn't loaded.
+> **How it works:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates detected entities in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. On the response side, SSE streaming is deobfuscated per content block with buffered flushing. Every delivery path (Slack, WhatsApp, TUI, Telegram, Discord, Signal, web) gets real text automatically. Zero host patches required.
 
-> **Requires OpenClaw 2026.3.24 or later** with the channel delivery patch (see [OpenClaw patch](#openclaw-channel-delivery-patch) below).
+> **Requires OpenClaw 2026.3.24 or later.**
+
+---
 
 ## Install
 
 ### OpenClaw (2026.3.24+)
 
 ```bash
-# Ensure you're on OpenClaw 2026.3.24 or later
-openclaw --version
-
-# Install Shroud
+openclaw --version    # ensure 2026.3.24+
 openclaw plugins install shroud-privacy
 ```
 
-Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`. No OpenClaw file modifications needed — Shroud uses runtime prototype patches only.
+Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`. No OpenClaw file modifications needed — Shroud uses runtime interception only.
 
 ### Any agent (via APP)
 
-The **Agent Privacy Protocol** (APP) lets any AI agent add privacy obfuscation — no OpenClaw required. Shroud ships with an APP server and a Python client.
+The **Agent Privacy Protocol** (APP) lets any AI agent add privacy and infrastructure protection — no OpenClaw required. Shroud ships with an APP server and a Python client.
 
 ```bash
 npm install shroud-privacy
@@ -83,19 +127,19 @@ node node_modules/shroud-privacy/app-server.mjs node_modules/shroud-privacy/dist
 
 Handshake (server writes on startup):
 ```json
-{"app":"1.0","engine":"shroud","version":"2.2.5","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
+{"app":"1.0","engine":"shroud","version":"2.2.7","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
 ```
 
 Obfuscate:
 ```json
-→ {"id":1,"method":"obfuscate","params":{"text":"Contact admin@acme.com"}}
-← {"id":1,"result":{"text":"Contact user@example.net","entityCount":1,"categories":{"email":1},"modified":true}}
+> {"id":1,"method":"obfuscate","params":{"text":"Contact admin@acme.com"}}
+< {"id":1,"result":{"text":"Contact user@example.net","entityCount":1,"categories":{"email":1},"modified":true}}
 ```
 
 Deobfuscate:
 ```json
-→ {"id":2,"method":"deobfuscate","params":{"text":"Contact user@example.net"}}
-← {"id":2,"result":{"text":"Contact admin@acme.com","replacementCount":1,"modified":true}}
+> {"id":2,"method":"deobfuscate","params":{"text":"Contact user@example.net"}}
+< {"id":2,"result":{"text":"Contact admin@acme.com","replacementCount":1,"modified":true}}
 ```
 
 Other methods: `reset`, `stats`, `health`, `configure`, `shutdown`.
@@ -113,11 +157,12 @@ openclaw gateway restart
 ## Updating
 
 ```bash
-# Remove old plugin, reinstall from npm, restart
 openclaw plugins remove shroud-privacy
 openclaw plugins install shroud-privacy
 openclaw gateway restart
 ```
+
+---
 
 ## Configure
 
@@ -127,11 +172,7 @@ Edit `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`
 "shroud-privacy": {
   "enabled": true,
   "config": {
-    // Recommended: safe defaults for community use
     "auditEnabled": true           // audit log on — see what Shroud is doing
-    // "auditIncludeProofHashes": false  // off by default (opt-in)
-    // "auditMaxFakesSample": 0          // off by default (opt-in)
-    // "auditLogFormat": "human"         // human-readable single lines
     // "minConfidence": 0.0              // catch everything (default)
     // "secretKey": ""                   // auto-generated if empty
     // "persistentSalt": ""              // set for cross-session consistency
@@ -151,29 +192,17 @@ openclaw gateway restart
 Out of the box, Shroud:
 - Auto-generates a secret key (per-session unless you set `secretKey`)
 - Detects all entity categories at confidence >= 0.0
+- Passes through public URLs (DNS-verified) and well-known platforms
 - Logs audit lines (counts + categories) but **not** proof hashes or fake samples
-- Never logs raw values, real→fake mappings, or original text
+- Never logs raw values, real-to-fake mappings, or original text
 
-To enable proof hashes and fake samples for deeper audit:
-
-```jsonc
-"config": {
-  "auditEnabled": true,
-  "auditIncludeProofHashes": true,
-  "auditHashTruncate": 12,
-  "auditMaxFakesSample": 3
-}
-```
-
-## Config reference
-
-### Core settings
+### Config reference
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `secretKey` | string | auto | HMAC secret for deterministic mapping |
 | `persistentSalt` | string | `""` | Fixed salt for cross-session consistency |
-| `minConfidence` | number | `0.0` | Minimum detector confidence (0.0–1.0) |
+| `minConfidence` | number | `0.0` | Minimum detector confidence (0.0-1.0) |
 | `allowlist` | string[] | `[]` | Values to never obfuscate |
 | `denylist` | string[] | `[]` | Values to always obfuscate |
 | `canaryEnabled` | boolean | `false` | Inject tracking tokens for leak detection |
@@ -206,56 +235,28 @@ Disable or tune individual detection rules by name. Rule names match the built-i
 }
 ```
 
-Rules not listed keep their defaults. Overrides apply to both direct regex detection and code-aware detection.
+---
 
-### Conversational tools
+## URL handling
 
-Shroud registers tools that the LLM can call during conversations:
+Shroud distinguishes between internal and external URLs:
 
-| Tool | What it does |
-|------|-------------|
-| `shroud-stats` | Show all detection rules with status, confidence, hit counts, store size, and config summary |
+- **External URLs pass through.** When Shroud detects a URL, it checks the FQDN against a DNS cache populated in the `before_prompt_build` hook. If the domain resolves to a public IP, the URL is not obfuscated — the LLM needs to see real URLs for tool calls like `fetch` and `web_search`. Well-known platforms (GitHub, YouTube, Wikipedia, Stack Overflow, npm, PyPI, etc.) always pass through regardless of DNS.
 
-You can also run the stats CLI from the terminal:
+- **Internal URLs are obfuscated.** Domains that resolve to RFC 1918 addresses (10.x, 172.16-31.x, 192.168.x), CGNAT, link-local, loopback, or that fail DNS resolution (NXDOMAIN, timeout) are treated as internal infrastructure and obfuscated.
 
-```bash
-node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs           # live rule table
-node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs --json    # JSON output
-node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs --test "Contact john@acme.com"
-```
+- **DNS cache miss = obfuscate.** If the FQDN hasn't been resolved yet (first message in a session, DNS timeout), the URL is obfuscated as a safe default. The cache warms on each turn, so subsequent mentions of the same domain will pass through if it's public.
 
-Tip: create an alias for convenience:
-```bash
-alias shroud-stats="node ~/.openclaw/extensions/shroud-privacy/scripts/shroud-stats.mjs"
-```
+| URL | Resolves to | Action |
+|-----|-------------|--------|
+| `https://arxiv.org/abs/2301.12345` | 151.101.1.42 (public) | Pass through |
+| `https://docs.stripe.com/api` | 52.x.x.x (public) | Pass through |
+| `https://wiki.internal.corp/runbooks` | 10.0.0.50 (RFC 1918) | Obfuscate |
+| `https://jira.mycompany.net/issue/123` | 172.16.1.10 (RFC 1918) | Obfuscate |
+| `https://secret.local/admin` | NXDOMAIN | Obfuscate |
+| `https://github.com/org/repo` | (PUBLIC_DOMAINS list) | Pass through |
 
-The CLI reads live stats from `/tmp/shroud-stats.json` (override with `SHROUD_STATS_FILE` env var). The stats file is updated by the running gateway on every obfuscation event.
-
-### How privacy works
-
-Shroud uses **one `globalThis.fetch` intercept** for both directions — no OpenClaw file modifications required:
-
-**Outbound (PII → LLM):** The fetch intercept catches all POST requests to LLM API endpoints (`/v1/messages`, `/chat/completions`, `:generateContent`, etc.). Every message in the request body — user, assistant, system, tool results — is obfuscated before the request leaves the process. Slack `<mailto:>` markup is stripped to prevent PII leaking through chat formatting. Assistant messages from previous turns are re-obfuscated to prevent multi-turn PII leaks.
-
-**Inbound (LLM → User):** The same fetch intercept wraps the LLM's SSE streaming response with a per-block flushing `TransformStream`. Text deltas are buffered per content block. When `content_block_stop` arrives, the accumulated text is deobfuscated and flushed — the first delta receives the full real text, subsequent deltas are emptied. Non-PII blocks stream with zero delay. PII blocks delay by ~0.5-1s (time for one content block to complete). JSON (non-streaming) responses are parsed and deobfuscated directly.
-
-**Result:** OpenClaw receives already-deobfuscated events from the LLM response — it never sees fake text. Every delivery path (Slack, WhatsApp, TUI, Telegram, Discord, Signal, cron, subagents, web) gets real text automatically. Zero OpenClaw patches required. Works with `streaming: "on"` and `streaming: "off"`, and with every LLM provider.
-
-**Defense-in-depth layers:**
-1. `EventStream.prototype.push()` patch — deobfuscates content blocks in `message_end` events
-2. `globalThis.__shroudDeobfuscate` — available for on-demand deobfuscation
-3. `message_sending` hook — deobfuscates outbound message content when fired by OpenClaw
-4. `before_message_write` hook — deobfuscates assistant messages in the transcript
-
-### Rule hit counters
-
-Shroud tracks per-rule match counts for the lifetime of the process. Counters appear in three places:
-
-- **`shroud-stats` CLI** — see [Conversational tools](#conversational-tools) above for usage. Shows all rules with status, confidence, and hit counts from the running gateway.
-- **Audit log lines** — `byRule=regex:email:3,regex:ipv4:2,...` alongside the existing `byCat` field.
-- **`getStats()`** — the `ruleHits` object in the stats response, useful for programmatic access.
-
-Counters reset on `reset()` or gateway restart.
+---
 
 ## Redaction levels
 
@@ -269,25 +270,7 @@ Three output modes for different audiences:
 "redactionLevel": "masked"
 ```
 
-## Enterprise Edition
-
-The **Shroud Enterprise Edition** adds features for teams and regulated environments:
-
-- **Multi-tenant isolation** — per-tenant HMAC keying and mapping stores
-- **SIEM integration** — real-time event streaming to webhooks (JSON/CEF)
-- **Key rotation** — rotate secrets without losing existing mappings
-- **Active monitoring** — anomaly detection with alerting pipeline
-- **Policy-as-code** — external JSON policy files with glob/regex rules
-- **Shared store** — cross-agent file-backed mapping synchronization
-- **Compliance mode** — locked category enforcement with audit trail
-- **Exposure tracking** — rate-of-exposure alerting per category
-- **Hot-reload** — live rule updates without restart
-- **Session isolation** — per-session stores and mapping engines
-- **Session handoff** — encrypted export/import for session continuity
-- **Provenance tagging** — invisible audit markers in output
-- **Corpus pre-scanning** — batch obfuscation for RAG pipelines
-
-Contact for licensing: https://github.com/wkeything/shroud
+---
 
 ## Detection intelligence
 
@@ -297,15 +280,17 @@ Shroud includes a `ContextDetector` that wraps the regex engine with post-detect
 - **Proximity clustering**: When a name, email, and phone appear within 200 characters, each gets a confidence boost.
 - **Hostname propagation**: `hostname FCNETR1` in one place → bare `FCNETR1` detected everywhere in the text.
 - **Learned entities**: Hostnames and infra identifiers seen in previous messages are remembered and detected in future messages without requiring config-line context.
-- **Documentation filtering**: RFC 3849 IPv6 doc prefix (`2001:db8::/32`), IPv6 loopback (`::1`), `example.com` emails, and well-known placeholders are automatically skipped. RFC 5737 TEST-NET IPs (192.0.2.x, 198.51.100.x, 203.0.113.x) are obfuscated because they commonly appear in real configs as stand-in addresses.
-- **Public URL filtering**: URLs pointing to well-known public platforms (YouTube, GitHub, Wikipedia, Google, Reddit, Stack Overflow, npm, PyPI, Docker Hub, etc.) are never obfuscated — they aren't PII. Emails at these domains are still detected.
+- **Documentation filtering**: RFC 3849 IPv6 doc prefix (`2001:db8::/32`), IPv6 loopback (`::1`), `example.com` emails, and well-known placeholders are automatically skipped.
+- **DNS-based URL classification**: External URLs pass through to the LLM; internal URLs are obfuscated. See [URL handling](#url-handling).
 - **Common word decay**: Words like `permit`, `deny`, `default` that happen to match patterns get 50% confidence reduction.
 - **Recursive deobfuscation**: Up to 3 passes for nested structures (fakes inside JSON-encoded strings).
-- **Subnet-aware deobfuscation**: When an LLM derives network/broadcast addresses from fake host IPs (e.g., computing `.0` or `.255`), Shroud reverse-maps them via the SubnetMapper. Works for both CGNAT (IPv4) and ULA (IPv6) fake ranges, including LLM-compressed IPv6 forms.
+- **Subnet-aware deobfuscation**: When an LLM derives network/broadcast addresses from fake host IPs, Shroud reverse-maps them via the SubnetMapper. Works for both CGNAT (IPv4) and ULA (IPv6) fake ranges.
+
+---
 
 ## Verify it works
 
-After restarting OpenClaw, send a message containing PII (e.g. an email or IP). Then check the logs:
+After restarting OpenClaw, send a message containing sensitive data (e.g. an email, IP, or config snippet). Then check the logs:
 
 ```bash
 tail -f ~/.openclaw/logs/openclaw.log \
@@ -326,41 +311,44 @@ With proof hashes enabled:
 [shroud][audit] OBFUSCATE req=a3f1bc9e02d4e7f1 | entities=4 | chars=1200->1218 (delta=+18) | modified=YES | byCat=email:1,ip_address:2,hostname:1 | byRule=regex:email:1,regex:ipv4:2,regex:hostname:1 | proof_in=8a3c1f0e2b4d proof_out=f7d2a1c9e084 | fakes=[jsmith@corp.net|100.64.0.12|SW-LAB-01]
 ```
 
-### Audit field reference
+### Conversational tools
 
-| Field | Meaning |
-|-------|---------|
-| `req` | Random request ID (hex) — correlates obfuscate ↔ deobfuscate |
-| `entities` | Total entities detected and replaced |
-| `chars` | Input → output character count |
-| `delta` | Character count change (fakes may be longer/shorter) |
-| `modified` | `YES` if text was changed, `NO` if pass-through |
-| `byCat` | Entity counts by category |
-| `byRule` | Entity counts by detector rule |
-| `proof_in` | Truncated salted SHA-256 of input text (opt-in) |
-| `proof_out` | Truncated salted SHA-256 of output text (opt-in) |
-| `fakes` | Sample of fake replacement values (opt-in, never real values) |
+| Tool | What it does |
+|------|-------------|
+| `shroud-stats` | Show all detection rules with status, confidence, hit counts, store size, and config summary |
 
-### Note on log duplication
+CLI:
 
-OpenClaw logs each plugin message twice (once under the plugin subsystem logger, once under the parent `openclaw` logger). This is normal OpenClaw behavior. Filter to `"name":"openclaw"` to get one line per event, as shown in the verify command above.
+```bash
+shroud-stats                          # live rule table
+shroud-stats --json                   # JSON output
+shroud-stats --test "Contact john@acme.com"   # test detection
+```
+
+---
+
+## Entity categories
+
+`person_name`, `email`, `phone`, `ip_address`, `api_key`, `url`, `org_name`, `location`, `file_path`, `credit_card`, `ssn`, `mac_address`, `hostname`, `snmp_community`, `bgp_asn`, `network_credential`, `vlan_id`, `interface_desc`, `route_map`, `ospf_id`, `acl_name`, `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`, `custom`
+
+---
 
 ## Agent Privacy Protocol (APP)
 
-APP is an open protocol for adding privacy obfuscation to any AI agent. Shroud is the reference implementation.
+APP is an open protocol for adding privacy and infrastructure protection to any AI agent. Shroud is the reference implementation.
 
 ### Overview
 
 ```
-┌─────────────────┐     stdin/stdout     ┌──────────────────┐
-│   Your Agent    │ ◄──── JSON-RPC ────► │  APP Server      │
-│  (any language) │                      │  (app-server.mjs)│
-└─────────────────┘                      └──────────────────┘
-        │                                        │
-        │ 1. obfuscate(user_input)               │ detects PII,
-        │ 2. send to LLM ──────────────►         │ returns fakes
-        │ 3. deobfuscate(llm_response)           │ restores reals
-        │ 4. show to user                        │
++-------------------+     stdin/stdout     +------------------+
+|   Your Agent      | <---- JSON-RPC ----> |  APP Server      |
+|  (any language)   |                      |  (app-server.mjs)|
++-------------------+                      +------------------+
+        |                                        |
+        | 1. obfuscate(user_input)               | detects entities,
+        | 2. send to LLM                         | returns fakes
+        | 3. deobfuscate(llm_response)           | restores reals
+        | 4. show to user                        |
 ```
 
 ### Protocol specification
@@ -368,20 +356,6 @@ APP is an open protocol for adding privacy obfuscation to any AI agent. Shroud i
 - **Transport**: Newline-delimited JSON-RPC 2.0 over stdin/stdout
 - **Encoding**: UTF-8
 - **Process model**: Agent spawns APP server as subprocess, one per agent instance
-
-### Handshake
-
-On startup, the server writes a single JSON line to stdout:
-
-```json
-{"app":"1.0","engine":"shroud","version":"2.2.5","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
-```
-
-The agent must read this line before sending requests. Fields:
-- `app` — protocol version (always `"1.0"`)
-- `engine` — implementation name
-- `version` — implementation version
-- `capabilities` — supported methods
 
 ### Methods
 
@@ -396,37 +370,7 @@ The agent must read this line before sending requests. Fields:
 | `batch` | `{operations: [{direction, text}]}` | `{results: [...]}` | Batch obfuscate/deobfuscate |
 | `shutdown` | `{}` | `{ok}` | Graceful shutdown (flushes stats) |
 
-### Request/response format
-
-```
-→ {"id":1,"method":"obfuscate","params":{"text":"Server 10.1.0.1 is down"}}
-← {"id":1,"result":{"text":"Server 100.64.0.12 is down","entityCount":1,"categories":{"ip_address":1},"modified":true,"audit":{"requestId":"a1b2c3","proofIn":"8a3c1f","proofOut":"f7d2a1"}}}
-```
-
-Errors:
-```
-← {"id":1,"error":{"code":-32602,"message":"Missing required param: text"}}
-```
-
-### Heartbeat
-
-The server writes JSON heartbeats to stderr every 30 seconds:
-```json
-{"heartbeat":true,"pid":12345,"uptime":120,"requests":42,"avgLatencyMs":1.2,"storeSize":15,"memoryMB":28}
-```
-
-### Integration checklist
-
-1. `npm install shroud-privacy`
-2. Spawn: `node node_modules/shroud-privacy/app-server.mjs node_modules/shroud-privacy/dist`
-3. Read handshake line from stdout
-4. Before LLM: send `obfuscate`, use returned `text`
-5. After LLM: send `deobfuscate`, show returned `text` to user
-6. On agent shutdown: send `shutdown`
-
 ### Python client
-
-A ready-made Python client is included at `clients/python/shroud_client.py`:
 
 ```python
 from shroud_client import ShroudClient
@@ -446,72 +390,25 @@ print(real.residual_fakes) # any CGNAT/ULA IPs that survived
 client.stop()
 ```
 
-Supports context manager, auto-restart on crash, residual fake detection, and hot-reload via `configure()`.
+---
 
 ## Development
 
 ```bash
 npm install
-npm test          # run vitest (777 tests)
+npm test          # all 3 suites: unit + harness + openclaw
+npm run test:unit      # vitest (819 tests)
+npm run test:integration  # APP harness (359 tests)
+npm run test:openclaw  # OpenClaw sandbox (14 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```
 
-### Deploy after changes
-
-```bash
-npm run build
-openclaw plugins install --path .
-openclaw gateway restart
-```
-
-## Release workflow
-
-### Tagging a release
-
-```bash
-# 1. Update version in package.json and openclaw.plugin.json
-# 2. Update CHANGELOG.md
-# 3. Commit and tag
-git add -A
-git commit -m "release: vX.Y.Z"
-git tag vX.Y.Z
-git push && git push --tags
-```
-
-Then create a GitHub Release from the tag (attach the changelog entry as notes).
-
-### npm publish (maintainers only)
-
-```bash
-# Pre-flight (always run before publishing)
-npm pack --dry-run             # verify only dist/, openclaw.plugin.json, LICENSE are included
-npm run prepublishOnly         # lint + test + build (runs automatically on npm publish)
-
-# One-time setup (when you decide to publish)
-npm login
-npm profile enable-2fa auth-and-writes
-
-# Publish
-npm publish                    # publishConfig.access = "public" is already set
-```
-
-**Security notes:**
-- Enable 2FA for both login and publish (`auth-and-writes`). This prevents token-only takeover.
-- Never commit npm tokens to git. Use `npm login` interactively or set `NPM_TOKEN` as a GitHub Actions secret.
-- Use `npm publish --provenance` in CI to add Sigstore attestation (links the package to the exact source commit).
-
-### CI
-
-The repo includes `.github/workflows/ci.yml` which runs lint + test + build on every push and PR. The publish job is present but only triggers on `v*` tags and requires `NPM_TOKEN` as a repository secret — it will no-op until that secret is configured.
-
-## Entity categories
-
-`person_name`, `email`, `phone`, `ip_address`, `api_key`, `url`, `org_name`, `location`, `file_path`, `credit_card`, `ssn`, `mac_address`, `hostname`, `snmp_community`, `bgp_asn`, `network_credential`, `vlan_id`, `interface_desc`, `route_map`, `ospf_id`, `acl_name`, `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`, `custom`
+---
 
 ## Disclaimer
 
-This software is provided "as is", without warranty of any kind, express or implied. Shroud uses regex-based detection which may not catch all sensitive data. It reduces PII exposure but does not eliminate it. See [SECURITY.md](SECURITY.md) for known limitations. The authors assume no responsibility for data leakage, compliance failures, or any damages arising from use of this software.
+This software is provided "as is", without warranty of any kind, express or implied. Shroud uses regex-based detection which may not catch all sensitive data. It reduces exposure but does not eliminate it. See [SECURITY.md](SECURITY.md) for known limitations. The authors assume no responsibility for data leakage, compliance failures, or any damages arising from use of this software.
 
 ## License
 

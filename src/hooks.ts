@@ -27,6 +27,7 @@ import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 import { STATS_FILE, IS_TEST } from "./config.js";
+import { DnsCache } from "./dns-cache.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -239,6 +240,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     } else {
       g.__shroudObfuscator = obfuscator;
     }
+    // DNS cache for public URL detection — shared across plugin instances
+    if (!g.__shroudDnsCache) {
+      g.__shroudDnsCache = new DnsCache();
+    }
   }
 
   // All hook closures must use the shared obfuscator, not the local parameter.
@@ -259,6 +264,40 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ob().resetToolDepth();
     }
 
+    // ── DNS cache warming ──
+    // Extract all URLs from the prompt and messages, resolve their FQDNs
+    // to determine public vs private. This runs BEFORE obfuscation so
+    // the sync pipeline's isDocExample() can check the cache.
+    const dnsCache: DnsCache | undefined = (globalThis as any).__shroudDnsCache;
+    if (dnsCache) {
+      const urlRe = /https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?]/g;
+      const allUrls: string[] = [];
+
+      if (typeof event?.prompt === "string") {
+        for (const m of event.prompt.matchAll(urlRe)) allUrls.push(m[0]);
+      }
+      if (Array.isArray(event?.messages)) {
+        for (const msg of event.messages) {
+          const texts: string[] = [];
+          if (typeof msg.content === "string") texts.push(msg.content);
+          else if (Array.isArray(msg.content)) {
+            for (const b of msg.content) {
+              if (b?.type === "text" && typeof b.text === "string") texts.push(b.text);
+            }
+          }
+          for (const text of texts) {
+            for (const m of text.matchAll(urlRe)) allUrls.push(m[0]);
+          }
+        }
+      }
+      if (allUrls.length > 0) {
+        try {
+          await dnsCache.warmCache(allUrls);
+        } catch {
+          // DNS failure is non-fatal — URLs will be obfuscated (safe default)
+        }
+      }
+    }
 
     let totalEntities = 0;
 

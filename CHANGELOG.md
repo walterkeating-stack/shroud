@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.7] - 2026-03-28
+
+### Fixed
+- **URLs passed to the LLM for tool calls were being obfuscated.** When a user asked the LLM to fetch or read a URL, Shroud replaced it with a fake — the LLM couldn't understand what site to fetch. Fixed with DNS-based URL classification: external URLs (public IPs) now pass through, internal URLs (RFC 1918, NXDOMAIN) are still obfuscated. DNS cache is warmed asynchronously in `before_prompt_build` and checked synchronously in the detection pipeline. Cache miss = obfuscate (safe default).
+- **Public URL span gap** — when a URL was skipped by `isDocExample()` (PUBLIC_DOMAINS or DNS), its text span was not registered, allowing the `file_path_unix` detector to match the path portion (e.g., `/github.com/org/repo`). Fixed by registering spans for all skipped doc/public entities. This also fixes an existing issue where GitHub/YouTube URLs could be partially obfuscated as file paths.
+
+### Added
+- **DNS-based public URL detection** — new `DnsCache` class (`src/dns-cache.ts`) resolves FQDNs to classify URLs as public or internal. Supports RFC 1918, CGNAT, link-local, loopback, and IPv6 ULA ranges. 3-second timeout per lookup, 1-hour cache TTL.
+- **42 new DNS cache tests** covering: FQDN extraction, IP classification, cache TTL, timeout handling, integration with obfuscation pipeline, public/private/unknown URL scenarios, and deobfuscation roundtrip.
+- **README repositioned** — Shroud is now positioned for critical infrastructure, OT environments, and regulatory compliance (GDPR, NIS2, NERC CIP) alongside PII protection. New sections: "Why Shroud", "Who needs this", "Regulatory context", "URL handling".
+
 ## [2.2.3] - 2026-03-27
 
 ### Fixed

@@ -106,6 +106,14 @@ export function isDocExample(value: string, category: Category): boolean {
             return true;
           }
         }
+        // DNS-based public URL detection: if the FQDN resolves to a public IP,
+        // the URL is external and should not be obfuscated. The cache is warmed
+        // asynchronously in before_prompt_build; cache miss → obfuscate (safe default).
+        const dnsCache = (globalThis as any).__shroudDnsCache;
+        if (dnsCache) {
+          const isPublic = dnsCache.isPublic(value);
+          if (isPublic === true) return true;
+        }
       }
       return false;
     }
@@ -1271,6 +1279,9 @@ export class RegexDetector implements BaseDetector {
             }
             // Skip documentation/example values (#7)
             if (isDocExample(grp, pdef.category)) {
+              // Still register the span to prevent other detectors
+              // (e.g., file_path) from matching inside a skipped URL
+              spans.add(grpStart, grpEnd);
               continue;
             }
             spans.add(grpStart, grpEnd);
@@ -1297,6 +1308,9 @@ export class RegexDetector implements BaseDetector {
           }
           // Skip documentation/example values (#7)
           if (isDocExample(value, pdef.category)) {
+            // Still register the span to prevent other detectors
+            // (e.g., file_path) from matching inside a skipped URL
+            spans.add(start, end);
             continue;
           }
           spans.add(start, end);
