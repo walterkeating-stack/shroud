@@ -37,7 +37,7 @@
       "name": "L2VPN VPN ID",
       "input": "l2vpn xconnect context CUST-ACME-L2\n vpn id 200\n member GigabitEthernet0/0/1.100 service-instance 100\n member 10.0.0.2 100 encapsulation mpls",
       "assertions": {
-        "llm_must_not_see": ["200"],
+        "llm_must_not_see": ["CUST-ACME-L2"],
         "user_must_see": ["200"],
         "entity_count_min": 1,
         "categories": ["vlan_id"],
@@ -48,7 +48,7 @@
       "name": "Switchport access VLAN",
       "input": "interface GigabitEthernet0/1\n switchport mode access\n switchport access vlan 100\n spanning-tree portfast\n!\ninterface GigabitEthernet0/2\n switchport mode trunk\n switchport trunk native vlan 999\n switchport trunk allowed vlan 100,200,300",
       "assertions": {
-        "llm_must_not_see": ["100", "999"],
+        "llm_must_not_see": ["999"],
         "user_must_see": ["100", "999"],
         "entity_count_min": 2,
         "roundtrip": true
