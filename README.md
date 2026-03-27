@@ -298,6 +298,7 @@ Shroud includes a `ContextDetector` that wraps the regex engine with post-detect
 - **Hostname propagation**: `hostname FCNETR1` in one place → bare `FCNETR1` detected everywhere in the text.
 - **Learned entities**: Hostnames and infra identifiers seen in previous messages are remembered and detected in future messages without requiring config-line context.
 - **Documentation filtering**: RFC 5737 TEST-NET IPs (192.0.2.x, 198.51.100.x, 203.0.113.x), RFC 3849 IPv6 doc prefix (`2001:db8::/32`), IPv6 loopback (`::1`), `example.com` emails, and well-known placeholders are automatically skipped.
+- **Public URL filtering**: URLs pointing to well-known public platforms (YouTube, GitHub, Wikipedia, Google, Reddit, Stack Overflow, npm, PyPI, Docker Hub, etc.) are never obfuscated — they aren't PII. Emails at these domains are still detected.
 - **Common word decay**: Words like `permit`, `deny`, `default` that happen to match patterns get 50% confidence reduction.
 - **Recursive deobfuscation**: Up to 3 passes for nested structures (fakes inside JSON-encoded strings).
 - **Subnet-aware deobfuscation**: When an LLM derives network/broadcast addresses from fake host IPs (e.g., computing `.0` or `.255`), Shroud reverse-maps them via the SubnetMapper. Works for both CGNAT (IPv4) and ULA (IPv6) fake ranges, including LLM-compressed IPv6 forms.
@@ -451,7 +452,7 @@ Supports context manager, auto-restart on crash, residual fake detection, and ho
 
 ```bash
 npm install
-npm test          # run vitest (718 tests)
+npm test          # run vitest (777 tests)
 npm run build     # compile TypeScript
 npm run lint      # type-check without emitting
 ```

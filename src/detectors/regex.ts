@@ -30,6 +30,25 @@ const DOC_DOMAINS = new Set([
   "localhost", "invalid",
 ]);
 
+/** Well-known public domains whose URLs are never PII. */
+const PUBLIC_DOMAINS = new Set([
+  "youtube.com", "youtu.be", "m.youtube.com",
+  "google.com", "google.co.uk", "google.de", "google.fr",
+  "github.com", "gitlab.com", "bitbucket.org",
+  "stackoverflow.com", "stackexchange.com",
+  "wikipedia.org", "wikimedia.org",
+  "twitter.com", "x.com",
+  "reddit.com",
+  "linkedin.com",
+  "medium.com",
+  "npmjs.com", "pypi.org", "crates.io",
+  "docker.com", "hub.docker.com",
+  "microsoft.com", "apple.com",
+  "mozilla.org",
+  "w3.org",
+  "archive.org",
+]);
+
 const DOC_HOSTNAMES = new Set([
   "localhost", "HOSTNAME", "EXAMPLE", "CHANGEME",
   "YOUR_HOST", "YOURHOST", "hostname", "example",
@@ -78,6 +97,14 @@ export function isDocExample(value: string, category: Category): boolean {
       for (const d of DOC_DOMAINS) {
         if (lower.includes(`@${d}`) || lower.includes(`//${d}`) || lower.endsWith(`.${d}`)) {
           return true;
+        }
+      }
+      // Public domains — skip for URLs only (emails @youtube.com are still PII)
+      if (category === Category.URL) {
+        for (const d of PUBLIC_DOMAINS) {
+          if (lower.includes(`//${d}`) || lower.includes(`//${d}/`) || lower.includes(`.${d}`)) {
+            return true;
+          }
         }
       }
       return false;
