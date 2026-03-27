@@ -21,7 +21,6 @@
       "auditHashSalt": { "type": "string", "default": "", "description": "Salt for proof hashes" },
       "auditHashTruncate": { "type": "integer", "default": 12, "minimum": 4, "maximum": 64, "description": "Truncate proof hashes to N hex chars" },
       "auditMaxFakesSample": { "type": "integer", "default": 0, "minimum": 0, "maximum": 20, "description": "Include up to N fake replacement values in audit log (0 = disabled)" },
-      "logMappings": { "type": "boolean", "default": false, "description": "Log mapping table (debug only)" },
       "detectorOverrides": {
         "type": "object",
         "additionalProperties": {

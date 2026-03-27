@@ -38,5 +38,4 @@ For production use:
 1. **Set a strong `secretKey`** (32+ random bytes hex). Do not rely on auto-generation if you need cross-session consistency.
 2. **Set `persistentSalt`** if you need the same fake values across restarts.
 3. **Enable `auditEnabled`** to verify Shroud is active.
-4. **Leave `logMappings: false`** in production — it exists for debugging only.
-5. **Leave `auditMaxFakesSample: 0`** unless you need to verify fake quality. Fake samples are safe (they are synthetic values, not real data), but minimizing log surface is good practice.
+4. **Leave `auditMaxFakesSample: 0`** unless you need to verify fake quality. Fake samples are safe (they are synthetic values, not real data), but minimizing log surface is good practice.

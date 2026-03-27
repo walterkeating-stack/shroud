@@ -183,7 +183,6 @@ To enable proof hashes and fake samples for deeper audit:
 | `auditHashSalt` | string | `""` | Salt for proof hashes |
 | `auditHashTruncate` | number | `12` | Truncate proof hashes to N hex chars |
 | `auditMaxFakesSample` | number | `0` | Include up to N fake values in audit (0 = off) |
-| `logMappings` | boolean | `false` | Log mapping table (debug only) |
 | `customPatterns` | array | `[]` | User-defined regex detection patterns |
 | `detectorOverrides` | object | `{}` | Override built-in rules: disable or change confidence per rule name |
 | `maxToolDepth` | number | `10` | Max nested tool call depth before warning |
