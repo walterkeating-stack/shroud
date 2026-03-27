@@ -1,7 +1,7 @@
 {
   "name": "shroud-privacy",
-  "version": "2.2.6",
-  "description": "Privacy obfuscation for AI agents — detects PII and replaces with deterministic fake values before anything reaches the LLM. Works with OpenClaw (plugin) or any agent (APP protocol).",
+  "version": "2.2.7",
+  "description": "Privacy and infrastructure protection for AI agents — detects sensitive data (PII, network topology, credentials, OT/SCADA) and replaces with deterministic fakes before anything reaches the LLM.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
