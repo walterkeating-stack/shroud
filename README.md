@@ -509,6 +509,10 @@ The repo includes `.github/workflows/ci.yml` which runs lint + test + build on e
 
 `person_name`, `email`, `phone`, `ip_address`, `api_key`, `url`, `org_name`, `location`, `file_path`, `credit_card`, `ssn`, `mac_address`, `hostname`, `snmp_community`, `bgp_asn`, `network_credential`, `vlan_id`, `interface_desc`, `route_map`, `ospf_id`, `acl_name`, `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`, `custom`
 
+## Disclaimer
+
+This software is provided "as is", without warranty of any kind, express or implied. Shroud uses regex-based detection which may not catch all sensitive data. It reduces PII exposure but does not eliminate it. See [SECURITY.md](SECURITY.md) for known limitations. The authors assume no responsibility for data leakage, compliance failures, or any damages arising from use of this software.
+
 ## License
 
 [Apache 2.0](LICENSE)
