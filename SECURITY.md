@@ -28,7 +28,7 @@ Please do **not** open a public issue for security vulnerabilities.
 
 | Version | Supported |
 |---------|-----------|
-| 2.0.x   | Yes       |
+| 2.x     | Yes       |
 | < 2.0   | No        |
 
 ## Configuration hardening
