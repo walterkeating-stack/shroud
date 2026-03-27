@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.3] - 2026-03-27
+
+### Fixed
+- **Public URLs (YouTube, GitHub, etc.) no longer obfuscated.** Well-known public platform URLs aren't PII — obfuscating them broke shared links in conversations. Added a `PUBLIC_DOMAINS` set (YouTube, GitHub, Wikipedia, Google, Reddit, Stack Overflow, npm, PyPI, Docker Hub, and more) checked at detection time for the URL category only. Emails at these domains are still detected.
+- **Removed dead `logMappings` config option from all docs.** The setting was defined in schemas and referenced in SECURITY.md but never checked in code — removed to avoid misleading users.
+
 ## [2.2.2] - 2026-03-27
 
 ### Changed
