@@ -20,7 +20,7 @@ Shroud is a privacy obfuscation plugin. Its security properties are central to i
 
 If you discover a security issue (e.g., raw values leaking into logs, bypass of obfuscation, or mapping reversal without the key), please report it privately:
 
-- Open a [GitHub Security Advisory](https://github.com/walterkeating-stack/shroud/security/advisories/new)
+- Open a [GitHub Security Advisory](https://github.com/wkeything/shroud/security/advisories/new)
 
 Please do **not** open a public issue for security vulnerabilities.
 

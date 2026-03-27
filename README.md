@@ -101,7 +101,7 @@ Other methods: `reset`, `stats`, `health`, `configure`, `shutdown`.
 ### From source (development)
 
 ```bash
-git clone https://github.com/walterkeating-stack/shroud.git
+git clone https://github.com/wkeything/shroud.git
 cd shroud
 npm install && npm run build
 openclaw plugins install --path .
@@ -287,7 +287,7 @@ The **Shroud Enterprise Edition** adds features for teams and regulated environm
 - **Provenance tagging** — invisible audit markers in output
 - **Corpus pre-scanning** — batch obfuscation for RAG pipelines
 
-Contact for licensing: https://github.com/walterkeating-stack/shroud
+Contact for licensing: https://github.com/wkeything/shroud
 
 ## Detection intelligence
 
