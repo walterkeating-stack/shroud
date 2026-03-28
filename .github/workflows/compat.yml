@@ -95,7 +95,7 @@ jobs:
           echo "versions=${VERSIONS}" >> $GITHUB_OUTPUT
           echo "Testing versions: ${VERSIONS}"
 
-  # ── Build Shroud (shared across matrix) ──
+  # ── Build & test Shroud locally, then provide harness for Docker E2E ──
   build:
     if: |
       github.event_name != 'schedule' ||
@@ -110,12 +110,10 @@ jobs:
       - run: npm run build
       - run: npm run test:unit
       - run: npm run test:integration
-      - run: npm pack
       - uses: actions/upload-artifact@v4
         with:
           name: shroud-build
           path: |
-            shroud-privacy-*.tgz
             tests/harness/
             compat/
 
@@ -140,6 +138,7 @@ jobs:
         run: |
           docker build \
             --build-arg OC_VERSION=${{ matrix.openclaw_version }} \
+            --build-arg SHROUD_VERSION=latest \
             -t shroud-compat:oc-${{ matrix.openclaw_version }} \
             -f compat/Dockerfile.test .
       - name: Create isolated network

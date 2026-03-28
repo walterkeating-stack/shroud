@@ -200,14 +200,14 @@ This layer runs Shroud inside a real OpenClaw gateway with all channels enabled.
 
 ```
 run-compat.sh
-  ├─ npm run build && npm pack         (build Shroud tarball)
-  ├─ docker build Dockerfile.base      (Node 22 + OpenClaw, cached per version)
-  ├─ docker build Dockerfile.test      (tarball + harness + entrypoint, fast)
+  ├─ Resolve Shroud + OpenClaw versions from npm
+  ├─ docker build Dockerfile.base      (Node 22 + OpenClaw from npm, cached per version)
+  ├─ docker build Dockerfile.test      (Shroud from npm + harness + entrypoint)
   ├─ docker network create --internal  (no external routing)
-  └─ docker run                        (isolated container, 512MB, 1 CPU)
+  └─ docker run                        (isolated container, 1GB, 2 CPUs)
        └─ entrypoint.sh
             ├─ /etc/hosts redirects    (api.slack.com → 127.0.0.1, etc.)
-            ├─ openclaw plugins install shroud-privacy-*.tgz
+            ├─ openclaw plugins install (from global npm install)
             ├─ openclaw channels add --channel whatsapp
             ├─ WhatsApp mock auth state
             └─ node run.mjs --openclaw --verbose
@@ -224,8 +224,8 @@ run-compat.sh
 
 - **Network:** `--internal` Docker network. No packets leave the container. All mock servers on localhost.
 - **Filesystem:** No volume mounts. Everything baked into the image.
-- **Memory:** Capped at 512MB.
-- **CPU:** Capped at 1 core.
+- **Memory:** Capped at 1GB.
+- **CPU:** Capped at 2 cores.
 - **No host access:** Container cannot reach the host machine.
 - **Own OpenClaw:** Installed from npm inside the container. Never references the host.
 
@@ -241,11 +241,11 @@ bash compat/run-compat.sh 2026.3.24
 # Force rebuild base image
 bash compat/run-compat.sh 2026.3.24 --rebuild-base
 
-# Version matrix (all supported versions)
+# Version matrix (interactive: current or current + last 3)
 bash compat/run-matrix.sh
 
 # Latest N versions in parallel
-bash compat/run-matrix.sh --latest 2 --parallel
+bash compat/run-matrix.sh --latest 3 --parallel
 ```
 
 ### Docker images
@@ -257,22 +257,21 @@ bash compat/run-matrix.sh --latest 2 --parallel
 - Creates `/shroud/state/` directories
 - Tag: `shroud-compat-base:oc-${OC_VERSION}`
 
-**`Dockerfile.test`** (rebuilt on every Shroud change, <5s):
+**`Dockerfile.test`** (rebuilt per Shroud version):
 - Inherits from base
-- Copies `shroud-privacy-*.tgz` (the npm tarball)
+- `npm install -g shroud-privacy@${SHROUD_VERSION}` (from npm, same as real users)
 - Copies `tests/harness/` (scenarios + runners + mocks)
 - Copies `compat/entrypoint.sh`
 - Tag: `shroud-compat:oc-${OC_VERSION}`
 
 ### Container startup (entrypoint.sh)
 
-1. Verify tarball exists
-2. Add `/etc/hosts` entries: `127.0.0.1 slack.com api.slack.com web.whatsapp.com`
-3. Create state directories
-4. `openclaw plugins install shroud-privacy-*.tgz`
-5. `openclaw channels add --channel whatsapp`
-6. Write mock WhatsApp auth state (`creds.json` with pre-paired device)
-7. Run `node run.mjs --openclaw --verbose`
+1. Add `/etc/hosts` entries: `127.0.0.1 slack.com api.slack.com web.whatsapp.com`
+2. Create state directories
+3. `openclaw plugins install` (from global npm install path)
+4. `openclaw channels add --channel whatsapp`
+5. Write mock WhatsApp auth state (`creds.json` with pre-paired device)
+6. Run `node run.mjs --openclaw --verbose`
 
 ### OpenClaw runner (openclaw-runner.mjs)
 
