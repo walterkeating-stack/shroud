@@ -122,6 +122,38 @@ export function isDocExample(value: string, category: Category): boolean {
       // Private ASNs are real infra identifiers — don't skip them
       return false;
 
+    case Category.FILE_PATH: {
+      // Skip paths that are clearly URL path components from public domains.
+      // e.g., /www.npmjs.com/package/shroud-privacy, /github.com/org/repo
+      // This is a safety net — the span fix in detect() should prevent these,
+      // but production environments may have edge cases we can't reproduce.
+      if (value.startsWith("/")) {
+        const pathLower = value.toLowerCase();
+        for (const d of PUBLIC_DOMAINS) {
+          if (pathLower.startsWith(`/${d}/`) || pathLower.startsWith(`/${d}`)
+            || pathLower.startsWith(`/www.${d}/`) || pathLower.startsWith(`/www.${d}`)) {
+            return true;
+          }
+        }
+        for (const d of DOC_DOMAINS) {
+          if (pathLower.startsWith(`/${d}/`) || pathLower.startsWith(`/${d}`)
+            || pathLower.startsWith(`/www.${d}/`) || pathLower.startsWith(`/www.${d}`)) {
+            return true;
+          }
+        }
+        // DNS cache check — if the first path segment is a public domain
+        const dnsCache = (globalThis as any).__shroudDnsCache;
+        if (dnsCache) {
+          const firstSeg = value.slice(1).split("/")[0];
+          if (firstSeg && firstSeg.includes(".")) {
+            const isPublic = dnsCache.isPublic("https://" + firstSeg + "/");
+            if (isPublic === true) return true;
+          }
+        }
+      }
+      return false;
+    }
+
     case Category.HOSTNAME:
       if (DOC_HOSTNAMES.has(value) || DOC_HOSTNAMES.has(value.toUpperCase())) return true;
       for (const pfx of DOC_HOSTNAME_PREFIXES) {
