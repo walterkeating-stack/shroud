@@ -266,7 +266,16 @@ const server = http.createServer(async (req, res) => {
       (req.headers["x-no-tool-calls"] === "1") ||
       (process.env.MOCK_LLM_NO_TOOLS === "1");
     const tc = noTools ? null : maybeToolCall(body, userText);
-    const responseText = `Based on my analysis, ${userText}. This information has been verified.`;
+    // Echo mode: return the exact user input so deobfuscation can be tested.
+    // The LLM receives obfuscated text; by echoing it, the test can verify
+    // that deobfuscation restores the real values before channel delivery.
+    const echoMode = body._echo ||
+      url.searchParams.has("echo") ||
+      (req.headers["x-mock-echo"] === "1") ||
+      (process.env.MOCK_LLM_ECHO === "1");
+    const responseText = echoMode
+      ? userText
+      : `Based on my analysis, ${userText}. This information has been verified.`;
     const streaming = body.stream !== false;
     const model = body.model || "mock-model";
 
