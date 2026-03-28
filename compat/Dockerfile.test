@@ -1,15 +1,18 @@
-# Test image: layer Shroud tarball on top of a base image.
-# Rebuilt on every Shroud change. Fast (<5s).
+# Test image: install Shroud from npm on top of a base image.
+# Both OpenClaw and Shroud come from npm — same as real users.
 #
 # Build:
-#   npm pack && docker build --build-arg OC_VERSION=2026.3.24 \
+#   docker build --build-arg OC_VERSION=2026.3.24 --build-arg SHROUD_VERSION=2.2.9 \
 #     -t shroud-compat:oc-2026.3.24 -f compat/Dockerfile.test .
 
 ARG OC_VERSION
 FROM shroud-compat-base:oc-${OC_VERSION}
 
-# Copy the npm tarball (simulates what users get from npm install)
-COPY shroud-privacy-*.tgz /shroud/
+ARG SHROUD_VERSION=latest
+
+# Install Shroud from npm — exactly what users do
+RUN npm install -g shroud-privacy@${SHROUD_VERSION} && \
+    echo "Shroud ${SHROUD_VERSION} installed from npm"
 
 # Copy test harness (not the unit tests — just the openclaw runner + scenarios)
 COPY tests/harness/ /shroud/tests/harness/
@@ -22,6 +25,7 @@ RUN chmod +x /shroud/entrypoint.sh
 ENV NODE_ENV=test
 ENV SHROUD_STATS_FILE=/shroud/state/shroud-stats.json
 ENV HOME=/shroud
+ENV SHROUD_VERSION=${SHROUD_VERSION}
 
 # No host network, no volume mounts, no secrets
 # Everything the test needs is baked into the image

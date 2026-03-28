@@ -11,7 +11,7 @@ Shroud is a privacy obfuscation plugin for AI agents. It detects 100+ entity typ
 - Public URL filtering (DNS-based: external IPs pass through, RFC 1918/NXDOMAIN obfuscated; plus hardcoded list for YouTube, GitHub, etc.)
 - APP server (`app-server.mjs`) + Python client for non-OpenClaw agents
 - CLI stats tool (`shroud-stats`)
-- Requires OpenClaw 2026.3.24+
+- Requires OpenClaw 2026.3.22+
 
 > **Note:** The enterprise edition (`shroud-enterprise`) was archived read-only on 2026-03-27.
 > Enterprise feature specs are preserved in `docs/enterprise-archive/` for future roadmap reference.
@@ -36,9 +36,10 @@ npm run test:watch        # Vitest watch mode
 bash compat/run-compat.sh 2026.3.24        # Test against specific OC version
 bash compat/run-compat.sh latest           # Test against latest OC release
 bash compat/run-compat.sh latest --rebuild-base  # Force rebuild base image
-bash compat/run-matrix.sh                  # All supported versions
+bash compat/run-matrix.sh                  # Interactive: current or current + last 3
 bash compat/run-matrix.sh --parallel       # All versions in parallel
-bash compat/run-matrix.sh --latest 2       # Latest 2 versions only
+bash compat/run-matrix.sh --latest 3       # Latest 3 versions only
+SHROUD_VERSION=2.2.8 bash compat/run-compat.sh latest  # Specific Shroud version
 ```
 
 ## Architecture
@@ -114,7 +115,7 @@ Full chain (execute without stopping unless tests fail):
 
 - After ANY code change: build → `npm test` (unit + harness). All green before reporting.
 - Full E2E: `npm run test:docker` — runs inside Docker, tests real OpenClaw + all channels.
-- Docker sandbox has 100% isolation: `--internal` network (no external routing), own OpenClaw copy, tarball install.
+- Docker sandbox has 100% isolation: `--internal` network (no external routing), both OpenClaw and Shroud installed from npm.
 - Test adversarially — try to break it, don't just prove the happy path.
 
 ### Test Architecture

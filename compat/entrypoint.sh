@@ -2,15 +2,10 @@
 set -euo pipefail
 
 OC_VERSION=$(cat /shroud/.oc-version)
-TARBALL=$(ls -1 /shroud/shroud-privacy-*.tgz 2>/dev/null | head -1)
-if [ -z "${TARBALL}" ]; then
-  echo "ERROR: No shroud-privacy tarball found in /shroud/"
-  exit 1
-fi
-SHROUD_VERSION=$(echo "${TARBALL}" | sed 's/.*shroud-privacy-\(.*\)\.tgz/\1/')
+SHROUD_VERSION="${SHROUD_VERSION:-unknown}"
 
 echo "=== Shroud Compat Test: OpenClaw ${OC_VERSION} ==="
-echo "Shroud version: ${SHROUD_VERSION} (from tarball)"
+echo "Shroud version: ${SHROUD_VERSION} (from npm)"
 echo "Node version: $(node --version)"
 echo ""
 
@@ -30,9 +25,10 @@ mkdir -p "${STATE_DIR}/extensions" "${STATE_DIR}/logs" "${STATE_DIR}/workspace" 
 export HOME=/shroud
 export OPENCLAW_STATE_DIR="${STATE_DIR}"
 
-# Install plugin from tarball — same path real users hit via npm
-echo "Installing Shroud plugin from tarball..."
-openclaw plugins install "${TARBALL}" 2>&1
+# Install plugin — same path real users hit
+echo "Installing Shroud plugin..."
+SHROUD_PKG=$(npm root -g)/shroud-privacy
+openclaw plugins install "${SHROUD_PKG}" 2>&1
 
 # Add WhatsApp channel (uses Baileys intercept in Docker)
 echo "Adding WhatsApp channel..."

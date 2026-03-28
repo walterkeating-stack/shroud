@@ -1,10 +1,12 @@
 #!/bin/bash
 # Run Shroud compatibility test against a single OpenClaw version.
+# Both Shroud and OpenClaw are installed from npm — no local build.
 #
 # Usage:
 #   bash compat/run-compat.sh 2026.3.24
 #   bash compat/run-compat.sh latest
 #   bash compat/run-compat.sh 2026.3.24 --rebuild-base
+#   SHROUD_VERSION=2.2.8 bash compat/run-compat.sh latest  # specific Shroud version
 #
 set -euo pipefail
 
@@ -25,13 +27,13 @@ NETWORK="shroud-compat-net"
 
 cd "${REPO_ROOT}"
 
-# ── Step 1: Build Shroud + pack tarball ──
-echo "Building Shroud..."
-npm run build
-echo "Packing tarball..."
-npm pack --quiet
-TARBALL=$(ls -1t shroud-privacy-*.tgz | head -1)
-echo "Tarball: ${TARBALL}"
+# ── Step 1: Resolve Shroud version ──
+SHROUD_VERSION="${SHROUD_VERSION:-latest}"
+if [ "${SHROUD_VERSION}" = "latest" ]; then
+  SHROUD_VERSION=$(npm view shroud-privacy version 2>/dev/null)
+  echo "Resolved Shroud 'latest' to ${SHROUD_VERSION}"
+fi
+echo "Shroud version: ${SHROUD_VERSION} (from npm)"
 
 # ── Step 2: Build/reuse base image ──
 if [ "${REBUILD_BASE}" = "--rebuild-base" ] || \
@@ -45,10 +47,11 @@ else
   echo "Reusing cached base image: ${BASE_TAG}"
 fi
 
-# ── Step 3: Build test image (fast — just copies Shroud artifacts) ──
+# ── Step 3: Build test image ──
 echo "Building test image..."
 docker build \
   --build-arg "OC_VERSION=${OC_VERSION}" \
+  --build-arg "SHROUD_VERSION=${SHROUD_VERSION}" \
   -t "${TEST_TAG}" \
   -f compat/Dockerfile.test .
 
@@ -67,8 +70,8 @@ echo "============================================="
 
 docker run --rm \
   --network "${NETWORK}" \
-  --memory 512m \
-  --cpus 1 \
+  --memory 1g \
+  --cpus 2 \
   --name "shroud-compat-${OC_VERSION}" \
   "${TEST_TAG}"
 

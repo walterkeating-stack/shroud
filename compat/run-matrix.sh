@@ -15,13 +15,28 @@ VERSIONS_FILE="${SCRIPT_DIR}/versions.json"
 LATEST_N=""
 PARALLEL=false
 
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --latest) LATEST_N="$2"; shift 2 ;;
-    --parallel) PARALLEL=true; shift ;;
-    *) echo "Unknown arg: $1"; exit 1 ;;
+# Interactive mode if no args provided
+if [[ $# -eq 0 && -t 0 ]]; then
+  echo "=== Shroud Compat Matrix ==="
+  echo "  1) Current OpenClaw version only"
+  echo "  2) Current + last 3 OpenClaw versions (backward compat)"
+  echo ""
+  read -rp "Choose [1/2]: " choice
+  case $choice in
+    1) LATEST_N=1 ;;
+    2) LATEST_N=4 ;;
+    *) echo "Invalid choice"; exit 1 ;;
   esac
-done
+  echo ""
+else
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --latest) LATEST_N="$2"; shift 2 ;;
+      --parallel) PARALLEL=true; shift ;;
+      *) echo "Unknown arg: $1"; exit 1 ;;
+    esac
+  done
+fi
 
 # Read versions from registry
 VERSIONS=$(node -e "
@@ -38,9 +53,7 @@ echo "=== Shroud Compatibility Matrix ==="
 echo "Versions: ${VERSIONS}"
 echo ""
 
-# Build Shroud once
 cd "${REPO_ROOT}"
-npm run build
 
 RESULTS=()
 FAILED=()
@@ -93,3 +106,20 @@ fi
 
 echo ""
 echo "All versions passed."
+
+# ── Cleanup: keep only the 3 most recent base + test images ──
+KEEP=3
+echo ""
+echo "Pruning compat images (keeping latest ${KEEP})..."
+
+for prefix in shroud-compat-base shroud-compat; do
+  IMAGES=$(docker images --format '{{.Repository}}:{{.Tag}} {{.CreatedAt}}' \
+    | grep "^${prefix}:oc-" \
+    | sort -k2 -r \
+    | tail -n +$((KEEP + 1)) \
+    | awk '{print $1}')
+  for img in ${IMAGES}; do
+    echo "  Removing ${img}"
+    docker rmi "${img}" 2>/dev/null || true
+  done
+done

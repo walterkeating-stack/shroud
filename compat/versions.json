@@ -5,15 +5,15 @@
       "version": "2026.3.22",
       "status": "supported",
       "shroudMinVersion": "2.0.0",
-      "notes": "Earliest stable with plugin API",
-      "knownIssues": []
+      "notes": "Earliest stable with plugin API. No WhatsApp channel support.",
+      "knownIssues": ["WhatsApp channel not available (added in 2026.3.23)"]
     },
     {
       "version": "2026.3.23",
-      "status": "supported",
+      "status": "retired",
       "shroudMinVersion": "2.1.0",
-      "notes": "",
-      "knownIssues": []
+      "notes": "Retired: gateway bug causes total test failure when Slack channel fails to start",
+      "knownIssues": ["Gateway stops routing requests when Slack channel fails to start (OC bug)"]
     },
     {
       "version": "2026.3.24",
