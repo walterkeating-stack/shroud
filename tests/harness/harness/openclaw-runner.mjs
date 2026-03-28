@@ -1130,6 +1130,31 @@ export class OpenClawRunner {
       );
     }
 
+    // Docker mode: also load scenarios from JSON files in scenarios/ directory
+    if (process.env.SHROUD_TEST_DOCKER === "1") {
+      const scenarioDir = resolve(import.meta.dirname, "scenarios");
+      try {
+        const files = ["e2e-regression.json"];
+        for (const file of files) {
+          const filePath = join(scenarioDir, file);
+          if (!existsSync(filePath)) continue;
+          const raw = JSON.parse(readFileSync(filePath, "utf-8"));
+          const scenarios = Array.isArray(raw) ? raw : [];
+          for (const s of scenarios) {
+            // Convert JSON scenario format to runner format
+            all.push({
+              name: s.name,
+              message: s.input,
+              realValues: s.assertions?.llm_must_not_see || [],
+              checkLlmSees: s.assertions?.llm_must_see || [],
+              checkStats: false,
+              checkAudit: false,
+            });
+          }
+        }
+      } catch {}
+    }
+
     if (this.scenario) {
       return all.filter(s => s.name.toLowerCase().includes(this.scenario.toLowerCase()));
     }
