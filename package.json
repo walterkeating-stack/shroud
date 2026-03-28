@@ -19,11 +19,11 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "npm run test:unit && npm run test:integration; npm run test:openclaw",
+    "test": "npm run test:unit && npm run test:integration",
     "test:unit": "vitest run",
     "test:integration": "node tests/harness/run.mjs",
-    "test:openclaw": "node tests/harness/run.mjs --openclaw",
-    "test:all": "npm run test:unit && npm run test:integration && npm run test:openclaw",
+    "test:docker": "bash compat/run-compat.sh latest",
+    "test:all": "npm run test:unit && npm run test:integration && npm run test:docker",
     "test:watch": "vitest",
     "lint": "tsc --noEmit",
     "prepublishOnly": "npm run lint && npm run test:unit && npm run test:integration && npm run build"
