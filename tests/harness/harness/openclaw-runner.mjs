@@ -318,6 +318,19 @@ export class OpenClawRunner {
         assertNoUlaLeak(responseText);
       }
 
+      // Deobfuscation check: with echo mode, the LLM echoes obfuscated text.
+      // After deobfuscation, the channel output should contain real values.
+      if (scenario.realValues?.length > 0 && scenario.checkDeobfuscation) {
+        for (const val of scenario.realValues) {
+          if (!responseText.includes(val)) {
+            throw new Error(
+              `Deobfuscation failed: response should contain real value "${val}" ` +
+              `but it wasn't restored. Response: ${responseText.slice(0, 200)}`
+            );
+          }
+        }
+      }
+
       // Audit log check
       if (scenario.checkAudit) {
         const auditLine = this.gatewayStderr.split("\n").find(l => l.includes('"event":"shroud.audit.obfuscate"'));
@@ -479,6 +492,18 @@ export class OpenClawRunner {
       throw new Error(`Slack message contains CGNAT fake: ${allText.slice(0, 200)}`);
     }
 
+    // Deobfuscation: with echo mode, Slack-delivered message should contain real values
+    if (scenario.realValues?.length > 0) {
+      for (const val of scenario.realValues) {
+        if (!allText.includes(val)) {
+          throw new Error(
+            `Slack deobfuscation failed: delivered message should contain "${val}" ` +
+            `but it wasn't restored. Message: ${allText.slice(0, 300)}`
+          );
+        }
+      }
+    }
+
     // LLM must not have seen real PII
     const llmRequests = await this._httpReq("GET", `http://127.0.0.1:${this.mockLlmPort}/requests`);
     if (llmRequests.length > 0 && scenario.realValues?.length > 0) {
@@ -549,6 +574,18 @@ export class OpenClawRunner {
     const cgnatPattern = /\b100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/;
     if (cgnatPattern.test(allText)) {
       throw new Error(`WhatsApp message contains CGNAT fake: ${allText.slice(0, 200)}`);
+    }
+
+    // Deobfuscation: echo mode means delivered message should contain real values
+    if (scenario.realValues?.length > 0) {
+      for (const val of scenario.realValues) {
+        if (!allText.includes(val)) {
+          throw new Error(
+            `WhatsApp deobfuscation failed: delivered message should contain "${val}" ` +
+            `but it wasn't restored. Message: ${allText.slice(0, 300)}`
+          );
+        }
+      }
     }
 
     // LLM must not have seen real PII
@@ -859,7 +896,7 @@ export class OpenClawRunner {
     return new Promise((res, reject) => {
       this.mockLlmProc = spawn("node", [serverPath], {
         stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, PORT: "0", MOCK_LLM_NO_TOOLS: "1" },
+        env: { ...process.env, PORT: "0", MOCK_LLM_NO_TOOLS: "1", MOCK_LLM_ECHO: "1" },
       });
 
       const timeout = setTimeout(() => reject(new Error("Mock LLM timeout")), 10000);
@@ -1112,6 +1149,31 @@ export class OpenClawRunner {
           message: "Incident: unauthorized login from 192.168.5.22 by user john@acme-corp.net",
           realValues: ["192.168.5.22", "john@acme-corp.net"],
         },
+        // ── Deob round-trip via Slack (echo mode: LLM echoes obfuscated text, Slack gets real values) ──
+        {
+          name: "Slack Deob: email + IP round-trip",
+          slackE2E: true,
+          message: "Contact admin@internal-corp.net about server 10.42.88.7",
+          realValues: ["admin@internal-corp.net", "10.42.88.7"],
+        },
+        {
+          name: "Slack Deob: BGP config round-trip",
+          slackE2E: true,
+          message: "neighbor 10.0.0.2 remote-as 65002 password 7 070C285F4D06",
+          realValues: ["10.0.0.2", "070C285F4D06"],
+        },
+        {
+          name: "Slack Deob: multi-entity round-trip",
+          slackE2E: true,
+          message: "ALERT: 10.50.1.1 down. Contact ops@noc.internal, host DAL-CORE-RTR-01",
+          realValues: ["10.50.1.1", "ops@noc.internal", "DAL-CORE-RTR-01"],
+        },
+        {
+          name: "Slack Deob: IBAN round-trip",
+          slackE2E: true,
+          message: "Wire payment to AT611904300234573201 for invoice 4412",
+          realValues: ["AT611904300234573201"],
+        },
         // ── WhatsApp E2E ──
         {
           name: "WhatsApp E2E: inbound message with PII obfuscated",
@@ -1147,6 +1209,7 @@ export class OpenClawRunner {
               message: s.input,
               realValues: s.assertions?.llm_must_not_see || [],
               checkLlmSees: s.assertions?.llm_must_see || [],
+              checkDeobfuscation: s.assertions?.check_deobfuscation || false,
               checkStats: false,
               checkAudit: false,
             });
