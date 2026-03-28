@@ -49,6 +49,25 @@ const PUBLIC_DOMAINS = new Set([
   "archive.org",
 ]);
 
+/**
+ * Operational path prefixes — local system/workspace paths that agents need
+ * to function. These are NOT sensitive infrastructure to hide from the LLM.
+ */
+const OPERATIONAL_PATH_PREFIXES = [
+  "/home/",       // user home directories (workspace, scripts, media)
+  "/tmp/",        // temp files
+  "/proc/",       // procfs
+  "/sys/",        // sysfs
+  "/dev/",        // devices
+  "/run/",        // runtime data
+  "/snap/",       // snap packages
+  "/root/",       // root home
+  "/nix/",        // nix store
+  // NOTE: /etc/, /usr/, /var/, /bin/, /sbin/, /lib/, /opt/ are NOT included —
+  // they may contain infrastructure config paths (nginx, systemd units, etc.)
+  // that should be obfuscated in network/OT contexts.
+];
+
 const DOC_HOSTNAMES = new Set([
   "localhost", "HOSTNAME", "EXAMPLE", "CHANGEME",
   "YOUR_HOST", "YOURHOST", "hostname", "example",
@@ -123,12 +142,19 @@ export function isDocExample(value: string, category: Category): boolean {
       return false;
 
     case Category.FILE_PATH: {
-      // Skip paths that are clearly URL path components from public domains.
-      // e.g., /www.npmjs.com/package/shroud-privacy, /github.com/org/repo
-      // This is a safety net — the span fix in detect() should prevent these,
-      // but production environments may have edge cases we can't reproduce.
       if (value.startsWith("/")) {
         const pathLower = value.toLowerCase();
+
+        // Skip operational/system paths — these are local workspace paths the
+        // agent needs to function, not sensitive infrastructure to hide from the LLM.
+        // Sensitive paths are things like /opt/network-configs/router.cfg on internal
+        // servers — those won't match these prefixes.
+        for (const pfx of OPERATIONAL_PATH_PREFIXES) {
+          if (pathLower.startsWith(pfx)) return true;
+        }
+
+        // Skip paths that are clearly URL path components from public domains.
+        // e.g., /www.npmjs.com/package/shroud-privacy, /github.com/org/repo
         for (const d of PUBLIC_DOMAINS) {
           if (pathLower.startsWith(`/${d}/`) || pathLower.startsWith(`/${d}`)
             || pathLower.startsWith(`/www.${d}/`) || pathLower.startsWith(`/www.${d}`)) {
@@ -639,7 +665,11 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "gps_coordinate",
-    pattern: /(?<!\w)-?\d{1,3}\.\d{4,8}[,\s]+-?\d{1,3}\.\d{4,8}(?!\w)/g,
+    // Require realistic lat/lon ranges: lat [-90,90], lon [-180,180].
+    // Must be comma-separated (not just whitespace — that matches too many
+    // false positives in financial data, ML weights, research metrics).
+    // Require 4-8 decimal places (GPS precision).
+    pattern: /(?<!\w)-?(?:[0-8]?\d(?:\.\d{4,8})|90(?:\.0{4,8}))\s*,\s*-?(?:1[0-7]\d(?:\.\d{4,8})|0?\d{1,2}(?:\.\d{4,8})|180(?:\.0{4,8}))(?!\w)/g,
     category: Category.GPS_COORDINATE,
     confidence: 0.85,
   },
