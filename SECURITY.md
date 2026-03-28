@@ -14,6 +14,7 @@ Shroud is a privacy obfuscation plugin. Its security properties are central to i
 
 - **Complete PII detection.** Regex-based detection will miss novel formats, obfuscated PII, or context-dependent sensitive data. Shroud reduces exposure — it does not eliminate it.
 - **LLM behavior.** Shroud cannot prevent an LLM from hallucinating values that resemble real data, or from ignoring the privacy context.
+- **URL transparency to the LLM.** The LLM sees obfuscated (fake) URLs in its conversation context. Tool calls are deobfuscated automatically before execution, but the LLM cannot reason about URL content (domain, path, site identity) for obfuscated internal URLs. Public URLs are passed through via DNS-based classification, but DNS cache misses default to obfuscate. Add agent prompt guidance (see README) to prevent the LLM from questioning obfuscated URLs.
 - **Secret key security.** If `secretKey` is leaked, an attacker can reproduce the mapping. Protect it like any HMAC secret.
 
 ## Reporting vulnerabilities

@@ -242,7 +242,32 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
     // DNS cache for public URL detection — shared across plugin instances
     if (!g.__shroudDnsCache) {
-      g.__shroudDnsCache = new DnsCache();
+      const cache = new DnsCache();
+      g.__shroudDnsCache = cache;
+      // Pre-warm with well-known public domains so first-turn URLs pass through
+      // without waiting for async DNS resolution. These domains are guaranteed
+      // public — no lookup needed.
+      const publicDomains = [
+        "youtube.com", "youtu.be", "m.youtube.com",
+        "google.com", "google.co.uk", "google.de", "google.fr",
+        "github.com", "gitlab.com", "bitbucket.org",
+        "stackoverflow.com", "stackexchange.com",
+        "wikipedia.org", "wikimedia.org",
+        "twitter.com", "x.com",
+        "reddit.com",
+        "linkedin.com",
+        "medium.com",
+        "npmjs.com", "www.npmjs.com", "pypi.org", "crates.io",
+        "docker.com", "hub.docker.com",
+        "microsoft.com", "apple.com",
+        "mozilla.org",
+        "w3.org",
+        "archive.org",
+      ];
+      for (const d of publicDomains) {
+        cache.seed(d, "0.0.0.1", true); // address doesn't matter, isPublic=true
+        cache.seed("www." + d, "0.0.0.1", true);
+      }
     }
   }
 
@@ -268,13 +293,26 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // Extract all URLs from the prompt and messages, resolve their FQDNs
     // to determine public vs private. This runs BEFORE obfuscation so
     // the sync pipeline's isDocExample() can check the cache.
+    //
+    // Slack wraps URLs as <https://url|display> or <https://url>.
+    // We must strip this markup BEFORE extracting URLs, otherwise the
+    // regex won't match and the DNS cache won't warm for Slack messages.
     const dnsCache: DnsCache | undefined = (globalThis as any).__shroudDnsCache;
     if (dnsCache) {
       const urlRe = /https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?]/g;
       const allUrls: string[] = [];
 
+      // Strip Slack link markup so URL regex can match cleanly
+      function stripSlackForDns(text: string): string {
+        text = text.replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1");
+        text = text.replace(/<(https?:\/\/[^|>]+)\|[^>]*>/g, "$1");
+        text = text.replace(/<(https?:\/\/[^>]+)>/g, "$1");
+        return text;
+      }
+
       if (typeof event?.prompt === "string") {
-        for (const m of event.prompt.matchAll(urlRe)) allUrls.push(m[0]);
+        const cleaned = stripSlackForDns(event.prompt);
+        for (const m of cleaned.matchAll(urlRe)) allUrls.push(m[0]);
       }
       if (Array.isArray(event?.messages)) {
         for (const msg of event.messages) {
@@ -286,7 +324,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             }
           }
           for (const text of texts) {
-            for (const m of text.matchAll(urlRe)) allUrls.push(m[0]);
+            const cleaned = stripSlackForDns(text);
+            for (const m of cleaned.matchAll(urlRe)) allUrls.push(m[0]);
           }
         }
       }

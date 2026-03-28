@@ -256,6 +256,16 @@ Shroud distinguishes between internal and external URLs:
 | `https://secret.local/admin` | NXDOMAIN | Obfuscate |
 | `https://github.com/org/repo` | (PUBLIC_DOMAINS list) | Pass through |
 
+### LLM agent guidance
+
+Because Shroud replaces URLs before they reach the LLM, the LLM may see unfamiliar or fake-looking domains in the conversation context. Tool calls (fetch, read, etc.) are deobfuscated automatically before execution, so they work correctly even when the LLM sees a fake URL.
+
+**If you are building an agent that uses Shroud, add the following to your agent's system prompt or instruction files:**
+
+> Shroud privacy is active. URLs and domains in the conversation may appear different from what the user sent — internal URLs are replaced with fake domains to protect infrastructure. If a URL looks unfamiliar or doesn't resolve, it has likely been obfuscated. The tool call pipeline deobfuscates automatically. Do NOT tell the user a URL is invalid just because you see an unfamiliar domain. If a fetch or read tool succeeded with the URL, trust the result.
+
+This prevents the LLM from questioning obfuscated URLs or telling the user their link is broken.
+
 ---
 
 ## Redaction levels

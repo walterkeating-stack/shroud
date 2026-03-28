@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.8] - 2026-03-28
+
+### Fixed
+- **Public URLs still obfuscated via file_path detector.** The span fix in v2.2.7 prevented the `file_path_unix` regex from matching inside skipped URLs within the RegexDetector, but the fix didn't hold in all production environments. Added a second defense: `isDocExample()` now explicitly filters `file_path` entities whose values are URL paths from public domains (e.g., `/www.npmjs.com/package/shroud-privacy`). Checks PUBLIC_DOMAINS, DOC_DOMAINS, and DNS cache.
+- **DNS cache not warm for Slack URLs on first turn.** Slack wraps URLs as `<https://url|display>`. The DNS warm step in `before_prompt_build` now strips Slack markup before extracting URLs. Also pre-seeds the cache with all PUBLIC_DOMAINS entries at startup so first-turn public URLs pass through without waiting for async DNS.
+
 ## [2.2.7] - 2026-03-28
 
 ### Fixed
