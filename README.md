@@ -406,13 +406,32 @@ client.stop()
 
 ```bash
 npm install
-npm test          # all 3 suites: unit + harness + openclaw
-npm run test:unit      # vitest (819 tests)
-npm run test:integration  # APP harness (359 tests)
-npm run test:openclaw  # OpenClaw sandbox (14 tests)
-npm run build     # compile TypeScript
-npm run lint      # type-check without emitting
+npm run build               # compile TypeScript
+npm run lint                # type-check without emitting
+npm test                    # unit + harness (1,229 tests, no Docker)
+npm run test:docker         # Docker E2E — real OpenClaw, all channels (183 tests)
+npm run test:all            # everything (1,412 tests)
 ```
+
+### Test layers
+
+| Layer | Command | Tests | What it covers |
+|-------|---------|-------|---------------|
+| Unit | `npm run test:unit` | 870 | Obfuscator, detectors, generators, store, config |
+| APP Harness | `npm run test:integration` | 359 | 48 scenario files via mock LLM, no OpenClaw |
+| Docker E2E | `npm run test:docker` | 183 | Real OpenClaw gateway, Slack/WhatsApp/Cron/TUI channels, 153 regression scenarios |
+
+Docker E2E runs inside an isolated container (`--internal` network, no external routing). The plugin is installed from a tarball (same path as `npm install`). A single gateway process handles all tests via WebSocket RPC. Channel tests use mock servers with real SDK code paths (Slack via Bolt HTTP, WhatsApp via Baileys intercept).
+
+### OpenClaw compatibility matrix
+
+```bash
+bash compat/run-compat.sh latest           # test against latest OpenClaw
+bash compat/run-matrix.sh                  # all supported versions
+bash compat/run-matrix.sh --parallel       # parallel execution
+```
+
+Supported versions are tracked in `compat/versions.json`. CI checks for new OpenClaw releases daily.
 
 ---
 
