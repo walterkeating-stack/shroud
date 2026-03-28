@@ -1,0 +1,27 @@
+{
+  "minimum": "2026.3.22",
+  "versions": [
+    {
+      "version": "2026.3.22",
+      "status": "supported",
+      "shroudMinVersion": "2.0.0",
+      "notes": "Earliest stable with plugin API",
+      "knownIssues": []
+    },
+    {
+      "version": "2026.3.23",
+      "status": "supported",
+      "shroudMinVersion": "2.1.0",
+      "notes": "",
+      "knownIssues": []
+    },
+    {
+      "version": "2026.3.24",
+      "status": "current",
+      "shroudMinVersion": "2.2.0",
+      "notes": "Latest release",
+      "knownIssues": []
+    }
+  ],
+  "lastChecked": "2026-03-28T00:00:00Z"
+}
