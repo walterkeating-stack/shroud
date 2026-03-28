@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.9] - 2026-03-28
+
+### Fixed
+- **GPS coordinate detector: 18,000+ false positives on financial/research data.** The regex matched any pair of comma- or space-separated decimals with 4+ decimal places — stock prices, ML weights, PE ratios all triggered it. Fixed: require comma separation (not whitespace), validate realistic lat [-90,90] / lon [-180,180] ranges.
+- **file_path_unix detector: obfuscating workspace paths needed by agent tools.** Paths like `/home/user/.openclaw/media/report.pdf` and `/tmp/search-results.json` were replaced with fakes, breaking exec commands and file uploads. Fixed: operational system paths (`/home/`, `/tmp/`, `/proc/`, `/sys/`, `/dev/`, `/run/`, `/snap/`, `/root/`, `/nix/`) are now skipped. Infrastructure paths (`/opt/`, `/etc/`, `/var/`) are still obfuscated.
+- **Message truncation caused by excessive obfuscation.** The combination of GPS (18k) and file_path (8k) false positives caused 400+ entity replacement passes per message, producing output the LLM perceived as truncated.
+
+### Added
+- **29 false-positive regression tests** covering: workspace paths, public URL paths, GPS vs financial data, real-world agent conversation simulations with mixed PII + operational paths.
+
 ## [2.2.8] - 2026-03-28
 
 ### Fixed
