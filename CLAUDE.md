@@ -20,13 +20,25 @@ Shroud is a privacy obfuscation plugin for AI agents. It detects 100+ entity typ
 ## Commands
 
 ```bash
-npm run build          # tsc → dist/
-npm run lint           # tsc --noEmit (type-check only)
-npm test               # All 3 suites: unit + harness + openclaw
-npm run test:unit      # Vitest (777 tests)
+npm run build             # tsc → dist/
+npm run lint              # tsc --noEmit (type-check only)
+npm test                  # unit + harness (1,229 tests, no Docker needed)
+npm run test:unit         # Vitest (870 tests)
 npm run test:integration  # APP harness (359 tests)
-npm run test:openclaw  # OpenClaw sandbox (14 tests)
-npm run test:watch     # Vitest watch mode
+npm run test:docker       # Docker E2E (183 tests, needs Docker)
+npm run test:all          # All 3 layers (1,412 tests)
+npm run test:watch        # Vitest watch mode
+```
+
+### Docker E2E (compat pipeline)
+
+```bash
+bash compat/run-compat.sh 2026.3.24        # Test against specific OC version
+bash compat/run-compat.sh latest           # Test against latest OC release
+bash compat/run-compat.sh latest --rebuild-base  # Force rebuild base image
+bash compat/run-matrix.sh                  # All supported versions
+bash compat/run-matrix.sh --parallel       # All versions in parallel
+bash compat/run-matrix.sh --latest 2       # Latest 2 versions only
 ```
 
 ## Architecture
@@ -53,6 +65,7 @@ LLM response → reverse-map fakes → deobfuscate (up to 3 recursive passes)
 | `src/store.ts` | Mapping store (real↔fake). LRU eviction support |
 | `app-server.mjs` | APP server for non-OpenClaw agents. JSON-RPC over stdin/stdout |
 | `clients/python/shroud_client.py` | Python client for APP |
+| `compat/` | Docker-based OpenClaw compatibility pipeline (Dockerfiles, scripts, version registry) |
 
 ### Fetch Intercept (the main innovation)
 
@@ -89,11 +102,52 @@ Full chain (execute without stopping unless tests fail):
 - Every push/PR: lint → test → build
 - On `v*` tags: auto-publish to npm with Sigstore provenance (requires `NPM_TOKEN` secret)
 
+`.github/workflows/compat.yml`:
+- Daily cron: polls npm for new OpenClaw releases, tests against version matrix
+- Push to main (src/tests/compat changes): tests minimum + latest OC versions
+- Manual dispatch: specific version or full matrix
+- On success: auto-creates PR updating `compat/versions.json`
+- On failure: auto-creates GitHub issue with `compat,urgent` label
+- Never auto-merges or publishes — creates PRs for review
+
 ## Testing Rules
 
-- After ANY code change: build → unit tests → harness → openclaw sandbox. All green before reporting.
-- Test sandbox must have 100% isolation: own OpenClaw copy, no host access, no network egress.
+- After ANY code change: build → `npm test` (unit + harness). All green before reporting.
+- Full E2E: `npm run test:docker` — runs inside Docker, tests real OpenClaw + all channels.
+- Docker sandbox has 100% isolation: `--internal` network (no external routing), own OpenClaw copy, tarball install.
 - Test adversarially — try to break it, don't just prove the happy path.
+
+### Test Architecture
+
+| Layer | What | Tests | Needs Docker |
+|-------|------|-------|--------------|
+| Unit (Vitest) | Obfuscator, detectors, generators, store, config | 870 | No |
+| APP Harness | 48 scenario files via mock LLM, no OpenClaw | 359 | No |
+| Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 183 | Yes |
+
+### Docker E2E Channels
+
+| Channel | How it works |
+|---------|-------------|
+| TUI | `sessions.create` → gateway → mock LLM → verify PII obfuscated + response deobfuscated |
+| Slack | Webhook injection → Bolt HTTP handler → agent → `chat.postMessage` → mock Slack captures response. HTTPS proxy on port 443. Multi-channel, multi-user. |
+| WhatsApp | Baileys intercept (Option A): mock `makeWASocket`, inject `messages.upsert`, capture `sendMessage`. In-process injection server. |
+| Cron | `openclaw cron add` → waits for schedule to fire → verifies PII obfuscated |
+| Multi-turn | Sequential `sessions.send` to same session → verifies no PII leak between turns |
+
+### Key Test Files
+
+| File | What |
+|------|------|
+| `tests/harness/harness/scenarios/docker-e2e-regression.json` | 153 regression scenarios (false positives, detection, multi-entity, production bugs) |
+| `tests/harness/harness/openclaw-runner.mjs` | Docker E2E runner — single gateway, batched tests |
+| `tests/harness/mock-llm/server.mjs` | Mock LLM with echo mode for deob verification |
+| `tests/harness/mock-slack/server.mjs` | Mock Slack API (auth.test, chat.postMessage, users, channels) |
+| `tests/harness/mock-slack/intercept.cjs` | Patches Slack SDK WebClient to use mock server |
+| `tests/harness/mock-slack/https-proxy.mjs` | HTTPS proxy on port 443 for Slack SDK TLS path |
+| `tests/harness/mock-whatsapp/intercept.cjs` | Patches Baileys `createWaSocket` to return mock socket |
+| `tests/harness/mock-whatsapp/server.mjs` | Mock WhatsApp message capture server |
+| `compat/versions.json` | Supported OpenClaw version registry |
 
 ## Golden Baseline
 
@@ -101,7 +155,7 @@ Full chain (execute without stopping unless tests fail):
 - Fetch response deobfuscation with per-block SSE flushing
 - Zero OpenClaw patches
 - All channels confirmed (TUI, Slack, WhatsApp, CLI, multi-turn)
-- 1,150 tests passing
+- 1,412 tests passing (870 unit + 359 harness + 183 Docker E2E)
 
 **Do NOT**: add per-channel patches, use empty deltas, attempt incremental text_delta deob.
 
