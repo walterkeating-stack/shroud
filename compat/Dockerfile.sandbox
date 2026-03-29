@@ -1,0 +1,49 @@
+# Sandbox test image: adds rootless Docker to the test image.
+# Built only when --sandbox flag is passed to run-compat.sh.
+#
+# Provides Docker-in-Docker (rootless) so OpenClaw can run
+# agent exec calls inside containers (exec.host: "sandbox").
+#
+# Build:
+#   docker build --build-arg OC_VERSION=2026.3.28 \
+#     -t shroud-compat-sandbox:oc-2026.3.28 -f compat/Dockerfile.sandbox .
+
+ARG OC_VERSION
+FROM shroud-compat:oc-${OC_VERSION}
+
+# Rootless Docker dependencies
+RUN apt-get update -qq && \
+    apt-get install -y -qq \
+      uidmap \
+      dbus-user-session \
+      fuse-overlayfs \
+      slirp4netns \
+      iptables \
+      curl \
+      ca-certificates \
+      >/dev/null 2>&1 && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Docker CE (daemon + CLI)
+RUN curl -fsSL https://get.docker.com | sh 2>/dev/null && \
+    echo "Docker installed"
+
+# Use existing node user (UID 1000) for rootless Docker
+RUN echo "node:100000:65536" >> /etc/subuid && \
+    echo "node:100000:65536" >> /etc/subgid && \
+    usermod -s /bin/bash node
+
+# Setup rootless Docker for node user
+RUN mkdir -p /home/node/.local/share/docker && \
+    chown -R node:node /home/node
+
+# Copy sandbox entrypoint
+COPY compat/entrypoint-sandbox.sh /shroud/entrypoint-sandbox.sh
+RUN chmod +x /shroud/entrypoint-sandbox.sh
+
+# Sandbox env
+ENV SHROUD_TEST_SANDBOX=1
+ENV XDG_RUNTIME_DIR=/run/user/1000
+ENV DOCKER_HOST=unix:///run/user/1000/docker.sock
+
+ENTRYPOINT ["/shroud/entrypoint-sandbox.sh"]

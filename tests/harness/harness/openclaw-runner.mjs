@@ -691,6 +691,11 @@ export class OpenClawRunner {
           workspace: join(this.stateDir, "workspace"),
           model: { primary: "mock-provider/mock-model" },
           timeoutSeconds: 30,
+          ...(process.env.SHROUD_TEST_SANDBOX === "1" ? {
+            tools: {
+              exec: { host: "sandbox" },
+            },
+          } : {}),
         },
       },
       models: {
@@ -1213,6 +1218,57 @@ export class OpenClawRunner {
         }
       }
     } catch {}
+
+    // ── Sandbox exec scenarios (only when SHROUD_TEST_SANDBOX=1) ──
+    if (process.env.SHROUD_TEST_SANDBOX === "1") {
+      all.push(
+        {
+          name: "Sandbox exec: PII obfuscated in tool call params",
+          message: "Look up the DNS record for server 10.42.88.7 and email admin@sandbox-corp.net about it",
+          realValues: ["10.42.88.7", "admin@sandbox-corp.net"],
+        },
+        {
+          name: "Sandbox exec: workspace path passthrough in sandbox",
+          message: "Run python3 /home/node/scripts/check.py on 172.16.5.10",
+          realValues: ["172.16.5.10"],
+          checkLlmSees: ["/home/node/scripts/check.py"],
+        },
+        {
+          name: "Sandbox exec: multi-turn with exec context",
+          multiTurn: true,
+          turns: [
+            { message: "Check disk on 10.50.2.1 and report to sysadmin@infra-ops.net", realValues: ["10.50.2.1", "sysadmin@infra-ops.net"] },
+            { message: "Now check the backup at 10.50.2.2 and CC security@infra-ops.net", realValues: ["10.50.2.1", "sysadmin@infra-ops.net", "10.50.2.2", "security@infra-ops.net"] },
+          ],
+        },
+        {
+          name: "Sandbox exec: credentials in exec context",
+          message: "Connect to postgresql://admin:S3cretPass@10.0.5.20:5432/prod and run VACUUM",
+          realValues: ["10.0.5.20"],
+        },
+        {
+          name: "Sandbox exec: network config via exec",
+          message: "hostname SBX-RTR-01\ninterface GigabitEthernet0/1\n ip address 10.80.1.1 255.255.255.0\n!\nrouter bgp 65400\n neighbor 10.80.1.2 remote-as 65401",
+          realValues: ["SBX-RTR-01", "10.80.1.1", "10.80.1.2"],
+        },
+        {
+          name: "Sandbox exec: API key in sandboxed tool call",
+          message: "Use API key SHROUD_TEST_ANTHROPIC_KEY to query the endpoint at 10.90.0.5",
+          realValues: ["SHROUD_TEST_ANTHROPIC_KEY", "10.90.0.5"],
+        },
+        {
+          name: "Sandbox exec: IBAN in sandboxed financial tool",
+          message: "Process refund to IBAN AT611904300234573201 and notify finance@sandbox-corp.net",
+          realValues: ["AT611904300234573201", "finance@sandbox-corp.net"],
+        },
+        {
+          name: "Sandbox exec: Slack upload from sandbox",
+          slackE2E: true,
+          message: "Generate a report about server 10.42.88.7 and upload it to this channel",
+          realValues: ["10.42.88.7"],
+        },
+      );
+    }
 
     if (this.scenario) {
       return all.filter(s => s.name.toLowerCase().includes(this.scenario.toLowerCase()));
