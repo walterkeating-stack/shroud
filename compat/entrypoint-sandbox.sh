@@ -1,30 +1,28 @@
 #!/bin/bash
-# Sandbox entrypoint: starts rootless Docker daemon, then delegates
+# Sandbox entrypoint: starts Docker daemon (root), then delegates
 # to the standard entrypoint for OpenClaw + Shroud setup and tests.
+#
+# We use regular dockerd (not rootless) because rootless Docker needs
+# TUN devices and slirp4netns networking which conflicts with --internal
+# Docker networks. The container already has SYS_ADMIN cap and the
+# --internal network prevents any egress, so running dockerd as root
+# inside the container is safe for testing purposes.
 set -euo pipefail
 
 echo "=== Sandbox Mode ==="
 
-# ── Start rootless Docker daemon ──
-# Create XDG_RUNTIME_DIR for rootless Docker
-mkdir -p /run/user/1000
-chown node:node /run/user/1000
-chmod 700 /run/user/1000
-
-echo "Starting rootless Docker daemon..."
-# Start dockerd-rootless as node in background
-su - node -c "
-  export XDG_RUNTIME_DIR=/run/user/1000
-  export DOCKER_HOST=unix:///run/user/1000/docker.sock
-  dockerd-rootless-setuptool.sh install 2>/dev/null || true
-  nohup dockerd-rootless.sh >/tmp/dockerd.log 2>&1 &
-"
+# ── Start Docker daemon ──
+echo "Starting Docker daemon..."
+# Use vfs storage driver (no overlayfs kernel module needed in nested containers)
+dockerd --storage-driver=vfs --iptables=false --bridge=none \
+  --data-root=/tmp/docker-data \
+  >/tmp/dockerd.log 2>&1 &
 
 # Wait for Docker daemon to be ready (max 30s)
 echo "Waiting for Docker daemon..."
-export DOCKER_HOST=unix:///run/user/1000/docker.sock
+export DOCKER_HOST=unix:///var/run/docker.sock
 for i in $(seq 1 30); do
-  if su - node -c "DOCKER_HOST=unix:///run/user/1000/docker.sock docker info" >/dev/null 2>&1; then
+  if docker info >/dev/null 2>&1; then
     echo "Docker daemon ready (${i}s)"
     break
   fi
@@ -36,8 +34,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Export Docker socket path for OpenClaw
-export DOCKER_HOST=unix:///run/user/1000/docker.sock
+docker info --format '  Storage: {{.Driver}}, Containers: {{.Containers}}'
 
 # ── Delegate to standard entrypoint ──
 # The standard entrypoint handles:

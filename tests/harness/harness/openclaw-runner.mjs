@@ -691,13 +691,18 @@ export class OpenClawRunner {
           workspace: join(this.stateDir, "workspace"),
           model: { primary: "mock-provider/mock-model" },
           timeoutSeconds: 30,
-          ...(process.env.SHROUD_TEST_SANDBOX === "1" ? {
-            tools: {
-              exec: { host: "sandbox" },
-            },
-          } : {}),
         },
       },
+      // Sandbox exec: run agent tool calls inside containers
+      ...(process.env.SHROUD_TEST_SANDBOX === "1" ? {
+        tools: {
+          exec: {
+            host: "sandbox",
+            security: "full",
+            ask: "off",
+          },
+        },
+      } : {}),
       models: {
         mode: "merge",
         providers: {
