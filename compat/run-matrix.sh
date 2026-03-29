@@ -14,6 +14,7 @@ VERSIONS_FILE="${SCRIPT_DIR}/versions.json"
 
 LATEST_N=""
 PARALLEL=false
+SANDBOX=""
 
 # Interactive mode if no args provided
 if [[ $# -eq 0 && -t 0 ]]; then
@@ -33,6 +34,7 @@ else
     case $1 in
       --latest) LATEST_N="$2"; shift 2 ;;
       --parallel) PARALLEL=true; shift ;;
+      --sandbox) SANDBOX="--sandbox"; shift ;;
       *) echo "Unknown arg: $1"; exit 1 ;;
     esac
   done
@@ -61,7 +63,7 @@ FAILED=()
 run_one() {
   local ver=$1
   echo "--- OpenClaw ${ver} ---"
-  if bash compat/run-compat.sh "${ver}"; then
+  if bash compat/run-compat.sh "${ver}" ${SANDBOX}; then
     RESULTS+=("${ver}: PASS")
   else
     RESULTS+=("${ver}: FAIL")
@@ -73,7 +75,7 @@ if [ "${PARALLEL}" = true ]; then
   mkdir -p compat/logs
   PIDS=()
   for ver in ${VERSIONS}; do
-    bash compat/run-compat.sh "${ver}" &>"compat/logs/${ver}.log" &
+    bash compat/run-compat.sh "${ver}" ${SANDBOX} &>"compat/logs/${ver}.log" &
     PIDS+=("$!:${ver}")
   done
   for entry in "${PIDS[@]}"; do
