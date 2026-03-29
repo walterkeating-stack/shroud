@@ -77,16 +77,16 @@ Shroud does not guarantee compliance — regex-based detection has limitations (
 
 > **How it works:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates detected entities in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. On the response side, SSE streaming is deobfuscated per content block with buffered flushing. Every delivery path (Slack, WhatsApp, TUI, Telegram, Discord, Signal, web) gets real text automatically. Zero host patches required.
 
-> **Requires OpenClaw 2026.3.24 or later.**
+> **Requires OpenClaw 2026.3.22 or later.**
 
 ---
 
 ## Install
 
-### OpenClaw (2026.3.24+)
+### OpenClaw (2026.3.22+)
 
 ```bash
-openclaw --version    # ensure 2026.3.24+
+openclaw --version    # ensure 2026.3.22+
 openclaw plugins install shroud-privacy
 ```
 
@@ -127,7 +127,7 @@ node node_modules/shroud-privacy/app-server.mjs node_modules/shroud-privacy/dist
 
 Handshake (server writes on startup):
 ```json
-{"app":"1.0","engine":"shroud","version":"2.2.7","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
+{"app":"1.0","engine":"shroud","version":"2.2.9","capabilities":["obfuscate","deobfuscate","batch","stats","health","configure","audit","partitions"]}
 ```
 
 Obfuscate:
@@ -406,13 +406,35 @@ client.stop()
 
 ```bash
 npm install
-npm test          # all 3 suites: unit + harness + openclaw
-npm run test:unit      # vitest (819 tests)
-npm run test:integration  # APP harness (359 tests)
-npm run test:openclaw  # OpenClaw sandbox (14 tests)
-npm run build     # compile TypeScript
-npm run lint      # type-check without emitting
+npm run build               # compile TypeScript
+npm run lint                # type-check without emitting
+npm test                    # unit + harness (1,229 tests, no Docker)
+npm run test:docker         # Docker E2E — real OpenClaw, all channels (192 tests)
+npm run test:all            # everything (1,421 tests)
 ```
+
+### Test layers
+
+| Layer | Command | Tests | What it covers |
+|-------|---------|-------|---------------|
+| Unit | `npm run test:unit` | 870 | Obfuscator, detectors, generators, store, config |
+| APP Harness | `npm run test:integration` | 359 | 48 scenario files via mock LLM, no OpenClaw |
+| Docker E2E | `npm run test:docker` | 192 | Real OpenClaw gateway, Slack/WhatsApp/Cron/TUI channels, 153 regression scenarios |
+| Sandbox E2E | `run-compat.sh <ver> --sandbox` | +8 | Docker-in-Docker, sandboxed agent exec, tool call deobfuscation |
+
+Docker E2E runs inside an isolated container (`--internal` network, no external routing). Both OpenClaw and Shroud are installed from npm — the same path real users take. A single gateway process handles all tests via WebSocket RPC. Channel tests use mock servers with real SDK code paths (Slack via Bolt HTTP, WhatsApp via Baileys intercept).
+
+### OpenClaw compatibility matrix
+
+```bash
+bash compat/run-compat.sh latest           # test against latest OpenClaw
+bash compat/run-compat.sh latest --sandbox # include sandboxed agent exec tests
+bash compat/run-matrix.sh                  # interactive: current or current + last 3
+bash compat/run-matrix.sh --latest 3       # latest 3 versions
+bash compat/run-matrix.sh --parallel       # parallel execution
+```
+
+Supported versions are tracked in `compat/versions.json`. CI checks for new OpenClaw releases daily.
 
 ---
 

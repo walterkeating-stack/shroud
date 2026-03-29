@@ -171,7 +171,8 @@ export class Runner {
 
   #loadScenarioFiles() {
     const scenarioDir = path.resolve(__dirname, "scenarios");
-    let files = fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json"));
+    // Skip docker-* scenario files — those run only in Docker E2E via openclaw-runner
+    let files = fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json") && !f.startsWith("docker-"));
 
     if (this.#opts.scenario) {
       const filter = this.#opts.scenario;

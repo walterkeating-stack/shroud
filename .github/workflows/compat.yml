@@ -1,0 +1,236 @@
+name: OpenClaw Compatibility
+
+on:
+  schedule:
+    # Daily at 06:00 UTC — check for new OpenClaw releases
+    - cron: '0 6 * * *'
+
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'compat/**'
+
+  workflow_dispatch:
+    inputs:
+      openclaw_version:
+        description: 'Specific OpenClaw version (or "all" for full matrix)'
+        required: false
+        default: 'latest'
+      rebuild_base:
+        description: 'Force rebuild base images'
+        type: boolean
+        default: false
+
+jobs:
+  # ── Check for new OpenClaw releases (cron only) ──
+  check-release:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.check.outputs.new_version }}
+      is_new: ${{ steps.check.outputs.is_new }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - id: check
+        run: |
+          RESULT=$(bash compat/check-new-release.sh)
+          if [[ "${RESULT}" == new:* ]]; then
+            VERSION="${RESULT#new:}"
+            echo "new_version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "is_new=true" >> $GITHUB_OUTPUT
+            echo "New OpenClaw release detected: ${VERSION}"
+          else
+            echo "is_new=false" >> $GITHUB_OUTPUT
+            echo "No new release"
+          fi
+
+  # ── Resolve which versions to test ──
+  resolve-matrix:
+    if: |
+      github.event_name != 'schedule' ||
+      needs.check-release.outputs.is_new == 'true'
+    needs: [check-release]
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.resolve.outputs.versions }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # On push: test minimum + latest only (fast feedback)
+            VERSIONS=$(node -e "
+              const v = require('./compat/versions.json');
+              const min = v.minimum;
+              const latest = v.versions[v.versions.length-1].version;
+              console.log(JSON.stringify([min, latest].filter((v,i,a) => a.indexOf(v)===i)));
+            ")
+          elif [ "${{ github.event.inputs.openclaw_version }}" = "all" ]; then
+            # Manual full matrix
+            VERSIONS=$(node -e "
+              const v = require('./compat/versions.json');
+              console.log(JSON.stringify(v.versions.filter(x=>x.status!=='retired').map(x=>x.version)));
+            ")
+          elif [ -n "${{ github.event.inputs.openclaw_version }}" ] && [ "${{ github.event.inputs.openclaw_version }}" != "latest" ]; then
+            # Manual specific version
+            VERSIONS='["${{ github.event.inputs.openclaw_version }}"]'
+          else
+            # Cron with new release or manual "latest": test new + minimum + previous latest
+            NEW="${{ needs.check-release.outputs.new_version }}"
+            VERSIONS=$(node -e "
+              const v = require('./compat/versions.json');
+              const min = v.minimum;
+              const prevLatest = v.versions[v.versions.length-1].version;
+              const extra = '${NEW}' || prevLatest;
+              const all = [min, prevLatest, extra].filter((v,i,a) => v && a.indexOf(v)===i);
+              console.log(JSON.stringify(all));
+            ")
+          fi
+          echo "versions=${VERSIONS}" >> $GITHUB_OUTPUT
+          echo "Testing versions: ${VERSIONS}"
+
+  # ── Build & test Shroud locally, then provide harness for Docker E2E ──
+  build:
+    if: |
+      github.event_name != 'schedule' ||
+      needs.check-release.outputs.is_new == 'true'
+    needs: [check-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:unit
+      - run: npm run test:integration
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shroud-build
+          path: |
+            tests/harness/
+            compat/
+
+  # ── Compatibility matrix ──
+  compat-test:
+    needs: [build, resolve-matrix]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        openclaw_version: ${{ fromJSON(needs.resolve-matrix.outputs.versions) }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: shroud-build }
+      - name: Build base image
+        run: |
+          docker build \
+            --build-arg OC_VERSION=${{ matrix.openclaw_version }} \
+            -t shroud-compat-base:oc-${{ matrix.openclaw_version }} \
+            -f compat/Dockerfile.base .
+      - name: Build test image
+        run: |
+          docker build \
+            --build-arg OC_VERSION=${{ matrix.openclaw_version }} \
+            --build-arg SHROUD_VERSION=latest \
+            -t shroud-compat:oc-${{ matrix.openclaw_version }} \
+            -f compat/Dockerfile.test .
+      - name: Create isolated network
+        run: docker network create --internal shroud-compat-net || true
+      - name: Run compat tests
+        run: |
+          docker run --rm \
+            --network shroud-compat-net \
+            --memory 1g \
+            --cpus 2 \
+            shroud-compat:oc-${{ matrix.openclaw_version }}
+
+  # ── Update version registry on new release ──
+  register-version:
+    if: |
+      github.event_name == 'schedule' &&
+      needs.check-release.outputs.is_new == 'true' &&
+      needs.compat-test.result == 'success'
+    needs: [check-release, compat-test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Update versions.json
+        run: |
+          NEW_VERSION="${{ needs.check-release.outputs.new_version }}"
+          node -e "
+            const fs = require('fs');
+            const v = JSON.parse(fs.readFileSync('compat/versions.json'));
+            for (const entry of v.versions) {
+              if (entry.status === 'current') entry.status = 'supported';
+            }
+            v.versions.push({
+              version: '${NEW_VERSION}',
+              status: 'current',
+              shroudMinVersion: require('./package.json').version,
+              notes: 'Auto-registered by CI',
+              knownIssues: []
+            });
+            v.lastChecked = new Date().toISOString();
+            fs.writeFileSync('compat/versions.json', JSON.stringify(v, null, 2) + '\n');
+          "
+      - name: Create PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION="${{ needs.check-release.outputs.new_version }}"
+          BRANCH="compat/oc-${NEW_VERSION}"
+          git checkout -b "${BRANCH}"
+          git add compat/versions.json
+          git commit -m "compat: register OpenClaw ${NEW_VERSION} as supported"
+          git push -u origin "${BRANCH}"
+          gh pr create \
+            --title "compat: OpenClaw ${NEW_VERSION} verified" \
+            --body "Automated: OpenClaw ${NEW_VERSION} passed all compatibility tests." \
+            --base main
+
+  # ── Alert on failure ──
+  alert-failure:
+    if: |
+      github.event_name == 'schedule' &&
+      needs.compat-test.result == 'failure'
+    needs: [check-release, compat-test]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEW_VERSION="${{ needs.check-release.outputs.new_version }}"
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "Compat: OpenClaw ${NEW_VERSION} breaks Shroud" \
+            --body "## Compatibility Failure
+
+          OpenClaw **${NEW_VERSION}** was released and Shroud's compat tests failed.
+
+          **Action required:** Investigate within 1 week.
+
+          ### Steps
+          1. \`bash compat/run-compat.sh ${NEW_VERSION}\` locally
+          2. Check which tests fail
+          3. Determine if Shroud needs a fix or if it's an OpenClaw bug
+          4. If Shroud fix needed: patch, test, release
+          5. If OpenClaw bug: file upstream, add to \`knownIssues\` in versions.json
+
+          ### CI Run
+          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label "compat,urgent"

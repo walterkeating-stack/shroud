@@ -1,0 +1,34 @@
+{
+  "minimum": "2026.3.22",
+  "versions": [
+    {
+      "version": "2026.3.22",
+      "status": "supported",
+      "shroudMinVersion": "2.0.0",
+      "notes": "Earliest stable with plugin API. No WhatsApp channel support.",
+      "knownIssues": ["WhatsApp channel not available (added in 2026.3.23)"]
+    },
+    {
+      "version": "2026.3.23",
+      "status": "retired",
+      "shroudMinVersion": "2.1.0",
+      "notes": "Retired: gateway bug causes total test failure when Slack channel fails to start",
+      "knownIssues": ["Gateway stops routing requests when Slack channel fails to start (OC bug)"]
+    },
+    {
+      "version": "2026.3.24",
+      "status": "supported",
+      "shroudMinVersion": "2.2.0",
+      "notes": "",
+      "knownIssues": []
+    },
+    {
+      "version": "2026.3.28",
+      "status": "current",
+      "shroudMinVersion": "2.2.0",
+      "notes": "Latest release. Adds async requireApproval in before_tool_call hooks, WhatsApp echo loop fix, plugin SDK moduleUrl fix.",
+      "knownIssues": []
+    }
+  ],
+  "lastChecked": "2026-03-29T00:00:00Z"
+}
