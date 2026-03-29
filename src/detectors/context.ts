@@ -391,6 +391,13 @@ export class ContextDetector implements BaseDetector {
       "regex:device_name_dotted",
       "regex:device_name_short",
       "context:hostname_propagation",
+      // Network credentials — context-dependent detectors that need learning
+      // so bare values are re-detected in multi-turn assistant history
+      "regex:snmp_community",
+      "regex:prose_snmp_community",
+      "regex:bgp_neighbor_password",
+      "regex:cisco_enable_secret",
+      "regex:cisco_type7",
     ]);
 
     for (const e of entities) {

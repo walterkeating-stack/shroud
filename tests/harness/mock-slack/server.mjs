@@ -69,33 +69,48 @@ function handleSlackApi(req, res) {
           team: "Mock Workspace",
           user: "shroud-bot",
           team_id: "T00000001",
-          user_id: "U00000001",
+          user_id: "UBOT00001",
           bot_id: "B00000001",
         });
       } else if (path === "/api/conversations.info") {
+        const channels = {
+          "C00000001": { id: "C00000001", name: "network-ops", is_channel: true, is_member: true, topic: { value: "Network operations alerts" } },
+          "C00000002": { id: "C00000002", name: "security-alerts", is_channel: true, is_member: true, topic: { value: "Security incident channel" } },
+        };
+        const chanId = body.channel || "C00000001";
         json(res, {
           ok: true,
-          channel: {
-            id: body.channel || "C00000001",
-            name: "test-channel",
-            is_channel: true,
-            is_member: true,
-          },
+          channel: channels[chanId] || { id: chanId, name: "unknown-channel", is_channel: true, is_member: true },
         });
       } else if (path === "/api/conversations.list") {
-        json(res, { ok: true, channels: [] });
-      } else if (path === "/api/users.info") {
         json(res, {
           ok: true,
-          user: {
-            id: body.user || "U00000001",
-            name: "test-user",
-            real_name: "Test User",
-            is_bot: false,
-          },
+          channels: [
+            { id: "C00000001", name: "network-ops", is_channel: true, is_member: true, num_members: 12 },
+            { id: "C00000002", name: "security-alerts", is_channel: true, is_member: true, num_members: 8 },
+          ],
+        });
+      } else if (path === "/api/users.info") {
+        // Simulate real users with different profiles
+        const users = {
+          "U00000001": { id: "U00000001", name: "walter.keating", real_name: "Walter Keating", is_bot: false, tz: "Europe/Dublin" },
+          "U00000002": { id: "U00000002", name: "jane.ops", real_name: "Jane Ops", is_bot: false, tz: "America/New_York" },
+          "UBOT00001": { id: "UBOT00001", name: "shroud-bot", real_name: "Shroud Bot", is_bot: true },
+        };
+        const userId = body.user || "U00000001";
+        json(res, {
+          ok: true,
+          user: users[userId] || { id: userId, name: "unknown-user", real_name: "Unknown User", is_bot: false },
         });
       } else if (path === "/api/users.list") {
-        json(res, { ok: true, members: [] });
+        json(res, {
+          ok: true,
+          members: [
+            { id: "U00000001", name: "walter.keating", real_name: "Walter Keating", is_bot: false },
+            { id: "U00000002", name: "jane.ops", real_name: "Jane Ops", is_bot: false },
+            { id: "UBOT00001", name: "shroud-bot", real_name: "Shroud Bot", is_bot: true },
+          ],
+        });
       } else if (path === "/api/apps.connections.open") {
         // Socket mode connect — shouldn't be hit in HTTP mode but just in case
         json(res, { ok: true, url: "wss://mock.slack.com/link/ws" });
