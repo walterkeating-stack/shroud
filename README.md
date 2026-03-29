@@ -409,8 +409,8 @@ npm install
 npm run build               # compile TypeScript
 npm run lint                # type-check without emitting
 npm test                    # unit + harness (1,229 tests, no Docker)
-npm run test:docker         # Docker E2E — real OpenClaw, all channels (183 tests)
-npm run test:all            # everything (1,412 tests)
+npm run test:docker         # Docker E2E — real OpenClaw, all channels (186 tests)
+npm run test:all            # everything (1,415 tests)
 ```
 
 ### Test layers
@@ -419,7 +419,7 @@ npm run test:all            # everything (1,412 tests)
 |-------|---------|-------|---------------|
 | Unit | `npm run test:unit` | 870 | Obfuscator, detectors, generators, store, config |
 | APP Harness | `npm run test:integration` | 359 | 48 scenario files via mock LLM, no OpenClaw |
-| Docker E2E | `npm run test:docker` | 183 | Real OpenClaw gateway, Slack/WhatsApp/Cron/TUI channels, 153 regression scenarios |
+| Docker E2E | `npm run test:docker` | 186 | Real OpenClaw gateway, Slack/WhatsApp/Cron/TUI channels, 153 regression scenarios |
 
 Docker E2E runs inside an isolated container (`--internal` network, no external routing). Both OpenClaw and Shroud are installed from npm — the same path real users take. A single gateway process handles all tests via WebSocket RPC. Channel tests use mock servers with real SDK code paths (Slack via Bolt HTTP, WhatsApp via Baileys intercept).
 

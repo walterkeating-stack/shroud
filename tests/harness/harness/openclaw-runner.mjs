@@ -996,6 +996,118 @@ export class OpenClawRunner {
           { message: "Now format as JSON: ops@internal-corp.net", realValues: ["admin@internal-corp.net", "ops@internal-corp.net"] },
         ],
       },
+      // Compaction-aware multi-turn: many turns with diverse PII to stress
+      // the re-obfuscation path after OC compacts earlier messages
+      {
+        name: "Multi-turn compaction: 4 turns with mixed PII types",
+        multiTurn: true,
+        turns: [
+          { message: "Server at 172.16.5.10 needs a restart, contact noc@infra-corp.net", realValues: ["172.16.5.10", "noc@infra-corp.net"] },
+          { message: "BGP peer 10.255.0.1 AS 64512 is also flapping", realValues: ["172.16.5.10", "noc@infra-corp.net", "10.255.0.1"] },
+          { message: "Escalate to +15550101002 about the outage on 10.255.0.1", realValues: ["172.16.5.10", "noc@infra-corp.net", "10.255.0.1", "+15550101002"] },
+          { message: "Also notify ops@infra-corp.net about 192.168.1.50 being down", realValues: ["172.16.5.10", "noc@infra-corp.net", "10.255.0.1", "+15550101002", "ops@infra-corp.net", "192.168.1.50"] },
+        ],
+      },
+      {
+        name: "Multi-turn compaction: credentials across turns",
+        multiTurn: true,
+        turns: [
+          { message: "Server 10.0.2.10 has enable secret 5 $1$xyz$SecretHash", realValues: ["10.0.2.10"] },
+          { message: "Also check 10.0.2.11 with API key SHROUD_TEST_ANTHROPIC_KEY", realValues: ["10.0.2.10", "10.0.2.11", "SHROUD_TEST_ANTHROPIC_KEY"] },
+          { message: "Send report to admin@secret-corp.com about both servers", realValues: ["10.0.2.10", "10.0.2.11", "admin@secret-corp.com"] },
+        ],
+      },
+      {
+        name: "Multi-turn compaction: network config accumulation",
+        multiTurn: true,
+        turns: [
+          { message: "hostname CORE-RTR-01\nenable secret 5 $1$mERo$ILwq", realValues: ["CORE-RTR-01"] },
+          { message: "Add neighbor 10.1.0.2 remote-as 65002 with password BgpS3cret", realValues: ["CORE-RTR-01", "10.1.0.2", "BgpS3cret"] },
+          { message: "Set snmp-server community Pr1vRW RW and host 10.10.5.30", realValues: ["CORE-RTR-01", "10.1.0.2", "BgpS3cret", "Pr1vRW", "10.10.5.30"] },
+        ],
+      },
+      // ── Extended multi-turn compaction scenarios ──
+      // These exercise deep conversation history, PII accumulation across
+      // many turns, and diverse entity types to stress re-obfuscation
+      // after OpenClaw compacts earlier messages.
+      {
+        name: "Multi-turn: 6-turn PII accumulation stress test",
+        multiTurn: true,
+        turns: [
+          { message: "Server 10.20.30.40 is reporting disk failures", realValues: ["10.20.30.40"] },
+          { message: "Contact noc-lead@datacenter-ops.net about it", realValues: ["10.20.30.40", "noc-lead@datacenter-ops.net"] },
+          { message: "Also page the on-call at +15550101003", realValues: ["10.20.30.40", "noc-lead@datacenter-ops.net", "+15550101003"] },
+          { message: "The backup server is at 172.31.255.10", realValues: ["10.20.30.40", "noc-lead@datacenter-ops.net", "+15550101003", "172.31.255.10"] },
+          { message: "Failover API key is SHROUD_TEST_OPENAI_KEY", realValues: ["10.20.30.40", "noc-lead@datacenter-ops.net", "+15550101003", "172.31.255.10", "SHROUD_TEST_OPENAI_KEY"] },
+          { message: "Send incident report to postmortem@datacenter-ops.net", realValues: ["10.20.30.40", "noc-lead@datacenter-ops.net", "+15550101003", "172.31.255.10", "SHROUD_TEST_OPENAI_KEY", "postmortem@datacenter-ops.net"] },
+        ],
+      },
+      {
+        name: "Multi-turn: same PII repeated across turns tests determinism",
+        multiTurn: true,
+        turns: [
+          { message: "Check the firewall at 10.99.1.1 for blocked traffic from ops@shared-infra.net", realValues: ["10.99.1.1", "ops@shared-infra.net"] },
+          { message: "The issue on 10.99.1.1 is confirmed, ops@shared-infra.net needs to investigate", realValues: ["10.99.1.1", "ops@shared-infra.net"] },
+          { message: "Final update: 10.99.1.1 resolved. Notify ops@shared-infra.net and sec-team@shared-infra.net", realValues: ["10.99.1.1", "ops@shared-infra.net", "sec-team@shared-infra.net"] },
+        ],
+      },
+      {
+        name: "Multi-turn: mixed category per turn (email, IP, credential, IBAN, phone)",
+        multiTurn: true,
+        turns: [
+          { message: "Billing contact is finance@acme-billing.com", realValues: ["finance@acme-billing.com"] },
+          { message: "Payment gateway at 10.88.2.100 is timing out", realValues: ["finance@acme-billing.com", "10.88.2.100"] },
+          { message: "Gateway API key is SHROUD_TEST_ANTHROPIC_KEY", realValues: ["finance@acme-billing.com", "10.88.2.100", "SHROUD_TEST_ANTHROPIC_KEY"] },
+          { message: "Refund to IBAN DE89370400440532013000 for order 7789", realValues: ["finance@acme-billing.com", "10.88.2.100", "SHROUD_TEST_ANTHROPIC_KEY", "DE89370400440532013000"] },
+          { message: "Call the merchant at +15550101004 to confirm", realValues: ["finance@acme-billing.com", "10.88.2.100", "SHROUD_TEST_ANTHROPIC_KEY", "DE89370400440532013000", "+15550101004"] },
+        ],
+      },
+      {
+        name: "Multi-turn: network config with propagating hostname (4 turns, 9 PII)",
+        multiTurn: true,
+        turns: [
+          { message: "hostname LAX-DIST-RTR-02\ninterface GigabitEthernet0/0\n ip address 10.40.1.1 255.255.255.252", realValues: ["LAX-DIST-RTR-02", "10.40.1.1"] },
+          { message: "router bgp 65100\n neighbor 10.40.1.2 remote-as 65200\n neighbor 10.40.1.2 password 7 14141B180F0B", realValues: ["LAX-DIST-RTR-02", "10.40.1.1", "10.40.1.2", "14141B180F0B"] },
+          { message: "snmp-server community N3tM0nRO RO\nsnmp-server community N3tM0nRW RW\nsnmp-server host 10.40.5.50 version 2c N3tM0nRO", realValues: ["LAX-DIST-RTR-02", "10.40.1.1", "10.40.1.2", "14141B180F0B", "N3tM0nRO", "N3tM0nRW", "10.40.5.50"] },
+          { message: "Contact neteng@isp-partner.net about the peering config for LAX-DIST-RTR-02", realValues: ["LAX-DIST-RTR-02", "10.40.1.1", "10.40.1.2", "14141B180F0B", "N3tM0nRO", "N3tM0nRW", "10.40.5.50", "neteng@isp-partner.net"] },
+        ],
+      },
+      {
+        name: "Multi-turn: long message compaction pressure (18+ entities)",
+        multiTurn: true,
+        turns: [
+          { message: "hostname BULK-TEST-RTR-01\ninterface Loopback0\n ip address 10.250.0.1 255.255.255.255", realValues: ["BULK-TEST-RTR-01", "10.250.0.1"] },
+          {
+            message: "Full WAN config:\nrouter bgp 65500\n neighbor 10.60.1.1 remote-as 65501\n neighbor 10.60.1.1 password 7 02050D480809\n neighbor 10.60.1.2 remote-as 65502\n neighbor 10.60.1.2 password 7 02050D480809\n neighbor 10.60.1.3 remote-as 65503\n neighbor 10.60.1.3 password 7 02050D480809\n!\nsnmp-server community BulkRO1 RO\nsnmp-server community BulkRW1 RW\nsnmp-server host 10.60.10.1 version 2c BulkRO1\nsnmp-server host 10.60.10.2 version 2c BulkRO1\n!\nlogging host 10.60.20.1\nlogging host 10.60.20.2\n!\nenable secret 5 $1$Bulk$HashValue99\n!\nContact infra-bulk@wan-ops.net for issues",
+            realValues: [
+              "BULK-TEST-RTR-01", "10.250.0.1",
+              "10.60.1.1", "10.60.1.2", "10.60.1.3", "02050D480809",
+              "BulkRO1", "BulkRW1", "10.60.10.1", "10.60.10.2",
+              "10.60.20.1", "10.60.20.2",
+              "infra-bulk@wan-ops.net",
+            ],
+          },
+          {
+            message: "Summarize the peering config and send to netops@wan-ops.net",
+            realValues: [
+              "BULK-TEST-RTR-01", "10.250.0.1",
+              "10.60.1.1", "10.60.1.2", "10.60.1.3", "02050D480809",
+              "BulkRO1", "BulkRW1", "10.60.10.1", "10.60.10.2",
+              "10.60.20.1", "10.60.20.2",
+              "infra-bulk@wan-ops.net", "netops@wan-ops.net",
+            ],
+          },
+        ],
+      },
+      {
+        name: "Multi-turn: AWS credentials and cloud PII across turns",
+        multiTurn: true,
+        turns: [
+          { message: "Staging DB at 10.70.3.5 needs credential rotation", realValues: ["10.70.3.5"] },
+          { message: "AWS access key for CI is SHROUD_TEST_AWS_ACCESS_KEY and prod DB is 10.70.3.10", realValues: ["10.70.3.5", "SHROUD_TEST_AWS_ACCESS_KEY", "10.70.3.10"] },
+          { message: "Alert devops-oncall@platform-team.io about the rotation", realValues: ["10.70.3.5", "SHROUD_TEST_AWS_ACCESS_KEY", "10.70.3.10", "devops-oncall@platform-team.io"] },
+        ],
+      },
       // NOTE: Slack gateway E2E test removed — OpenClaw's Slack extension
       // cannot start with fake tokens in a test sandbox. The Slack flow is
       // tested by 5 unit tests in hooks.test.ts (hooks - Slack E2E simulation)

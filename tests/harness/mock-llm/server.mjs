@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 /**
- * Mock LLM Server — OpenAI-compatible chat completions endpoint.
+ * Mock LLM Server — multi-provider chat completions endpoint.
+ *
+ * Implements realistic SSE streaming for:
+ *   - OpenAI  /v1/chat/completions  (chat.completion.chunk with delta.content)
+ *   - Anthropic  /v1/messages  (content_block_delta/content_block_stop with named events)
+ *   - Google Gemini  /v1beta/models/*  (GenerateContentResponse chunks)
  *
  * Pure Node.js, zero dependencies. Logs every request for assertion checks.
- * Supports streaming (SSE) and non-streaming modes, plus tool_call responses.
+ * Supports streaming and non-streaming modes, echo mode, and tool calls.
  */
 
 import http from "node:http";
@@ -11,10 +16,66 @@ import { randomUUID } from "node:crypto";
 
 const requestLog = [];
 
-/**
- * Extract the last user message content from an OpenAI-format request body.
- */
-function lastUserContent(body) {
+// ── Shared helpers ──────────────────────────────────────────
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
+    req.on("error", reject);
+  });
+}
+
+function isEchoMode(body, url, req) {
+  return body._echo ||
+    url.searchParams.has("echo") ||
+    (req.headers["x-mock-echo"] === "1") ||
+    (process.env.MOCK_LLM_ECHO === "1");
+}
+
+function isNoTools(body, url, req) {
+  return body._no_tool_calls ||
+    url.searchParams.has("no_tools") ||
+    (req.headers["x-no-tool-calls"] === "1") ||
+    (process.env.MOCK_LLM_NO_TOOLS === "1");
+}
+
+/** Split text into small token-like chunks (~2-4 words). */
+function tokenize(text, wordsPerChunk = 3) {
+  const words = text.split(/(\s+)/);
+  const chunks = [];
+  let buf = "";
+  let wordCount = 0;
+  for (const w of words) {
+    buf += w;
+    if (w.trim()) wordCount++;
+    if (wordCount >= wordsPerChunk) {
+      chunks.push(buf);
+      buf = "";
+      wordCount = 0;
+    }
+  }
+  if (buf) chunks.push(buf);
+  return chunks;
+}
+
+/** Check if text contains an IP/hostname and request declares tools. */
+function maybeToolCall(body, userText, toolsKey = "tools") {
+  const tools = body[toolsKey];
+  if (!tools || tools.length === 0) return null;
+  const ipMatch = userText.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/);
+  const hostMatch = userText.match(/\b(?:[a-zA-Z][a-zA-Z0-9-]+\.){1,}[a-zA-Z]{2,}\b/);
+  const entity = ipMatch ? ipMatch[0] : hostMatch ? hostMatch[0] : null;
+  if (!entity) return null;
+  const toolName = (tools[0].function?.name) || (tools[0].name) || "lookup";
+  return { toolName, entity, callId: `call_test_${randomUUID().slice(0, 8)}` };
+}
+
+
+// ── OpenAI /v1/chat/completions ─────────────────────────────
+
+function lastUserContentOpenAI(body) {
   const msgs = body.messages || [];
   for (let i = msgs.length - 1; i >= 0; i--) {
     if (msgs[i].role === "user") {
@@ -26,200 +87,413 @@ function lastUserContent(body) {
   return "";
 }
 
-/**
- * Check if text contains an IP address or hostname pattern, and if the request
- * declares tools. If so, return a tool_call response shape instead of text.
- */
-function maybeToolCall(body, userText) {
-  if (!body.tools || body.tools.length === 0) return null;
-
-  const ipPattern = /\b(?:\d{1,3}\.){3}\d{1,3}\b/;
-  const hostPattern = /\b(?:[a-zA-Z][a-zA-Z0-9-]+\.){1,}[a-zA-Z]{2,}\b/;
-
-  const ipMatch = userText.match(ipPattern);
-  const hostMatch = userText.match(hostPattern);
-  const entity = ipMatch ? ipMatch[0] : hostMatch ? hostMatch[0] : null;
-
-  if (!entity) return null;
-
-  const toolName = body.tools[0].function?.name || "lookup";
-  return {
-    toolName,
-    entity,
-    callId: `call_test_${randomUUID().slice(0, 8)}`,
-  };
-}
-
-function buildNonStreamingResponse(content, model) {
+function openaiNonStreaming(content, model) {
   return {
     id: `chatcmpl-${randomUUID().slice(0, 12)}`,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model: model || "mock-model",
-    choices: [
-      {
-        index: 0,
-        message: { role: "assistant", content },
-        finish_reason: "stop",
-      },
-    ],
-    usage: {
-      prompt_tokens: content.length,
-      completion_tokens: content.length,
-      total_tokens: content.length * 2,
-    },
+    choices: [{
+      index: 0,
+      message: { role: "assistant", content },
+      finish_reason: "stop",
+    }],
+    usage: { prompt_tokens: content.length, completion_tokens: content.length, total_tokens: content.length * 2 },
   };
 }
 
-function buildNonStreamingToolCall(tc, model) {
+function openaiNonStreamingToolCall(tc, model) {
   return {
     id: `chatcmpl-${randomUUID().slice(0, 12)}`,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model: model || "mock-model",
-    choices: [
-      {
-        index: 0,
-        message: {
-          role: "assistant",
-          content: null,
-          tool_calls: [
-            {
-              id: tc.callId,
-              type: "function",
-              function: {
-                name: tc.toolName,
-                arguments: JSON.stringify({ query: tc.entity }),
-              },
-            },
-          ],
-        },
-        finish_reason: "tool_calls",
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: tc.callId, type: "function",
+          function: { name: tc.toolName, arguments: JSON.stringify({ query: tc.entity }) },
+        }],
       },
-    ],
+      finish_reason: "tool_calls",
+    }],
     usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 },
   };
 }
 
-/**
- * Write SSE streaming response for text content.
- */
-function streamTextResponse(res, content, model) {
+function openaiStreamText(res, content, model) {
   const id = `chatcmpl-${randomUUID().slice(0, 12)}`;
   const created = Math.floor(Date.now() / 1000);
-  const words = content.split(/(\s+)/);
+  const m = model || "mock-model";
+  const chunks = tokenize(content);
 
-  // Group into chunks of ~3 words (keeping whitespace attached)
-  const chunks = [];
-  let buf = "";
-  let wordCount = 0;
-  for (const w of words) {
-    buf += w;
-    if (w.trim()) wordCount++;
-    if (wordCount >= 3) {
-      chunks.push(buf);
-      buf = "";
-      wordCount = 0;
-    }
-  }
-  if (buf) chunks.push(buf);
-
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
 
   // Role chunk
-  const roleChunk = {
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model: model || "mock-model",
+  res.write(`data: ${JSON.stringify({
+    id, object: "chat.completion.chunk", created, model: m,
     choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
-  };
-  res.write(`data: ${JSON.stringify(roleChunk)}\n\n`);
+  })}\n\n`);
 
   for (const chunk of chunks) {
-    const obj = {
-      id,
-      object: "chat.completion.chunk",
-      created,
-      model: model || "mock-model",
+    res.write(`data: ${JSON.stringify({
+      id, object: "chat.completion.chunk", created, model: m,
       choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }],
-    };
-    res.write(`data: ${JSON.stringify(obj)}\n\n`);
+    })}\n\n`);
   }
 
-  // Final chunk with stop + usage
-  const stopChunk = {
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model: model || "mock-model",
+  // Stop chunk with usage
+  res.write(`data: ${JSON.stringify({
+    id, object: "chat.completion.chunk", created, model: m,
     choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
-    usage: {
-      prompt_tokens: content.length,
-      completion_tokens: content.length,
-      total_tokens: content.length * 2,
-    },
-  };
-  res.write(`data: ${JSON.stringify(stopChunk)}\n\n`);
+    usage: { prompt_tokens: content.length, completion_tokens: content.length, total_tokens: content.length * 2 },
+  })}\n\n`);
   res.write("data: [DONE]\n\n");
   res.end();
 }
 
-/**
- * Write SSE streaming response for a tool call.
- */
-function streamToolCallResponse(res, tc, model) {
+function openaiStreamToolCall(res, tc, model) {
   const id = `chatcmpl-${randomUUID().slice(0, 12)}`;
   const created = Math.floor(Date.now() / 1000);
+  const m = model || "mock-model";
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-
-  const chunk = {
-    id,
-    object: "chat.completion.chunk",
-    created,
-    model: model || "mock-model",
-    choices: [
-      {
-        index: 0,
-        delta: {
-          tool_calls: [
-            {
-              index: 0,
-              id: tc.callId,
-              type: "function",
-              function: {
-                name: tc.toolName,
-                arguments: JSON.stringify({ query: tc.entity }),
-              },
-            },
-          ],
-        },
-        finish_reason: "tool_calls",
-      },
-    ],
-  };
-  res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+  res.write(`data: ${JSON.stringify({
+    id, object: "chat.completion.chunk", created, model: m,
+    choices: [{
+      index: 0,
+      delta: { tool_calls: [{ index: 0, id: tc.callId, type: "function", function: { name: tc.toolName, arguments: JSON.stringify({ query: tc.entity }) } }] },
+      finish_reason: "tool_calls",
+    }],
+  })}\n\n`);
   res.write("data: [DONE]\n\n");
   res.end();
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString()));
-    req.on("error", reject);
-  });
+function handleOpenAI(req, res, url, body) {
+  requestLog.push(body);
+  const userText = lastUserContentOpenAI(body);
+  const tc = isNoTools(body, url, req) ? null : maybeToolCall(body, userText);
+  const echoMode = isEchoMode(body, url, req);
+  const responseText = echoMode ? userText : `Based on my analysis, ${userText}. This information has been verified.`;
+  const streaming = body.stream !== false;
+  const model = body.model || "mock-model";
+
+  if (tc) {
+    if (streaming) openaiStreamToolCall(res, tc, model);
+    else { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(openaiNonStreamingToolCall(tc, model))); }
+  } else if (streaming) {
+    openaiStreamText(res, responseText, model);
+  } else {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(openaiNonStreaming(responseText, model)));
+  }
 }
+
+
+// ── Anthropic /v1/messages ──────────────────────────────────
+
+function lastUserContentAnthropic(body) {
+  const msgs = body.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === "user") {
+      const c = msgs[i].content;
+      if (typeof c === "string") return c;
+      if (Array.isArray(c)) {
+        const textBlock = c.find(b => b.type === "text");
+        return textBlock ? textBlock.text : JSON.stringify(c);
+      }
+      return JSON.stringify(c);
+    }
+  }
+  return "";
+}
+
+function anthropicNonStreaming(content, model) {
+  return {
+    id: `msg_${randomUUID().slice(0, 24)}`,
+    type: "message",
+    role: "assistant",
+    model: model || "claude-3-haiku-20240307",
+    stop_reason: "end_turn",
+    stop_sequence: null,
+    content: [{ type: "text", text: content }],
+    usage: { input_tokens: Math.ceil(content.length / 4), output_tokens: Math.ceil(content.length / 4) },
+  };
+}
+
+function anthropicNonStreamingToolCall(tc, model) {
+  return {
+    id: `msg_${randomUUID().slice(0, 24)}`,
+    type: "message",
+    role: "assistant",
+    model: model || "claude-3-haiku-20240307",
+    stop_reason: "tool_use",
+    stop_sequence: null,
+    content: [{
+      type: "tool_use",
+      id: tc.callId,
+      name: tc.toolName,
+      input: { query: tc.entity },
+    }],
+    usage: { input_tokens: 10, output_tokens: 10 },
+  };
+}
+
+/** Write a single named SSE event (Anthropic uses `event:` + `data:` lines). */
+function sseEvent(res, eventName, data) {
+  res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+function anthropicStreamText(res, content, model) {
+  const m = model || "claude-3-haiku-20240307";
+  const msgId = `msg_${randomUUID().slice(0, 24)}`;
+  const inputTokens = Math.ceil(content.length / 4);
+  // Smaller chunks than OpenAI — more realistic for Anthropic token streaming
+  const chunks = tokenize(content, 2);
+
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+
+  // message_start
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: msgId, type: "message", role: "assistant", model: m,
+      stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: inputTokens, output_tokens: 1 },
+      content: [],
+    },
+  });
+
+  // content_block_start (index 0, text block)
+  sseEvent(res, "content_block_start", {
+    type: "content_block_start", index: 0,
+    content_block: { type: "text", text: "" },
+  });
+
+  // ping (realistic — Anthropic sends pings during streaming)
+  sseEvent(res, "ping", { type: "ping" });
+
+  // content_block_delta — one per chunk
+  for (const chunk of chunks) {
+    sseEvent(res, "content_block_delta", {
+      type: "content_block_delta", index: 0,
+      delta: { type: "text_delta", text: chunk },
+    });
+  }
+
+  // content_block_stop
+  sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+
+  // message_delta (stop_reason + final usage)
+  sseEvent(res, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "end_turn", stop_sequence: null },
+    usage: { output_tokens: Math.ceil(content.length / 4) },
+  });
+
+  // message_stop
+  sseEvent(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
+function anthropicStreamToolCall(res, tc, model) {
+  const m = model || "claude-3-haiku-20240307";
+  const msgId = `msg_${randomUUID().slice(0, 24)}`;
+
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: msgId, type: "message", role: "assistant", model: m,
+      stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 1 },
+      content: [],
+    },
+  });
+
+  // Tool use content block
+  sseEvent(res, "content_block_start", {
+    type: "content_block_start", index: 0,
+    content_block: { type: "tool_use", id: tc.callId, name: tc.toolName, input: {} },
+  });
+
+  // Stream the JSON input as input_json_delta chunks
+  const inputJson = JSON.stringify({ query: tc.entity });
+  const mid = Math.floor(inputJson.length / 2);
+  sseEvent(res, "content_block_delta", {
+    type: "content_block_delta", index: 0,
+    delta: { type: "input_json_delta", partial_json: inputJson.slice(0, mid) },
+  });
+  sseEvent(res, "content_block_delta", {
+    type: "content_block_delta", index: 0,
+    delta: { type: "input_json_delta", partial_json: inputJson.slice(mid) },
+  });
+
+  sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+
+  sseEvent(res, "message_delta", {
+    type: "message_delta",
+    delta: { stop_reason: "tool_use", stop_sequence: null },
+    usage: { output_tokens: 10 },
+  });
+
+  sseEvent(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
+/** Anthropic multi-block: text block (index 0) + tool_use block (index 1). */
+function anthropicStreamTextAndTool(res, content, tc, model) {
+  const m = model || "claude-3-haiku-20240307";
+  const msgId = `msg_${randomUUID().slice(0, 24)}`;
+  const chunks = tokenize(content, 2);
+
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+
+  sseEvent(res, "message_start", {
+    type: "message_start",
+    message: {
+      id: msgId, type: "message", role: "assistant", model: m,
+      stop_reason: null, stop_sequence: null,
+      usage: { input_tokens: 20, output_tokens: 1 },
+      content: [],
+    },
+  });
+
+  // Block 0: text
+  sseEvent(res, "content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+  for (const chunk of chunks) {
+    sseEvent(res, "content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: chunk } });
+  }
+  sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
+
+  // Block 1: tool_use
+  sseEvent(res, "content_block_start", {
+    type: "content_block_start", index: 1,
+    content_block: { type: "tool_use", id: tc.callId, name: tc.toolName, input: {} },
+  });
+  const inputJson = JSON.stringify({ query: tc.entity });
+  sseEvent(res, "content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: inputJson } });
+  sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 1 });
+
+  sseEvent(res, "message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } });
+  sseEvent(res, "message_stop", { type: "message_stop" });
+  res.end();
+}
+
+function handleAnthropic(req, res, url, body) {
+  requestLog.push(body);
+  const userText = lastUserContentAnthropic(body);
+  const tc = isNoTools(body, url, req) ? null : maybeToolCall(body, userText, "tools");
+  const echoMode = isEchoMode(body, url, req);
+  const responseText = echoMode ? userText : `Based on my analysis, ${userText}. This information has been verified.`;
+  const streaming = body.stream === true;
+  const model = body.model || "claude-3-haiku-20240307";
+
+  if (tc) {
+    if (streaming) anthropicStreamToolCall(res, tc, model);
+    else { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(anthropicNonStreamingToolCall(tc, model))); }
+  } else if (streaming) {
+    anthropicStreamText(res, responseText, model);
+  } else {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(anthropicNonStreaming(responseText, model)));
+  }
+}
+
+
+// ── Google Gemini /v1beta/models/* ──────────────────────────
+
+function lastUserContentGemini(body) {
+  const contents = body.contents || [];
+  for (let i = contents.length - 1; i >= 0; i--) {
+    if (contents[i].role === "user") {
+      const parts = contents[i].parts || [];
+      const textPart = parts.find(p => p.text != null);
+      return textPart ? textPart.text : JSON.stringify(parts);
+    }
+  }
+  return "";
+}
+
+function geminiNonStreaming(content, model) {
+  return {
+    candidates: [{
+      content: { parts: [{ text: content }], role: "model" },
+      finishReason: "STOP",
+      index: 0,
+      safetyRatings: [
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", probability: "NEGLIGIBLE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", probability: "NEGLIGIBLE" },
+        { category: "HARM_CATEGORY_HARASSMENT", probability: "NEGLIGIBLE" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", probability: "NEGLIGIBLE" },
+      ],
+    }],
+    usageMetadata: {
+      promptTokenCount: Math.ceil(content.length / 4),
+      candidatesTokenCount: Math.ceil(content.length / 4),
+      totalTokenCount: Math.ceil(content.length / 2),
+    },
+    modelVersion: model || "gemini-1.5-flash",
+  };
+}
+
+function geminiStreamText(res, content, model) {
+  const m = model || "gemini-1.5-flash";
+  // Gemini sends larger chunks than OpenAI/Anthropic
+  const chunks = tokenize(content, 6);
+
+  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
+
+  for (let i = 0; i < chunks.length; i++) {
+    const isLast = i === chunks.length - 1;
+    const candidate = {
+      content: { parts: [{ text: chunks[i] }], role: "model" },
+      index: 0,
+    };
+    if (isLast) {
+      candidate.finishReason = "STOP";
+      candidate.safetyRatings = [
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", probability: "NEGLIGIBLE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", probability: "NEGLIGIBLE" },
+      ];
+    }
+    const response = { candidates: [candidate] };
+    if (isLast) {
+      response.usageMetadata = {
+        promptTokenCount: Math.ceil(content.length / 4),
+        candidatesTokenCount: Math.ceil(content.length / 4),
+        totalTokenCount: Math.ceil(content.length / 2),
+      };
+      response.modelVersion = m;
+    }
+    res.write(`data: ${JSON.stringify(response)}\n\n`);
+  }
+  res.end();
+}
+
+function handleGemini(req, res, url, body) {
+  requestLog.push(body);
+  const userText = lastUserContentGemini(body);
+  const echoMode = isEchoMode(body, url, req);
+  const responseText = echoMode ? userText : `Based on my analysis, ${userText}. This information has been verified.`;
+  const model = body.model || "gemini-1.5-flash";
+  const isStream = url.pathname.includes(":streamGenerateContent");
+
+  if (isStream) {
+    geminiStreamText(res, responseText, model);
+  } else {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(geminiNonStreaming(responseText, model)));
+  }
+}
+
+
+// ── HTTP Server ─────────────────────────────────────────────
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://localhost`);
@@ -227,7 +501,7 @@ const server = http.createServer(async (req, res) => {
   // Health check
   if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, requests: requestLog.length }));
+    res.end(JSON.stringify({ ok: true, requests: requestLog.length, providers: ["openai", "anthropic", "gemini"] }));
     return;
   }
 
@@ -246,8 +520,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Chat completions
-  if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+  if (req.method === "POST") {
     const raw = await readBody(req);
     let body;
     try {
@@ -258,46 +531,34 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    requestLog.push(body);
-
-    const userText = lastUserContent(body);
-    const noTools = body._no_tool_calls ||
-      url.searchParams.has("no_tools") ||
-      (req.headers["x-no-tool-calls"] === "1") ||
-      (process.env.MOCK_LLM_NO_TOOLS === "1");
-    const tc = noTools ? null : maybeToolCall(body, userText);
-    // Echo mode: return the exact user input so deobfuscation can be tested.
-    // The LLM receives obfuscated text; by echoing it, the test can verify
-    // that deobfuscation restores the real values before channel delivery.
-    const echoMode = body._echo ||
-      url.searchParams.has("echo") ||
-      (req.headers["x-mock-echo"] === "1") ||
-      (process.env.MOCK_LLM_ECHO === "1");
-    const responseText = echoMode
-      ? userText
-      : `Based on my analysis, ${userText}. This information has been verified.`;
-    const streaming = body.stream !== false;
-    const model = body.model || "mock-model";
-
-    if (tc) {
-      if (streaming) {
-        streamToolCallResponse(res, tc, model);
-      } else {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(buildNonStreamingToolCall(tc, model)));
-      }
-    } else if (streaming) {
-      streamTextResponse(res, responseText, model);
-    } else {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(buildNonStreamingResponse(responseText, model)));
+    // OpenAI Chat Completions
+    if (url.pathname === "/v1/chat/completions" || url.pathname === "/chat/completions") {
+      handleOpenAI(req, res, url, body);
+      return;
     }
-    return;
+
+    // Anthropic Messages API
+    if (url.pathname === "/v1/messages" || url.pathname === "/messages") {
+      handleAnthropic(req, res, url, body);
+      return;
+    }
+
+    // Google Gemini (streaming and non-streaming)
+    if (url.pathname.includes(":streamGenerateContent") || url.pathname.includes(":generateContent")) {
+      handleGemini(req, res, url, body);
+      return;
+    }
+
+    // Google Gemini fallback — /v1beta/models/* or /v1/models/*
+    if (url.pathname.startsWith("/v1beta/models/") || url.pathname.startsWith("/v1/models/")) {
+      handleGemini(req, res, url, body);
+      return;
+    }
   }
 
   // 404
   res.writeHead(404, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({ error: "Not found" }));
+  res.end(JSON.stringify({ error: "Not found", path: url.pathname }));
 });
 
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 0;
