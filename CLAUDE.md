@@ -25,8 +25,8 @@ npm run lint              # tsc --noEmit (type-check only)
 npm test                  # unit + harness (1,229 tests, no Docker needed)
 npm run test:unit         # Vitest (870 tests)
 npm run test:integration  # APP harness (359 tests)
-npm run test:docker       # Docker E2E (186 tests, needs Docker)
-npm run test:all          # All 3 layers (1,415 tests)
+npm run test:docker       # Docker E2E (192 tests, needs Docker)
+npm run test:all          # All 3 layers (1,421 tests)
 npm run test:watch        # Vitest watch mode
 ```
 
@@ -39,6 +39,7 @@ bash compat/run-compat.sh latest --rebuild-base  # Force rebuild base image
 bash compat/run-matrix.sh                  # Interactive: current or current + last 3
 bash compat/run-matrix.sh --parallel       # All versions in parallel
 bash compat/run-matrix.sh --latest 3       # Latest 3 versions only
+bash compat/run-compat.sh latest --sandbox  # Sandbox exec tests (DinD)
 SHROUD_VERSION=2.2.8 bash compat/run-compat.sh latest  # Specific Shroud version
 ```
 
@@ -124,7 +125,8 @@ Full chain (execute without stopping unless tests fail):
 |-------|------|-------|--------------|
 | Unit (Vitest) | Obfuscator, detectors, generators, store, config | 870 | No |
 | APP Harness | 48 scenario files via mock LLM, no OpenClaw | 359 | No |
-| Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 186 | Yes |
+| Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 192 | Yes |
+| Sandbox E2E | Docker-in-Docker, exec.host: sandbox, tool call deob | +8 | Yes (--sandbox) |
 
 ### Docker E2E Channels
 
@@ -156,7 +158,7 @@ Full chain (execute without stopping unless tests fail):
 - Fetch response deobfuscation with per-block SSE flushing
 - Zero OpenClaw patches
 - All channels confirmed (TUI, Slack, WhatsApp, CLI, multi-turn)
-- 1,415 tests passing (870 unit + 359 harness + 186 Docker E2E)
+- 1,421 tests passing (870 unit + 359 harness + 192 Docker E2E; +8 sandbox with --sandbox flag)
 
 **Do NOT**: add per-channel patches, use empty deltas, attempt incremental text_delta deob.
 
