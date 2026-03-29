@@ -25,8 +25,8 @@ npm run lint              # tsc --noEmit (type-check only)
 npm test                  # unit + harness (1,229 tests, no Docker needed)
 npm run test:unit         # Vitest (870 tests)
 npm run test:integration  # APP harness (359 tests)
-npm run test:docker       # Docker E2E (183 tests, needs Docker)
-npm run test:all          # All 3 layers (1,412 tests)
+npm run test:docker       # Docker E2E (186 tests, needs Docker)
+npm run test:all          # All 3 layers (1,415 tests)
 npm run test:watch        # Vitest watch mode
 ```
 
@@ -124,7 +124,7 @@ Full chain (execute without stopping unless tests fail):
 |-------|------|-------|--------------|
 | Unit (Vitest) | Obfuscator, detectors, generators, store, config | 870 | No |
 | APP Harness | 48 scenario files via mock LLM, no OpenClaw | 359 | No |
-| Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 183 | Yes |
+| Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 186 | Yes |
 
 ### Docker E2E Channels
 
@@ -156,7 +156,7 @@ Full chain (execute without stopping unless tests fail):
 - Fetch response deobfuscation with per-block SSE flushing
 - Zero OpenClaw patches
 - All channels confirmed (TUI, Slack, WhatsApp, CLI, multi-turn)
-- 1,412 tests passing (870 unit + 359 harness + 183 Docker E2E)
+- 1,415 tests passing (870 unit + 359 harness + 186 Docker E2E)
 
 **Do NOT**: add per-channel patches, use empty deltas, attempt incremental text_delta deob.
 

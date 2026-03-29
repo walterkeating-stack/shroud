@@ -8,13 +8,13 @@ Shroud has a three-layer test architecture. Each layer tests at a different leve
 |-------|---------|-------|--------------|---------|
 | **Unit** (Vitest) | `npm run test:unit` | 870 | No | ~2s |
 | **Integration** (APP harness) | `npm run test:integration` | 359 | No | ~5s |
-| **Docker E2E** (OpenClaw gateway) | `npm run test:docker` | 183 | Yes | ~2-3 min |
+| **Docker E2E** (OpenClaw gateway) | `npm run test:docker` | 186 | Yes | ~2-3 min |
 
 Combined commands:
 
 ```bash
 npm test              # Unit + Integration (1,229 tests)
-npm run test:all      # All three layers (1,412 tests)
+npm run test:all      # All three layers (1,415 tests)
 npm run test:watch    # Vitest in watch mode (unit only)
 ```
 
@@ -217,7 +217,7 @@ run-compat.sh
                       ├─ Mock Slack HTTPS proxy (port 443)
                       ├─ Mock WhatsApp server
                       └─ ONE OpenClaw gateway process
-                           → All 183 tests run through this single gateway
+                           → All 186 tests run through this single gateway
 ```
 
 ### Isolation guarantees
@@ -275,7 +275,7 @@ bash compat/run-matrix.sh --latest 3 --parallel
 
 ### OpenClaw runner (openclaw-runner.mjs)
 
-Starts a **single gateway process** and runs all 183 tests through it.
+Starts a **single gateway process** and runs all 186 tests through it.
 
 **Startup sequence:**
 1. Create state directories
@@ -365,8 +365,9 @@ NODE_TLS_REJECT_UNAUTHORIZED=0     # Self-signed certs for mock HTTPS
   "minimum": "2026.3.22",
   "versions": [
     { "version": "2026.3.22", "status": "supported", "shroudMinVersion": "2.0.0" },
-    { "version": "2026.3.23", "status": "supported", "shroudMinVersion": "2.1.0" },
-    { "version": "2026.3.24", "status": "current",   "shroudMinVersion": "2.2.0" }
+    { "version": "2026.3.23", "status": "retired",   "shroudMinVersion": "2.1.0" },
+    { "version": "2026.3.24", "status": "supported", "shroudMinVersion": "2.2.0" },
+    { "version": "2026.3.28", "status": "current",   "shroudMinVersion": "2.2.0" }
   ]
 }
 ```
