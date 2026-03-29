@@ -91,12 +91,17 @@ echo "Running compat tests against OpenClaw ${OC_VERSION}..."
 echo "============================================="
 
 if [ -n "${SANDBOX}" ]; then
-  # Sandbox: needs seccomp=unconfined for rootless Docker, more memory
+  # Sandbox: Docker-in-Docker needs privileged mode for dockerd.
+  # This is safe because:
+  #   1. Network is --internal (zero egress, no packets leave)
+  #   2. Container is ephemeral (--rm)
+  #   3. No volume mounts to host filesystem
+  #   4. Memory and CPU are capped
   docker run --rm \
     --network "${NETWORK}" \
     --memory 2g \
     --cpus 2 \
-    --security-opt seccomp=unconfined \
+    --privileged \
     --name "shroud-compat-sandbox-${OC_VERSION}" \
     "${SANDBOX_TAG}"
 else
