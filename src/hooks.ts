@@ -1120,7 +1120,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
 
       // Track this LLM call against the current agent session
+      agentTracker.markCallStart();
       const callSession = agentTracker.recordLlmCall();
+      _callUrl = url;
+      _callModel = "";
 
       // Parse the body and obfuscate user message content
       try {
@@ -1542,6 +1545,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     let responseTextAccum = "";
     // Cache usage from LLM response — extracted from SSE message_start or JSON response
     let responseCacheUsage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
+    // Current LLM call metadata for logging
+    let _callUrl = "";
+    let _callModel = "";
 
     /** Scan deobfuscated response text for security events. Called per-block. */
     function scanDeobfuscatedBlock(deobbed: string): void {
@@ -1690,6 +1696,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
         } catch { /* never break response pipeline */ }
       }
+      // Log the completed LLM call
+      if (responseCacheUsage) {
+        const currentAgent = agentTracker.getCurrentSession();
+        agentTracker.logCall({
+          url: _callUrl || "",
+          model: currentAgent?.detectedModel || _callModel || "unknown",
+          inputTokens: responseCacheUsage.inputTokens,
+          outputTokens: responseCacheUsage.outputTokens,
+          cacheReadTokens: responseCacheUsage.cacheReadTokens,
+          cacheWriteTokens: responseCacheUsage.cacheWriteTokens,
+          channel: currentAgent?.channels?.[currentAgent.channels.length - 1] || "",
+          securityEvents: 0, // filled by caller if needed
+        });
+      }
+
       responseTextAccum = "";
     }
 

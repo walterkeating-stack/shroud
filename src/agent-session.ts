@@ -11,6 +11,22 @@
 
 import { createHash } from "node:crypto";
 
+/** A logged LLM API call. */
+export interface LlmCallRecord {
+  timestamp: number;
+  agentLabel: string;
+  url: string;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  cacheHitPct: number;
+  responseTimeMs: number;
+  channel: string;
+  securityEvents: number;
+}
+
 /** Agent role classification derived from name, channel, and behaviour. */
 export interface AgentClassification {
   /** Primary role category. */
@@ -116,6 +132,10 @@ export class AgentSessionTracker {
   private _sessions: Map<string, AgentSession> = new Map();
   /** Current active agent label. */
   private _currentLabel = "";
+  /** LLM call log (ring buffer, last 200 calls). */
+  private _callLog: LlmCallRecord[] = [];
+  /** Timestamp when the current LLM call started (for response time). */
+  private _callStartTime = 0;
 
   /**
    * Register or update an agent session from system prompt content.
@@ -407,6 +427,44 @@ export class AgentSessionTracker {
   /** Get session by label (primary key). */
   getSessionByLabel(label: string): AgentSession | null {
     return this._sessions.get(label) ?? null;
+  }
+
+  /** Mark the start of an LLM call (for response time tracking). */
+  markCallStart(): void {
+    this._callStartTime = Date.now();
+  }
+
+  /** Log a completed LLM call with full details. */
+  logCall(details: {
+    url: string; model: string;
+    inputTokens: number; outputTokens: number;
+    cacheReadTokens: number; cacheWriteTokens: number;
+    channel: string; securityEvents: number;
+  }): void {
+    const hitPct = details.inputTokens > 0
+      ? Math.round((details.cacheReadTokens / details.inputTokens) * 100) : 0;
+    this._callLog.push({
+      timestamp: Date.now(),
+      agentLabel: this._currentLabel || "Unknown",
+      url: details.url,
+      model: details.model,
+      inputTokens: details.inputTokens,
+      outputTokens: details.outputTokens,
+      cacheReadTokens: details.cacheReadTokens,
+      cacheWriteTokens: details.cacheWriteTokens,
+      cacheHitPct: hitPct,
+      responseTimeMs: this._callStartTime > 0 ? Date.now() - this._callStartTime : 0,
+      channel: details.channel,
+      securityEvents: details.securityEvents,
+    });
+    // Ring buffer — keep last 200
+    if (this._callLog.length > 200) this._callLog.shift();
+    this._callStartTime = 0;
+  }
+
+  /** Get the LLM call log. */
+  getCallLog(): readonly LlmCallRecord[] {
+    return this._callLog;
   }
 
   /** Reset all session tracking. */

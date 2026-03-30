@@ -136,11 +136,23 @@ export function startDashboard(
       else if (url === "/api/policy/history") {
         handlePolicyHistory(res, deps);
       }
+      else if (url === "/api/calls") {
+        const calls = deps.agentTracker.getCallLog();
+        json(res, 200, { count: calls.length, calls: [...calls].reverse() });
+      }
+      else if (url === "/api/grading") {
+        const grader = (globalThis as any).__shroudEventGrader;
+        json(res, 200, grader ? {
+          enabled: true,
+          stats: grader.getStats(),
+          graded: grader.getAllGraded().slice(-50),
+        } : { enabled: false });
+      }
       else {
         json(res, 404, { error: "Not found", endpoints: [
           "/health", "/api/overview", "/api/agents", "/api/agents/:buildId",
           "/api/events", "/api/events/stream", "/api/profiling",
-          "/api/profiling/:buildId", "/api/stats",
+          "/api/profiling/:buildId", "/api/stats", "/api/calls", "/api/grading",
         ]});
       }
     } catch (err: any) {
@@ -641,12 +653,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
+  <div class="tab" onclick="switchTab('calls')">LLM Calls</div>
 </div>
 <div class="grid" id="content">
   <div class="card"><h2>Loading...</h2></div>
 </div>
 <div id="rulesContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
+<div id="callsContent" style="display:none"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1081,9 +1095,11 @@ function switchTab(tab) {
   document.getElementById('content').style.display = tab === 'overview' ? 'grid' : 'none';
   document.getElementById('rulesContent').style.display = tab === 'rules' ? 'block' : 'none';
   document.getElementById('sigContent').style.display = tab === 'signatures' ? 'block' : 'none';
+  document.getElementById('callsContent').style.display = tab === 'calls' ? 'block' : 'none';
   if (tab === 'overview') refresh();
   else if (tab === 'rules') refreshRules();
   else if (tab === 'signatures') renderSignatures();
+  else if (tab === 'calls') renderCalls();
 }
 
 function showToast(msg, isError) {
@@ -1502,6 +1518,85 @@ function renderSignatures() {
 
   html += '</div>';
   document.getElementById('sigContent').innerHTML = html;
+}
+
+async function renderCalls() {
+  try {
+    const [callsData, gradingData] = await Promise.all([
+      fetchJson('/api/calls'),
+      fetchJson('/api/grading'),
+    ]);
+    let html = '<div class="policy-section">';
+
+    // Grading section (if enabled)
+    if (gradingData.enabled) {
+      const gs = gradingData.stats || {};
+      html += '<div class="card" style="margin-bottom:16px"><h2>LLM Event Grading</h2>';
+      html += '<div style="display:flex;gap:24px;margin-bottom:12px">';
+      html += '<div><span style="color:#f85149;font-size:24px;font-weight:bold">' + (gs.truePositive||0) + '</span><div style="font-size:11px;color:#8b949e">True Positive</div></div>';
+      html += '<div><span style="color:#3fb950;font-size:24px;font-weight:bold">' + (gs.falsePositive||0) + '</span><div style="font-size:11px;color:#8b949e">False Positive</div></div>';
+      html += '<div><span style="color:#d29922;font-size:24px;font-weight:bold">' + (gs.needsReview||0) + '</span><div style="font-size:11px;color:#8b949e">Needs Review</div></div>';
+      html += '<div><span style="color:#8b949e;font-size:24px;font-weight:bold">' + (gs.pending||0) + '</span><div style="font-size:11px;color:#8b949e">Pending</div></div>';
+      html += '</div>';
+      if (gradingData.graded && gradingData.graded.length > 0) {
+        html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid #30363d">';
+        html += '<th style="padding:6px;text-align:left;color:#484f58">Agent</th>';
+        html += '<th style="padding:6px;text-align:left;color:#484f58">Signature</th>';
+        html += '<th style="padding:6px;text-align:left;color:#484f58">Verdict</th>';
+        html += '<th style="padding:6px;text-align:left;color:#484f58">Reasoning</th>';
+        html += '</tr></thead><tbody>';
+        for (const g of gradingData.graded.slice(-20).reverse()) {
+          const vc = g.verdict === 'FALSE_POSITIVE' ? '#3fb950' : g.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
+          html += '<tr style="border-bottom:1px solid #21262d">';
+          html += '<td style="padding:6px;color:#c9d1d9">' + g.agentLabel + '</td>';
+          html += '<td style="padding:6px"><code style="color:#58a6ff;font-size:11px">' + g.signatureId + '</code></td>';
+          html += '<td style="padding:6px;color:' + vc + ';font-weight:600">' + g.verdict.replace(/_/g,' ') + '</td>';
+          html += '<td style="padding:6px;color:#8b949e;font-size:11px">' + (g.reasoning || '') + '</td>';
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+      }
+      html += '</div>';
+    }
+
+    // LLM Calls table
+    html += '<h2 style="color:#c9d1d9;font-size:16px;margin-bottom:12px">LLM API Calls (' + callsData.count + ' logged)</h2>';
+    if (callsData.calls && callsData.calls.length > 0) {
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid #30363d">';
+      html += '<th style="padding:6px;text-align:left;color:#484f58">Time</th>';
+      html += '<th style="padding:6px;text-align:left;color:#484f58">Agent</th>';
+      html += '<th style="padding:6px;text-align:left;color:#484f58">Model</th>';
+      html += '<th style="padding:6px;text-align:right;color:#484f58">Input</th>';
+      html += '<th style="padding:6px;text-align:right;color:#484f58">Output</th>';
+      html += '<th style="padding:6px;text-align:right;color:#484f58">Cache Hit</th>';
+      html += '<th style="padding:6px;text-align:right;color:#484f58">Time</th>';
+      html += '<th style="padding:6px;text-align:left;color:#484f58">Channel</th>';
+      html += '<th style="padding:6px;text-align:right;color:#484f58">Events</th>';
+      html += '</tr></thead><tbody>';
+      for (const c of callsData.calls) {
+        const hitColor = c.cacheHitPct >= 70 ? '#3fb950' : c.cacheHitPct >= 30 ? '#d29922' : c.cacheHitPct > 0 ? '#f85149' : '#484f58';
+        html += '<tr style="border-bottom:1px solid #21262d">';
+        html += '<td style="padding:6px;color:#8b949e">' + timeAgo(c.timestamp) + '</td>';
+        html += '<td style="padding:6px;color:#c9d1d9;font-weight:500">' + c.agentLabel + '</td>';
+        html += '<td style="padding:6px;color:#58a6ff;font-size:11px">' + c.model + '</td>';
+        html += '<td style="padding:6px;text-align:right;color:#c9d1d9">' + (c.inputTokens||0).toLocaleString() + '</td>';
+        html += '<td style="padding:6px;text-align:right;color:#c9d1d9">' + (c.outputTokens||0).toLocaleString() + '</td>';
+        html += '<td style="padding:6px;text-align:right;color:' + hitColor + ';font-weight:600">' + c.cacheHitPct + '%</td>';
+        html += '<td style="padding:6px;text-align:right;color:#8b949e">' + (c.responseTimeMs > 0 ? (c.responseTimeMs/1000).toFixed(1) + 's' : '-') + '</td>';
+        html += '<td style="padding:6px;color:#8b949e">' + (c.channel || '-') + '</td>';
+        html += '<td style="padding:6px;text-align:right;color:' + (c.securityEvents > 0 ? '#f85149' : '#484f58') + '">' + c.securityEvents + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+    } else {
+      html += '<p style="color:#484f58">No LLM calls logged yet. Calls will appear as agents interact.</p>';
+    }
+
+    html += '</div>';
+    document.getElementById('callsContent').innerHTML = html;
+  } catch(err) {
+    document.getElementById('callsContent').innerHTML = '<div class="card"><p style="color:#f85149">Error: ' + err.message + '</p></div>';
+  }
 }
 
 // Auto-refresh every 3 seconds (only overview tab)
