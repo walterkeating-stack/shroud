@@ -334,9 +334,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         intervalSec: config.llmGradingIntervalSec,
         gatewayUrl: config.llmGradingGatewayUrl,
       });
-      // Feed security events to the grader
-      if (securityBus) {
-        securityBus.onEvent((event) => grader.addEvent(event));
+      // Feed security events to the grader — use globalThis bus (survives plugin reloads)
+      const activeBus = securityBus || (globalThis as any).__shroudSecurityBus;
+      if (activeBus) {
+        activeBus.onEvent((event: any) => grader.addEvent(event));
       }
       grader.start();
       (globalThis as any).__shroudEventGrader = grader;
