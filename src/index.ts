@@ -11,6 +11,11 @@ import { join, dirname } from "node:path";
 import { resolveConfig } from "./config.js";
 import { Obfuscator } from "./obfuscator.js";
 import { registerHooks } from "./hooks.js";
+import { BaselineStore } from "./profiler-store.js";
+import type { BehaviouralProfiler } from "./profiler.js";
+import { startDashboard } from "./dashboard.js";
+import type { AgentSessionTracker } from "./agent-session.js";
+import { PolicyEngine } from "./policy.js";
 
 // ---------------------------------------------------------------------------
 // Runtime prototype patch: wrap EventStream.prototype.push() with the
@@ -168,6 +173,67 @@ export default {
           result.agentSessions = tracker.getAllSessions();
         }
 
+        // Per-agent profiling status — shows learning phase progress
+        const profiler = (globalThis as any).__shroudProfiler as BehaviouralProfiler | undefined;
+        if (config.profilingEnabled) {
+          const profileDir = config.profilingProfileDir.replace("~", process.env.HOME || "/root");
+          const store = new BaselineStore(profileDir);
+          const agentProfiles: Record<string, unknown>[] = [];
+
+          // Get baselines for all tracked agents
+          const sessions = tracker?.getAllSessions() || [];
+          for (const session of sessions) {
+            const baseline = store.load(session.agentBuildId);
+            if (baseline) {
+              const sessionsNeeded = Math.max(0, config.profilingMinBaseline - baseline.sessionCount);
+              agentProfiles.push({
+                agentBuildId: baseline.agentBuildId,
+                agentLabel: session.agentLabel,
+                maturity: baseline.maturity,
+                sessionCount: baseline.sessionCount,
+                sessionsUntilActive: sessionsNeeded,
+                learningProgress: Math.min(100, Math.round((baseline.sessionCount / config.profilingMinBaseline) * 100)),
+                lastUpdated: new Date(baseline.lastUpdated).toISOString(),
+                trackedFeatures: Object.keys(baseline.features).length,
+                knownTools: baseline.toolProfile,
+                knownCategories: baseline.categoryProfile,
+                anomalyThreshold: `${config.profilingSigma}σ`,
+                mode: config.profilingMode,
+                status: baseline.sessionCount >= config.profilingMinBaseline
+                  ? `✓ Active — ${baseline.maturity} baseline (${baseline.sessionCount} sessions)`
+                  : `◐ Learning — ${sessionsNeeded} more session${sessionsNeeded === 1 ? "" : "s"} needed`,
+              });
+            } else {
+              agentProfiles.push({
+                agentBuildId: session.agentBuildId,
+                agentLabel: session.agentLabel,
+                maturity: "none",
+                sessionCount: 0,
+                sessionsUntilActive: config.profilingMinBaseline,
+                learningProgress: 0,
+                mode: config.profilingMode,
+                status: `○ No baseline — first session in progress`,
+              });
+            }
+          }
+
+          result.profiling = {
+            enabled: true,
+            mode: config.profilingMode,
+            sigma: config.profilingSigma,
+            minBaseline: config.profilingMinBaseline,
+            agents: agentProfiles,
+          };
+
+          // Current session alerts
+          if (profiler) {
+            const alerts = profiler.getAlerts();
+            if (alerts.length > 0) {
+              result.anomalyAlerts = alerts.slice(-10);
+            }
+          }
+        }
+
         return {
           content: [{
             type: "text",
@@ -199,6 +265,31 @@ export default {
         };
       },
     });
+
+    // --- Dashboard startup ---
+    if (config.dashboardEnabled && !(globalThis as any).__shroudDashboardStarted) {
+      (globalThis as any).__shroudDashboardStarted = true;
+      try {
+        const profileDir = config.profilingProfileDir.replace("~", process.env.HOME || "/root");
+        const policyPath = profileDir.replace(/\/profiles\/?$/, "/policy.json");
+        const policyEngine = new PolicyEngine(policyPath.includes("policy.json") ? policyPath : `${profileDir}/../policy.json`);
+        policyEngine.startWatching();
+        (globalThis as any).__shroudPolicyEngine = policyEngine;
+
+        startDashboard(config.dashboardPort, {
+          securityBus: (globalThis as any).__shroudSecurityBus ?? null,
+          agentTracker: (globalThis as any).__shroudAgentTracker ?? { getAllSessions: () => [], getSession: () => null },
+          baselineStore: config.profilingEnabled ? new BaselineStore(profileDir) : null,
+          obfuscator,
+          profiler: (globalThis as any).__shroudProfiler ?? null,
+          config,
+          policyEngine,
+        });
+        api.logger?.info(`[shroud] Security dashboard started on http://127.0.0.1:${config.dashboardPort}`);
+      } catch (err: any) {
+        api.logger?.info(`[shroud] Dashboard failed to start: ${err.message}`);
+      }
+    }
 
     // Single load confirmation — used by test harness to verify plugin loaded.
     // Only logs once per process (suppressed on subsequent agent loads).

@@ -176,6 +176,19 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       typeof raw.canaryBehavioural === "boolean" ? raw.canaryBehavioural : false,
     canaryNearMatchDistance:
       typeof raw.canaryNearMatchDistance === "number" ? raw.canaryNearMatchDistance : 2,
+
+    // --- Dashboard ---
+    dashboardEnabled: (() => {
+      const env = process.env.SHROUD_DASHBOARD;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    dashboardPort: (() => {
+      const env = process.env.SHROUD_DASHBOARD_PORT;
+      if (env) return parseInt(env, 10) || 9380;
+      return typeof raw.dashboardPort === "number" ? raw.dashboardPort : 9380;
+    })(),
   };
 
   return config;

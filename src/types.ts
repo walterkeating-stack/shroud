@@ -138,4 +138,11 @@ export interface ShroudConfig {
   canaryBehavioural: boolean;
   /** Max Levenshtein distance for near-match scanning. */
   canaryNearMatchDistance: number;
+
+  // --- Dashboard ---
+
+  /** Enable the real-time security dashboard HTTP endpoint. */
+  dashboardEnabled: boolean;
+  /** Dashboard port (default: 9380). Binds to 127.0.0.1 only. */
+  dashboardPort: number;
 }

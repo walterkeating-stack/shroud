@@ -63,6 +63,7 @@ export interface SecurityStats {
 export class SecurityEventBus {
   private _events: SecurityEvent[] = [];
   private _maxEvents: number;
+  private _listeners: Array<(event: SecurityEvent) => void> = [];
 
   constructor(maxEvents = 500) {
     this._maxEvents = maxEvents;
@@ -74,6 +75,19 @@ export class SecurityEventBus {
     if (this._events.length > this._maxEvents) {
       this._events.splice(0, this._events.length - this._maxEvents);
     }
+    // Notify listeners (SSE dashboard, SIEM, etc.)
+    for (const listener of this._listeners) {
+      try { listener(event); } catch { /* listeners must not break emit */ }
+    }
+  }
+
+  /** Subscribe to real-time events. Returns unsubscribe function. */
+  onEvent(listener: (event: SecurityEvent) => void): () => void {
+    this._listeners.push(listener);
+    return () => {
+      const idx = this._listeners.indexOf(listener);
+      if (idx >= 0) this._listeners.splice(idx, 1);
+    };
   }
 
   getEvents(): readonly SecurityEvent[] {
