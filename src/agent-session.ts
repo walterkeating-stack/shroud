@@ -38,30 +38,39 @@ export interface AgentSession {
  * One instance shared via globalThis across all plugin loads.
  */
 export class AgentSessionTracker {
-  /** Active sessions keyed by agentBuildId. */
+  /** Active sessions keyed by agent label (the stable identity). */
   private _sessions: Map<string, AgentSession> = new Map();
-  /** Current active agent (set by before_prompt_build). */
-  private _currentBuildId = "";
+  /** Current active agent label. */
+  private _currentLabel = "";
 
   /**
    * Register or update an agent session from system prompt content.
-   * Called from before_prompt_build when we have the system prompt.
+   *
+   * Identity strategy: the extracted LABEL is the primary key, not the
+   * prompt skeleton hash. System prompts contain too much dynamic content
+   * (conversation context, RAG, tool results) to produce stable hashes.
+   * The label — extracted from "- Name: X", "You are X", etc. — is the
+   * stable identity that humans recognise.
+   *
+   * The buildId is still computed for fingerprinting but is NOT used as
+   * the session key.
    */
   registerAgent(
     systemPrompt: string,
     pluginList: string[] = [],
     modelId = "unknown",
   ): AgentSession {
+    const label = extractLabel(systemPrompt);
     const buildId = computeBuildId(systemPrompt, pluginList, modelId);
-    this._currentBuildId = buildId;
+    this._currentLabel = label;
 
-    let session = this._sessions.get(buildId);
+    let session = this._sessions.get(label);
     if (!session) {
       session = {
         agentBuildId: buildId,
-        agentLabel: extractLabel(systemPrompt),
+        agentLabel: label,
         sessionId: createHash("sha256")
-          .update(`${buildId}:${Date.now()}:${Math.random()}`)
+          .update(`${label}:${Date.now()}:${Math.random()}`)
           .digest("hex")
           .slice(0, 12),
         startedAt: Date.now(),
@@ -71,7 +80,10 @@ export class AgentSessionTracker {
         detectedModel: modelId,
         channelSource: "",
       };
-      this._sessions.set(buildId, session);
+      this._sessions.set(label, session);
+    } else {
+      // Update build ID to latest (prompt may evolve, label stays stable)
+      session.agentBuildId = buildId;
     }
 
     return session;
@@ -79,7 +91,7 @@ export class AgentSessionTracker {
 
   /** Update detected model from LLM API request body. */
   updateModel(model: string): void {
-    const session = this._sessions.get(this._currentBuildId);
+    const session = this._sessions.get(this._currentLabel);
     if (session && model) {
       session.detectedModel = model;
     }
@@ -87,7 +99,7 @@ export class AgentSessionTracker {
 
   /** Update channel source (e.g. "slack:C00000001"). */
   updateChannel(source: string): void {
-    const session = this._sessions.get(this._currentBuildId);
+    const session = this._sessions.get(this._currentLabel);
     if (session && source) {
       session.channelSource = source;
     }
@@ -95,7 +107,7 @@ export class AgentSessionTracker {
 
   /** Record an LLM API call for the current agent. */
   recordLlmCall(): AgentSession | null {
-    const session = this._sessions.get(this._currentBuildId);
+    const session = this._sessions.get(this._currentLabel);
     if (session) {
       session.llmCallCount++;
       session.lastCallAt = Date.now();
@@ -105,7 +117,7 @@ export class AgentSessionTracker {
 
   /** Record a security event for the current agent. */
   recordSecurityEvent(count = 1): void {
-    const session = this._sessions.get(this._currentBuildId);
+    const session = this._sessions.get(this._currentLabel);
     if (session) {
       session.securityEventCount += count;
     }
@@ -113,12 +125,13 @@ export class AgentSessionTracker {
 
   /** Get the current active agent session. */
   getCurrentSession(): AgentSession | null {
-    return this._sessions.get(this._currentBuildId) ?? null;
+    return this._sessions.get(this._currentLabel) ?? null;
   }
 
   /** Get the current agent build ID. */
   getCurrentBuildId(): string {
-    return this._currentBuildId;
+    const session = this._sessions.get(this._currentLabel);
+    return session?.agentBuildId ?? "";
   }
 
   /** Get all tracked agent sessions. */
@@ -128,13 +141,22 @@ export class AgentSessionTracker {
 
   /** Get session by build ID. */
   getSession(buildId: string): AgentSession | null {
-    return this._sessions.get(buildId) ?? null;
+    // Search by build ID (secondary key)
+    for (const session of this._sessions.values()) {
+      if (session.agentBuildId === buildId) return session;
+    }
+    return null;
+  }
+
+  /** Get session by label (primary key). */
+  getSessionByLabel(label: string): AgentSession | null {
+    return this._sessions.get(label) ?? null;
   }
 
   /** Reset all session tracking. */
   reset(): void {
     this._sessions.clear();
-    this._currentBuildId = "";
+    this._currentLabel = "";
   }
 }
 
@@ -180,31 +202,34 @@ export function computeBuildId(
 export function extractPromptSkeleton(prompt: string): string {
   let s = prompt;
 
-  // Take first 2000 chars — the core identity is always at the top.
-  // Appended RAG context, memory, or conversation history at the end
-  // should not affect the identity.
-  s = s.slice(0, 2000);
-
-  // Strip OpenClaw system context prefix entirely — it's per-session metadata,
-  // not part of the agent's identity. Starts with "System: [timestamp]" and
-  // contains session IDs, routing info, channel context.
+  // --- Phase 1: Strip ALL volatile/dynamic blocks ---
+  // XML-tagged blocks (system-reminder, context, memory, tool results, etc.)
+  s = s.replace(/<[a-z][-a-z_]*[^>]*>[\s\S]*?<\/[a-z][-a-z_]*>/gi, "");
+  // OpenClaw system context prefix — per-session metadata
   s = s.replace(/^System:\s*\[.*?\].*?\n/gm, "");
   s = s.replace(/^Sender\s*\(.*?\):.*?\n/gm, "");
   s = s.replace(/^Session\s+\w+:.*?\n/gm, "");
   s = s.replace(/^Channel:.*?\n/gm, "");
-  s = s.replace(/^\[.*?\]\s*$/gm, ""); // bracketed metadata lines
+  s = s.replace(/^\[.*?\]\s*$/gm, "");
+  // Conversation/chat history sections and everything after
+  s = s.replace(/(?:^|\n)(?:Current conversation|Recent messages|Conversation history|Chat history|# Environment|gitStatus):?\s*\n[\s\S]*/im, "");
 
-  // Normalize dynamic content to stable placeholders
-  s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<UUID>"); // UUIDs
-  s = s.replace(/\b\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "<DATE>"); // ISO dates
-  s = s.replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\b/g, "<TIME>"); // times
-  s = s.replace(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, "<EMAIL>"); // emails
-  s = s.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "<IP>"); // IPs
-  s = s.replace(/\b[0-9a-f]{12,}\b/gi, "<HEX>"); // long hex strings
-  s = s.replace(/\b\d{5,}\b/g, "<NUM>"); // numbers > 4 digits
-  s = s.replace(/https?:\/\/[^\s<>"']+/g, "<URL>"); // URLs
-  // Normalize timezone offsets: GMT+2, UTC+01:00, etc.
+  // --- Phase 2: Take a SHORT identity window ---
+  // Agent identity is in the first few sentences. A small window avoids
+  // capturing dynamic content (tools, RAG, conversation context).
+  s = s.slice(0, 500);
+
+  // --- Phase 3: Normalize dynamic tokens ---
+  s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<UUID>");
+  s = s.replace(/\b\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "<DATE>");
+  s = s.replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\b/g, "<TIME>");
+  s = s.replace(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, "<EMAIL>");
+  s = s.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "<IP>");
+  s = s.replace(/\b[0-9a-f]{7,}\b/gi, "<HEX>");
+  s = s.replace(/\b\d{4,}\b/g, "<NUM>");
+  s = s.replace(/https?:\/\/[^\s<>"']+/g, "<URL>");
   s = s.replace(/(?:GMT|UTC)[+-]\d{1,2}(?::\d{2})?/g, "<TZ>");
+  s = s.replace(/(?:\/[\w.-]+){2,}/g, "<PATH>");
 
   // Collapse whitespace
   s = s.replace(/\s+/g, " ").trim();
@@ -217,32 +242,79 @@ export function extractPromptSkeleton(prompt: string): string {
  *
  * Handles multiple formats:
  * 1. OpenClaw IDENTITY.md: "- Name: PJ" or "- Name: Coach Alessandra"
- * 2. "You are a/an [ROLE]" pattern (common in SOUL.md)
- * 3. Fallback: first meaningful non-system line
+ * 2. "You are [Name/Role]" — with or without article (a/an/the)
+ * 3. "- Creature: X" (OpenClaw IDENTITY.md secondary)
+ * 4. "My name is [X]" / "I am [X]" / "called [X]" patterns
+ * 5. Markdown heading: "# [AgentName]"
+ * 6. Fallback: first meaningful line, cleaned up
  *
  * Skips OpenClaw system context prefixes (timestamps, session metadata).
  */
 function extractLabel(systemPrompt: string): string {
-  // 1. OpenClaw IDENTITY.md format: "- Name: X"
-  const nameMatch = systemPrompt.match(/-\s*Name:\s*(.+)/i);
+  // Strategy: try multiple extraction approaches in order of confidence.
+
+  // 1. OpenClaw channel/conversation label: "#agent-name" or "conversation_label"
+  //    When OpenClaw sends session context, the channel name IS the agent identity.
+  const channelMatch = systemPrompt.match(/"conversation_label"\s*:\s*"#?([^"]+)"/);
+  if (channelMatch) {
+    let name = channelMatch[1].trim();
+    // Strip suffixes like "-main" that are channel routing, not agent name
+    name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
+    // Convert kebab-case to Title Case
+    name = name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    if (name.length > 1 && name.length < 50) return name;
+  }
+
+  // 2. OpenClaw channel in system context header: "Slack message in #channel-name"
+  const slackChannelMatch = systemPrompt.match(/Slack\s+message\s+in\s+#([^\s]+)/i);
+  if (slackChannelMatch) {
+    let name = slackChannelMatch[1].trim();
+    name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
+    name = name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    if (name.length > 1 && name.length < 50) return name;
+  }
+
+  // 3. Try section-based extraction (framework preamble + agent SOUL.md)
+  const sections = systemPrompt.split(/\n---+\n/);
+  const candidates = sections.length > 1
+    ? [sections[sections.length - 1], systemPrompt]
+    : [systemPrompt];
+
+  for (const text of candidates) {
+    const label = _extractLabelFromText(text);
+    if (label) return label;
+  }
+  return "Unknown Agent";
+}
+
+/** Extract agent label from a single text block. Returns null if no confident match. */
+function _extractLabelFromText(text: string): string | null {
+  // 1. OpenClaw IDENTITY.md format: "- Name: X" (highest confidence)
+  const nameMatch = text.match(/-\s*Name:\s*(.+)/i);
   if (nameMatch) {
     const name = nameMatch[1].trim();
     if (name.length > 1 && name.length < 60) return name;
   }
 
-  // 2. "You are a/an [role]" pattern
-  const roleMatch = systemPrompt.match(
-    /[Yy]ou\s+are\s+(?:a|an)\s+(.+?)(?:\.|,|\n|$)/,
-  );
-  if (roleMatch) {
-    let role = roleMatch[1].trim();
-    role = role.replace(/\s+(?:at|for|who|that|which|specializing|working|based)\s+.*/i, "");
-    role = role.replace(/\b\w/g, (c) => c.toUpperCase());
-    if (role.length > 3 && role.length < 50) return role;
+  // 2. "You are [Name/Role]" — article is optional
+  //    Use the LAST match in the text, not the first — the agent's identity
+  //    is typically after any framework preamble.
+  const roleMatches = [...text.matchAll(
+    /[Yy]ou\s+are\s+(?:a\s+|an\s+|the\s+)?(.+?)(?:\.|,|\n|$)/g,
+  )];
+  if (roleMatches.length > 0) {
+    // Prefer the last "You are" match (agent identity, not framework)
+    const match = roleMatches[roleMatches.length - 1];
+    let role = match[1].trim();
+    role = role.replace(/\s+(?:at|for|who|that|which|specializing|working|based|created|developed|built|made|designed|powered)\s+.*/i, "");
+    if (role === role.toLowerCase()) {
+      role = role.replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+    if (role.length > 1 && role.length < 50) return role;
   }
 
   // 3. "- Creature: X" (OpenClaw IDENTITY.md secondary)
-  const creatureMatch = systemPrompt.match(/-\s*Creature:\s*(.+)/i);
+  const creatureMatch = text.match(/-\s*Creature:\s*(.+)/i);
   if (creatureMatch) {
     const creature = creatureMatch[1].trim();
     if (creature.length > 3 && creature.length < 60) {
@@ -250,8 +322,27 @@ function extractLabel(systemPrompt: string): string {
     }
   }
 
-  // 4. Fallback: first meaningful line (skip system context, timestamps, headers)
-  const firstLine = systemPrompt
+  // 4. "My name is X" / "I am X" / "called X"
+  const selfIdMatch = text.match(
+    /(?:[Mm]y\s+name\s+is|I\s+am|I'm|[Cc]alled)\s+([A-Z][A-Za-z0-9 _-]{1,40})(?:\.|,|\n|$)/,
+  );
+  if (selfIdMatch) {
+    const name = selfIdMatch[1].trim();
+    if (name.length > 1 && name.length < 50) return name;
+  }
+
+  // 5. Markdown heading: "# AgentName"
+  const headingMatch = text.match(/^#\s+(.{2,40})$/m);
+  if (headingMatch) {
+    const heading = headingMatch[1].trim();
+    if (heading.length > 1 && heading.length < 50 &&
+        !/^(system|instructions|config|settings|readme)/i.test(heading)) {
+      return heading;
+    }
+  }
+
+  // 6. Fallback: first meaningful line, cleaned up
+  const firstLine = text
     .split("\n")
     .map((l) => l.trim())
     .find((l) =>
@@ -263,7 +354,7 @@ function extractLabel(systemPrompt: string): string {
       !/^\d{4}-\d{2}-\d{2}/.test(l) &&
       !/^\[.*\]$/.test(l),
     );
-  if (!firstLine) return "Unknown Agent";
+  if (!firstLine) return null;
   const short = firstLine.replace(/\s+(?:at|for|who|that|which)\s+.*/i, "");
   return short.length > 40 ? short.slice(0, 37) + "..." : short;
 }

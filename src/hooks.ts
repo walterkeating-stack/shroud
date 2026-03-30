@@ -392,9 +392,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ob().resetToolDepth();
     }
 
-    // Agent identity is extracted from the LLM API body.system in the fetch
-    // intercept, NOT from event.prompt here. event.prompt contains OpenClaw's
-    // assembled context with per-message metadata that changes every call.
+    // --- Extract agent identity from the prompt context ---
+    // event.prompt contains session metadata including channel/conversation labels
+    // which identify the agent. Register it here so identity is set BEFORE the
+    // fetch intercept fires.
+    if (typeof event?.prompt === "string" && event.prompt.length > 10) {
+      const session = agentTracker.registerAgent(event.prompt);
+      if (profiler) profiler.setAgentBuildId(session.agentBuildId);
+    }
 
     // ── DNS cache warming ──
     // Extract all URLs from the prompt and messages, resolve their FQDNs
@@ -998,19 +1003,38 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
         const body = JSON.parse(bodyStr);
 
+
+
         // Extract model ID for agent tracking
         if (typeof body.model === "string") {
           agentTracker.updateModel(body.model);
         }
 
         // --- Agent identity from the STABLE system prompt ---
-        // body.system is the SOUL.md / IDENTITY.md content — stable across sessions.
-        // event.prompt in before_prompt_build contains per-message metadata that
-        // changes every call, producing different build IDs for the same agent.
-        const systemForIdentity = typeof body.system === "string" ? body.system
-          : Array.isArray(body.system) ? body.system.map((b: any) => b?.text || "").join("\n")
-          : typeof body.instructions === "string" ? body.instructions
-          : null;
+        // Must handle all LLM API formats:
+        //   Anthropic:   body.system (string or content block array)
+        //   OpenAI/OpenRouter/NIM: body.messages[0] where role === "system"
+        //   Google:      body.instructions (string)
+        let systemForIdentity: string | null = null;
+        if (typeof body.system === "string") {
+          systemForIdentity = body.system;
+        } else if (Array.isArray(body.system)) {
+          systemForIdentity = body.system.map((b: any) => b?.text || "").join("\n");
+        } else if (typeof body.instructions === "string") {
+          systemForIdentity = body.instructions;
+        }
+        // OpenAI-compatible: system prompt is first message(s) with role "system"
+        if (!systemForIdentity && Array.isArray(body.messages)) {
+          const systemMsgs = body.messages
+            .filter((m: any) => m?.role === "system")
+            .map((m: any) => typeof m.content === "string" ? m.content
+              : Array.isArray(m.content) ? m.content.map((c: any) => c?.text || "").join("\n")
+              : "")
+            .filter((s: string) => s.length > 0);
+          if (systemMsgs.length > 0) {
+            systemForIdentity = systemMsgs.join("\n");
+          }
+        }
         if (systemForIdentity && systemForIdentity.length > 10) {
           const session = agentTracker.registerAgent(systemForIdentity);
           if (profiler) profiler.setAgentBuildId(session.agentBuildId);

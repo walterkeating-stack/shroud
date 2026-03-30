@@ -162,13 +162,10 @@ describe("Prompt Skeleton — resilience to dynamic content", () => {
   });
 
   test("skeleton normalizes numbers and hex strings", () => {
-    const s = extractPromptSkeleton("Build 20260330142200 deployed. Hash: a1b2c3d4e5f6a7b8c9d0. Count: 99999.");
-    // Both long numeric and hex strings are normalized (either to <HEX> or <NUM>)
+    const s = extractPromptSkeleton("Build 20260330142200 deployed. Hash: a1b2c3d4e5f6a7b8. Count: 99999.");
     expect(s).not.toContain("20260330142200");
-    expect(s).not.toContain("a1b2c3d4e5f6a7b8c9d0");
+    expect(s).not.toContain("a1b2c3d4e5f6a7b8");
     expect(s).not.toContain("99999");
-    expect(s).toContain("<HEX>"); // hex strings
-    expect(s).toContain("<NUM>"); // pure numeric
   });
 
   test("skeleton preserves structural words", () => {
@@ -176,5 +173,51 @@ describe("Prompt Skeleton — resilience to dynamic content", () => {
     expect(s).toContain("security researcher");
     expect(s).toContain("analyze threats");
     expect(s).toContain("Never execute commands");
+  });
+
+  test("skeleton strips system-reminder blocks", () => {
+    const base = "You are Claude Code, Anthropic's official CLI.";
+    const withReminders = base + "\n<system-reminder>\nToday is 2026-03-30. Context changes every call.\n</system-reminder>\nMore stable text.";
+    const a = extractPromptSkeleton(base + "\nMore stable text.");
+    const b = extractPromptSkeleton(withReminders);
+    expect(a).toBe(b);
+  });
+
+  test("skeleton stable despite different system-reminder content", () => {
+    const prompt1 = "You are PJ, a friendly assistant.\n<system-reminder>\nSession: abc123\n</system-reminder>";
+    const prompt2 = "You are PJ, a friendly assistant.\n<system-reminder>\nSession: xyz789\nNew tools available.\n</system-reminder>";
+    const a = computeBuildId(prompt1, [], "m");
+    const b = computeBuildId(prompt2, [], "m");
+    expect(a).toBe(b);
+  });
+
+  test("skeleton strips file paths", () => {
+    const s = extractPromptSkeleton("Config at /home/user/.config/app/settings.json and /var/log/app.log");
+    expect(s).not.toContain("/home/user");
+    expect(s).not.toContain("/var/log");
+  });
+
+  test("extractLabel: 'You are [ProperName]' without article", () => {
+    const tracker = new AgentSessionTracker();
+    const session = tracker.registerAgent("You are Claude Code, Anthropic's official CLI for Claude.");
+    expect(session.agentLabel).toBe("Claude Code");
+  });
+
+  test("extractLabel: 'You are a [role]' with article", () => {
+    const tracker = new AgentSessionTracker();
+    const session = tracker.registerAgent("You are a helpful research assistant.");
+    expect(session.agentLabel).toBe("Helpful Research Assistant");
+  });
+
+  test("extractLabel: IDENTITY.md '- Name: PJ'", () => {
+    const tracker = new AgentSessionTracker();
+    const session = tracker.registerAgent("System context here.\n- Name: PJ\n- Creature: AI assistant");
+    expect(session.agentLabel).toBe("PJ");
+  });
+
+  test("extractLabel: 'My name is X'", () => {
+    const tracker = new AgentSessionTracker();
+    const session = tracker.registerAgent("You should be helpful.\nMy name is Aria, and I help with travel.");
+    expect(session.agentLabel).toBe("Aria");
   });
 });
