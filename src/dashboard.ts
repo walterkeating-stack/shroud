@@ -1351,34 +1351,45 @@ function renderSignatures() {
   html += '<p style="color:#484f58;font-size:12px;margin-bottom:24px">109 active signatures across 10 groups. Hover examples for details. Use signature IDs in Firewall Rules exceptions to disable specific patterns per agent.</p>';
 
   let totalSigs = 0;
+  for (const g of groups) totalSigs += g.sigs.length;
+
+  // Summary bar
+  html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px">';
   for (const g of groups) {
-    totalSigs += g.sigs.length;
-    html += '<div class="rule-card" style="border-left:3px solid ' + g.color + '">';
-    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">';
-    html += '<h3 style="color:' + g.color + '">' + g.icon + ' ' + g.name + ' <span style="color:#484f58;font-weight:normal">(' + g.sigs.length + ')</span></h3>';
-    html += '</div>';
+    const highCount = g.sigs.filter(s => s.sev === 'high').length;
+    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;min-width:140px;cursor:pointer" onclick="var el=document.getElementById(\\'sig-' + g.id + '\\');el.open=!el.open">';
+    html += '<div style="font-size:18px;margin-bottom:2px">' + g.icon + '</div>';
+    html += '<div style="font-size:12px;color:' + g.color + ';font-weight:600">' + g.name + '</div>';
+    html += '<div style="font-size:11px;color:#8b949e">' + g.sigs.length + ' sigs';
+    if (highCount) html += ' <span style="color:#f85149">(' + highCount + ' high)</span>';
+    html += '</div></div>';
+  }
+  html += '</div>';
+
+  // Collapsible groups
+  const sevColors = { high: '#f85149', medium: '#d29922', low: '#3fb950' };
+  for (const g of groups) {
+    html += '<details id="sig-' + g.id + '" style="margin-bottom:12px">';
+    html += '<summary style="cursor:pointer;padding:12px 16px;background:#161b22;border:1px solid #30363d;border-radius:8px;list-style:none;display:flex;justify-content:space-between;align-items:center">';
+    html += '<div><span style="font-size:16px;margin-right:8px">' + g.icon + '</span>';
+    html += '<span style="color:' + g.color + ';font-weight:600;font-size:14px">' + g.name + '</span>';
+    html += ' <span style="color:#484f58;font-size:12px">(' + g.sigs.length + ')</span></div>';
+    html += '<span style="color:#484f58;font-size:11px">click to expand</span>';
+    html += '</summary>';
+    html += '<div style="border:1px solid #30363d;border-top:none;border-radius:0 0 8px 8px;padding:12px 16px;background:#0d1117">';
     html += '<p style="color:#8b949e;font-size:12px;margin-bottom:12px">' + g.desc + '</p>';
 
-    html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
-    html += '<thead><tr style="border-bottom:1px solid #30363d">';
-    html += '<th style="padding:6px 8px;text-align:left;color:#484f58;width:200px">Signature ID</th>';
-    html += '<th style="padding:6px 8px;text-align:left;color:#484f58;width:60px">Severity</th>';
-    html += '<th style="padding:6px 8px;text-align:left;color:#484f58">Description</th>';
-    html += '<th style="padding:6px 8px;text-align:left;color:#484f58;width:280px">Example Trigger</th>';
-    if (g.id === 'tool_guard') html += '<th style="padding:6px 8px;text-align:left;color:#484f58;width:60px">Blocks</th>';
-    html += '</tr></thead><tbody>';
-
-    const sevColors = { high: '#f85149', medium: '#d29922', low: '#3fb950' };
     for (const s of g.sigs) {
-      html += '<tr style="border-bottom:1px solid #21262d">';
-      html += '<td style="padding:6px 8px"><code style="background:#161b22;padding:2px 6px;border-radius:3px;color:#58a6ff;font-size:11px">' + s.id + '</code></td>';
-      html += '<td style="padding:6px 8px;color:' + sevColors[s.sev] + ';font-weight:600;font-size:11px">' + s.sev.toUpperCase() + '</td>';
-      html += '<td style="padding:6px 8px;color:#c9d1d9">' + s.desc + '</td>';
-      html += '<td style="padding:6px 8px"><code style="background:#0d1117;padding:2px 6px;border-radius:3px;color:#8b949e;font-size:10px;word-break:break-all">' + s.example + '</code></td>';
-      if (g.id === 'tool_guard') html += '<td style="padding:6px 8px;text-align:center">' + (s.block ? '<span style="color:#f85149">YES</span>' : '<span style="color:#8b949e">no</span>') + '</td>';
-      html += '</tr>';
+      html += '<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid #21262d">';
+      html += '<div style="min-width:60px"><span style="color:' + sevColors[s.sev] + ';font-weight:600;font-size:10px;padding:2px 6px;border:1px solid ' + sevColors[s.sev] + ';border-radius:4px">' + s.sev.toUpperCase() + '</span></div>';
+      html += '<div style="flex:1">';
+      html += '<code style="color:#58a6ff;font-size:11px">' + s.id + '</code>';
+      if (g.id === 'tool_guard' && s.block) html += ' <span style="color:#f85149;font-size:10px;border:1px solid #f85149;padding:1px 4px;border-radius:3px">BLOCKS</span>';
+      html += '<div style="color:#c9d1d9;font-size:12px;margin-top:2px">' + s.desc + '</div>';
+      html += '<div style="margin-top:4px"><code style="background:#161b22;padding:3px 8px;border-radius:4px;color:#8b949e;font-size:10px;display:inline-block;max-width:100%;word-break:break-all">' + s.example + '</code></div>';
+      html += '</div></div>';
     }
-    html += '</tbody></table></div>';
+    html += '</div></details>';
   }
 
   html += '</div>';
