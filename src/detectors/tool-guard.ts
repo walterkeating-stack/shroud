@@ -126,9 +126,9 @@ const PATTERNS: ToolGuardPattern[] = [
   {
     id: "tg_read_shadow",
     toolName: null,
-    paramPattern: /\b(?:cat|head|tail|less|more|strings)\s+(?:\/etc\/shadow|\/etc\/master\.passwd)/gi,
+    paramPattern: /\b(?:cat|head|tail|less|more|strings)\s+(?:\/etc\/(?:shadow|passwd|gshadow|sudoers|master\.passwd))/gi,
     severity: "high",
-    description: "Credential access: reading password hashes",
+    description: "Credential access: reading system account/password files",
     block: true,
   },
   {

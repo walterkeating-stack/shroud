@@ -441,7 +441,7 @@ const MCP_TOOL_POISONING: SignatureDef[] = [
   {
     id: "mcp_read_sensitive",
     threatClass: ThreatClass.MCP_TOOL_POISONING,
-    pattern: /(?:read|cat|access|exfiltrate|steal|extract|dump|leak)\s+(?:the\s+)?(?:~\/|~\\)?(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws)/gi,
+    pattern: /(?:read|cat|access|exfiltrate|steal|extract|dump|leak|show|display|print|output)\s+(?:the\s+|me\s+)?(?:~\/|~\\|\/etc\/)?(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws|passwd|shadow|master\.passwd|gshadow|sudoers)/gi,
     severity: "high",
     description: "MCP tool poisoning: access sensitive files",
     direction: "both",
