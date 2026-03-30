@@ -202,6 +202,66 @@
           }
         }
       ]
+    },
+
+    {
+      "name": "Recognition: research agent identified with correct label",
+      "agent": "research-agent",
+      "input": "Scan the network 10.0.0.0/24 for open SSH ports.",
+      "assertions": {
+        "agent_label_contains": "Research",
+        "agent_classification_role": "Security Research",
+        "agent_attributed": true
+      }
+    },
+    {
+      "name": "Recognition: customer agent identified with correct label",
+      "agent": "customer-agent",
+      "input": "Check the billing for user sarah@acme.com.",
+      "assertions": {
+        "llm_must_not_see": ["sarah@acme.com"],
+        "agent_label_contains": "Customer",
+        "agent_classification_role": "Customer Support",
+        "agent_attributed": true
+      }
+    },
+    {
+      "name": "Recognition: devops agent identified with correct label",
+      "agent": "devops-agent",
+      "input": "Deploy the latest build to staging at 172.16.0.10.",
+      "assertions": {
+        "llm_must_not_see": ["172.16.0.10"],
+        "agent_label_contains": "DevOps",
+        "agent_classification_role": "DevOps / SRE",
+        "agent_attributed": true
+      }
+    },
+    {
+      "name": "Recognition: all 3 agents produce distinct labels",
+      "agent": "research-agent",
+      "input": "List all tracked agents.",
+      "assertions": {
+        "agent_attributed": true,
+        "distinct_agent_labels": true,
+        "min_agents_tracked": 3
+      }
+    },
+    {
+      "name": "Recognition: same agent across turns consolidates to one session",
+      "agent": "research-agent",
+      "turns": [
+        {
+          "input": "First message — analyze host 10.0.1.1.",
+          "assertions": { "agent_attributed": true }
+        },
+        {
+          "input": "Second message — check host 10.0.1.2.",
+          "assertions": { "agent_attributed": true }
+        }
+      ],
+      "assertions": {
+        "agent_session_consolidated": true
+      }
     }
   ]
 }

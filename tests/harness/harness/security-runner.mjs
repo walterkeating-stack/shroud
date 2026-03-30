@@ -158,9 +158,61 @@ export class SecurityTestRunner {
       if (assertions.distinct_build_ids) {
         const agentSessions = await this._getAgentSessions();
         const buildIds = new Set(agentSessions.map(s => s.agentBuildId));
-        // We may not have all 3 agents yet — just verify uniqueness of what's tracked
         if (buildIds.size < agentSessions.length) {
           throw new Error(`Expected distinct build IDs but got duplicates: ${[...buildIds].join(", ")}`);
+        }
+      }
+
+      // Agent label check
+      if (assertions.agent_label_contains) {
+        const agentSessions = await this._getAgentSessions();
+        const match = agentSessions.find(s =>
+          s.agentLabel && s.agentLabel.toLowerCase().includes(assertions.agent_label_contains.toLowerCase())
+        );
+        if (!match) {
+          const labels = agentSessions.map(s => s.agentLabel).join(", ");
+          throw new Error(`No agent label contains "${assertions.agent_label_contains}". Found: ${labels}`);
+        }
+      }
+
+      // Agent classification role check
+      if (assertions.agent_classification_role) {
+        const agentSessions = await this._getAgentSessions();
+        const match = agentSessions.find(s =>
+          s.classification?.role === assertions.agent_classification_role
+        );
+        if (!match) {
+          const roles = agentSessions.map(s => s.classification?.role || "?").join(", ");
+          throw new Error(`No agent classified as "${assertions.agent_classification_role}". Found: ${roles}`);
+        }
+      }
+
+      // Distinct agent labels check
+      if (assertions.distinct_agent_labels) {
+        const agentSessions = await this._getAgentSessions();
+        const labels = new Set(agentSessions.map(s => s.agentLabel));
+        if (labels.size < agentSessions.length) {
+          throw new Error(`Expected distinct labels but got duplicates: ${[...labels].join(", ")}`);
+        }
+      }
+
+      // Minimum agents tracked check
+      if (assertions.min_agents_tracked) {
+        const agentSessions = await this._getAgentSessions();
+        if (agentSessions.length < assertions.min_agents_tracked) {
+          throw new Error(`Expected at least ${assertions.min_agents_tracked} agents, found ${agentSessions.length}`);
+        }
+      }
+
+      // Session consolidation check (same agent = same session across turns)
+      if (assertions.agent_session_consolidated) {
+        const agentSessions = await this._getAgentSessions();
+        // The agent used in this scenario should have exactly 1 session
+        const agentLabel = agentSessions.find(s =>
+          s.agentLabel && s.agentLabel.toLowerCase().includes("research")
+        );
+        if (agentLabel && agentLabel.llmCallCount < 2) {
+          throw new Error(`Expected consolidated session with 2+ calls, got ${agentLabel.llmCallCount}`);
         }
       }
 
