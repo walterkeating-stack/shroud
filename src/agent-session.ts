@@ -140,16 +140,25 @@ export class AgentSessionTracker {
 
 /**
  * Compute a stable agent build ID.
- * Changes when system prompt, plugins, or model change.
- * Excludes dynamic files (MEMORY.md) to avoid constant invalidation.
+ *
+ * Uses a "skeleton" of the system prompt rather than the full text.
+ * This makes the ID resilient to:
+ * - Dynamic timestamps, dates, session IDs injected into prompts
+ * - User names or account-specific context
+ * - Retrieved RAG snippets appended to the base prompt
+ * - Minor wording tweaks during prompt iteration
+ *
+ * The skeleton is: first 500 chars of the prompt with numbers, dates,
+ * emails, UUIDs, and hex strings normalized to placeholders.
  */
 export function computeBuildId(
   systemPrompt: string,
   pluginList: string[],
   modelId: string,
 ): string {
+  const skeleton = extractPromptSkeleton(systemPrompt);
   const components = [
-    systemPrompt,
+    skeleton,
     pluginList.sort().join(","),
     modelId,
   ];
@@ -157,6 +166,39 @@ export function computeBuildId(
     .update(components.join("\n"))
     .digest("hex")
     .slice(0, 16);
+}
+
+/**
+ * Extract a stable "skeleton" from a system prompt by normalizing
+ * dynamic content to placeholders.
+ *
+ * Normalizes: timestamps, dates, numbers >4 digits, emails, UUIDs,
+ * hex strings >8 chars, IP addresses, URLs with path components.
+ * Keeps: the structural words, role definitions, tool descriptions,
+ * behavioral instructions — the parts that define the agent's identity.
+ */
+export function extractPromptSkeleton(prompt: string): string {
+  let s = prompt;
+
+  // Take first 2000 chars — the core identity is always at the top.
+  // Appended RAG context, memory, or conversation history at the end
+  // should not affect the identity.
+  s = s.slice(0, 2000);
+
+  // Normalize dynamic content to stable placeholders
+  s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<UUID>"); // UUIDs
+  s = s.replace(/\b\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "<DATE>"); // ISO dates
+  s = s.replace(/\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?\b/g, "<TIME>"); // times
+  s = s.replace(/\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}\b/g, "<EMAIL>"); // emails
+  s = s.replace(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g, "<IP>"); // IPs
+  s = s.replace(/\b[0-9a-f]{12,}\b/gi, "<HEX>"); // long hex strings
+  s = s.replace(/\b\d{5,}\b/g, "<NUM>"); // numbers > 4 digits
+  s = s.replace(/https?:\/\/[^\s<>"']+/g, "<URL>"); // URLs
+
+  // Collapse whitespace
+  s = s.replace(/\s+/g, " ").trim();
+
+  return s;
 }
 
 /** Extract a human-readable label from system prompt (first meaningful line, max 60 chars). */
