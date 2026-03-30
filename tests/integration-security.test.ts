@@ -319,7 +319,7 @@ describe("Integration: Cross-agent event attribution", () => {
     }
 
     expect(bus.getEvents()[0].agentBuildId).toBe(session.agentBuildId);
-    expect(bus.getEvents()[0].agentLabel).toContain("devops");
+    expect(bus.getEvents()[0].agentLabel?.toLowerCase()).toContain("devops");
   });
 });
 

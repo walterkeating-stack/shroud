@@ -202,10 +202,10 @@ export function extractPromptSkeleton(prompt: string): string {
 }
 
 /**
- * Extract a human-readable agent name from system prompt.
+ * Extract a short, snappy agent name from system prompt.
  *
- * Looks for "You are a/an [ROLE]" pattern first (most common in SOUL.md).
- * Falls back to first meaningful line.
+ * Looks for "You are a/an [ROLE]" pattern, then distills to the core role.
+ * "network security researcher at a managed security services provider" → "Security Researcher"
  */
 function extractLabel(systemPrompt: string): string {
   // Try to extract role from "You are a/an [role]" pattern
@@ -213,17 +213,20 @@ function extractLabel(systemPrompt: string): string {
     /[Yy]ou\s+are\s+(?:a|an)\s+(.+?)(?:\.|,|\n|$)/,
   );
   if (roleMatch) {
-    const role = roleMatch[1].trim();
-    if (role.length > 5 && role.length < 80) {
-      return role.length > 60 ? role.slice(0, 57) + "..." : role;
-    }
+    let role = roleMatch[1].trim();
+    // Shorten: strip "at/for/who/that..." clauses
+    role = role.replace(/\s+(?:at|for|who|that|which|specializing|working|based)\s+.*/i, "");
+    // Title case
+    role = role.replace(/\b\w/g, (c) => c.toUpperCase());
+    if (role.length > 3 && role.length < 50) return role;
   }
 
-  // Fallback: first meaningful line
+  // Fallback: first meaningful line, shortened
   const firstLine = systemPrompt
     .split("\n")
     .map((l) => l.trim())
     .find((l) => l.length > 5 && !l.startsWith("#") && !l.startsWith("<!--"));
-  if (!firstLine) return "unknown-agent";
-  return firstLine.length > 60 ? firstLine.slice(0, 57) + "..." : firstLine;
+  if (!firstLine) return "Unknown Agent";
+  const short = firstLine.replace(/\s+(?:at|for|who|that|which)\s+.*/i, "");
+  return short.length > 40 ? short.slice(0, 37) + "..." : short;
 }

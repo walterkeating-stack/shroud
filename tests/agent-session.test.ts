@@ -17,7 +17,7 @@ describe("AgentSessionTracker", () => {
     expect(session.agentBuildId).toMatch(/^[a-f0-9]{16}$/);
     expect(session.sessionId).toMatch(/^[a-f0-9]{12}$/);
     expect(session.llmCallCount).toBe(0);
-    expect(session.agentLabel).toContain("helpful research assistant");
+    expect(session.agentLabel.toLowerCase()).toContain("research assistant");
   });
 
   test("same system prompt returns same session", () => {
@@ -80,7 +80,7 @@ describe("AgentSessionTracker", () => {
 
   test("extractLabel handles comments and headers", () => {
     const session = tracker.registerAgent("# Title\n<!-- comment -->\nYou are a helpful assistant.");
-    expect(session.agentLabel).toContain("helpful assistant");
+    expect(session.agentLabel.toLowerCase()).toContain("helpful assistant");
   });
 });
 
