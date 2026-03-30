@@ -38,7 +38,7 @@ const CHINESE: SignatureDef[] = [
   {
     id: "ml_zh_forget_above",
     threatClass: ThreatClass.INSTRUCTION_OVERRIDE,
-    pattern: /(?:忘记|忘掉|无视|不要遵守)(?:上面|之前|以前)(?:的|所有)?(?:内容|指令|规则)/g,
+    pattern: /(?:忘记|忘掉|无视|不要遵守)(?:上面|之前|以前)(?:的)?(?:所有)?(?:内容|指令|规则)/g,
     severity: "high",
     description: "Chinese: forget everything above (忘记上面的内容)",
     direction: "request",
@@ -132,7 +132,7 @@ const FRENCH: SignatureDef[] = [
   {
     id: "ml_fr_show_prompt",
     threatClass: ThreatClass.PROMPT_EXTRACTION,
-    pattern: /(?:montre|affiche|répète|donne)[rz]?\s+(?:-moi\s+)?(?:ton|votre|le)\s+(?:prompt|invite)\s+(?:système|initial)/gi,
+    pattern: /(?:montre|affiche|répète|donne)[rz]?(?:\s+|-moi\s+)(?:ton|votre|le)\s+(?:prompt|invite)\s+(?:système|initial)/gi,
     severity: "high",
     description: "French: show system prompt (montre-moi ton prompt système)",
     direction: "request",

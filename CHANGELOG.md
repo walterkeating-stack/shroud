@@ -2,6 +2,75 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.0] - 2026-03-30
+
+### Added — Security Extension: Agent Application-Layer Firewall
+
+**Track 1 — Injection Signature Detection (WAF):**
+- 87 injection signatures across 8 threat classes and 14 languages (Chinese, Spanish, French, German, Japanese, Korean, Russian, Portuguese, Arabic, Hindi, Turkish, Italian, Dutch, Polish)
+- Request-side scanning with configurable block/flag/off action modes
+- Response-side exfiltration pattern detection (9 patterns: img, script, iframe, curl, markdown injection)
+- Token smuggling defence: strips invisible Unicode characters, re-scans cleaned text
+- Base64 decode-and-rescan for encoded injection payloads
+- Context-aware false positive reduction: patterns inside quotes/academic discussion → severity "low"
+- 59 false positive scenarios tested across 7 agent types
+
+**Track 2 — Canary Confirmation:**
+- System prompt marker canaries (planted in system context, detected in response)
+- Behavioural canaries (false instruction tripwires with detectable signature codes)
+- Levenshtein near-match detection (distance ≤ 2) for partial/paraphrased leaks
+
+**Track 3 — Behavioural Profiling (IDS):**
+- Per-turn feature extraction: 14 features including entity density, tool patterns, lexical delta, script/language detection, image payload tracking
+- Cross-session baseline accumulation using Welford's online algorithm (mean/stddev, no raw data stored)
+- Z-score anomaly detection with 7 named types: entity category shift, density spike, tool outside profile, topic discontinuity, credential emergence, exfiltration pattern
+- Baseline maturity phases: learning (0-4 sessions) → reliable (5-49) → mature (50+)
+- File-based persistence at ~/.shroud/profiles/
+
+**Tool Call Guard:**
+- 22 patterns blocking dangerous commands before execution: rm -rf, shutdown, DROP TABLE, reverse shells, curl exfiltration, credential access, crypto mining
+- Wired into before_tool_call hook — blocks before the command reaches the shell
+
+**Agent Identity:**
+- Automatic agent recognition from system prompt content (fuzzy prompt skeleton)
+- Resilient to dynamic content (timestamps, emails, IPs, UUIDs normalized)
+- Model ID detection from API request body
+- All security events enriched with agentBuildId, agentLabel, agentSessionId
+
+**Dashboard API:**
+- Real-time HTTP dashboard on localhost:9380 (configurable)
+- 15 endpoints: overview, agents, events (searchable), profiling, stats, policy management
+- SSE real-time event stream at /api/events/stream
+- Event search: filter by agent, threat class, severity, keyword, time range
+
+**Policy Engine:**
+- Per-agent firewall rules (buildId → config overrides)
+- Versioned commit/rollback (last 50 commits retained)
+- Hot-reload via file watching — policy changes take effect without restart
+- Dashboard API for CRUD: PUT /api/policy/agent/:buildId, POST commit/rollback
+
+**SIEM Integration:**
+- Webhook POST: ships batched events to Splunk HEC, Grafana Loki, or custom endpoint
+- JSONL file: appends newline-delimited JSON for offline analysis
+- Configurable batching with timed flush
+
+**Testing:**
+- 1,256 unit tests (29 files) + 359 harness = 1,615 total
+- 15 integration tests verifying full pipeline: obfuscation → firewall → profiler → tool guard
+- 50 multilingual injection tests (14 languages + false positives)
+- 19 profiler training tests (3 agents × training + adversarial + cross-agent confusion)
+- Memory leak and load tests (bounded growth, <5ms per 1KB payload)
+- Long-running dashboard demo: `node tests/long-run-dashboard.mjs`
+
+**Configuration (all via environment variables):**
+- `SHROUD_INJECTION_DETECTION`: flag | block | off
+- `SHROUD_PROFILING_ENABLED`: true | false
+- `SHROUD_DASHBOARD`: true | false
+- `SHROUD_SIEM_WEBHOOK_URL`, `SHROUD_SIEM_JSONL_PATH`
+- Full documentation: docs/SECURITY.md
+
+**Zero regressions.** Obfuscation pipeline completely untouched. All existing 870 unit + 359 harness tests pass unchanged.
+
 ## [2.2.9] - 2026-03-28
 
 ### Fixed
