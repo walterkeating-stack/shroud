@@ -34,7 +34,7 @@ describe("AgentSessionTracker", () => {
   });
 
   test("recordLlmCall increments count", () => {
-    tracker.registerAgent("Agent A");
+    tracker.registerAgent("- Name: Agent-A\nYou are Agent A.");
     tracker.recordLlmCall();
     tracker.recordLlmCall();
     tracker.recordLlmCall();
@@ -43,7 +43,7 @@ describe("AgentSessionTracker", () => {
   });
 
   test("recordSecurityEvent increments count", () => {
-    tracker.registerAgent("Agent A");
+    tracker.registerAgent("- Name: Agent-A\nYou are Agent A.");
     tracker.recordSecurityEvent(2);
     tracker.recordSecurityEvent(1);
     const session = tracker.getCurrentSession();
@@ -51,22 +51,22 @@ describe("AgentSessionTracker", () => {
   });
 
   test("getCurrentSession returns current agent", () => {
-    tracker.registerAgent("Agent A");
-    expect(tracker.getCurrentSession()!.agentLabel).toContain("Agent A");
+    tracker.registerAgent("- Name: Agent-A\nYou are Agent A.");
+    expect(tracker.getCurrentSession()!.agentLabel).toBe("Agent-A");
 
-    tracker.registerAgent("Agent B");
-    expect(tracker.getCurrentSession()!.agentLabel).toContain("Agent B");
+    tracker.registerAgent("- Name: Agent-B\nYou are Agent B.");
+    expect(tracker.getCurrentSession()!.agentLabel).toBe("Agent-B");
   });
 
   test("getAllSessions returns all tracked agents", () => {
-    tracker.registerAgent("Agent A");
-    tracker.registerAgent("Agent B");
-    tracker.registerAgent("Agent C");
+    tracker.registerAgent("- Name: Agent-A\nYou are Agent A.");
+    tracker.registerAgent("- Name: Agent-B\nYou are Agent B.");
+    tracker.registerAgent("- Name: Agent-C\nYou are Agent C.");
     expect(tracker.getAllSessions()).toHaveLength(3);
   });
 
   test("reset clears all sessions", () => {
-    tracker.registerAgent("Agent A");
+    tracker.registerAgent("- Name: Agent-A\nYou are Agent A.");
     tracker.reset();
     expect(tracker.getAllSessions()).toHaveLength(0);
     expect(tracker.getCurrentSession()).toBeNull();

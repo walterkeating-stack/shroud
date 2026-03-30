@@ -206,7 +206,7 @@ describe("Memory: AgentSessionTracker bounds", () => {
   test("same agent re-registered doesn't duplicate", () => {
     const tracker = new AgentSessionTracker();
     for (let i = 0; i < 1000; i++) {
-      tracker.registerAgent("Same agent prompt every time.");
+      tracker.registerAgent("- Name: TestBot\nSame agent prompt every time.");
     }
     expect(tracker.getAllSessions().length).toBe(1);
   });

@@ -158,6 +158,24 @@ export class AgentSessionTracker {
   ): AgentSession {
     const label = extractLabel(systemPrompt);
     const buildId = computeBuildId(systemPrompt, pluginList, modelId);
+
+    // Don't create sessions for unidentifiable prompts
+    if (label === "Unknown Agent") {
+      // Still set current label so calls get tracked somewhere
+      this._currentLabel = label;
+      // Return a transient session that won't be persisted
+      return this._sessions.get(label) || {
+        agentBuildId: buildId, agentLabel: label, sessionId: "transient",
+        startedAt: Date.now(), llmCallCount: 0, securityEventCount: 0,
+        lastCallAt: Date.now(), detectedModel: modelId, channelSource: "",
+        classification: { role: "Unknown", confidencePct: 0, confidence: "low", colour: "#484f58", signals: [] },
+        toolInventory: [], soulExtract: "",
+        cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
+        channels: [],
+        heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+      };
+    }
+
     this._currentLabel = label;
 
     let session = this._sessions.get(label);
@@ -683,29 +701,14 @@ function _extractLabelFromText(text: string): string | null {
     }
   }
 
-  // 6. Fallback — only accept short, name-like strings (not instructions)
-  //    A valid name is 1-3 words, no trailing punctuation, no metadata patterns.
-  const firstLine = text
-    .split("\n")
-    .map((l) => l.trim())
-    .find((l) =>
-      l.length > 2 &&
-      l.length < 30 &&
-      !l.startsWith("#") &&
-      !l.startsWith("<!--") &&
-      !l.startsWith("System:") &&
-      !l.startsWith("- ") &&
-      !l.endsWith(":") &&           // reject "Rules:", "Conversation info:"
-      !l.endsWith(")") &&           // reject "(untrusted metadata)"
-      !l.includes("(") &&           // reject parenthetical context
-      !l.includes("{") &&           // reject JSON
-      !/^\d{4}-\d{2}-\d{2}/.test(l) &&
-      !/^\[.*\]$/.test(l) &&
-      !/^(when|if|do|don't|always|never|you |respond|make|use|keep|try|be |note|remember|ensure|for |the |this |please|conversation|session|sender|channel|message)/i.test(l) &&
-      l.split(/\s+/).length <= 4,
-    );
-  if (!firstLine) return null;
-  return firstLine;
+  // 6. Fallback — disabled.
+  // The fallback was the source of all ghost agents. Every prompt variation
+  // that didn't match patterns 1-5 would grab the first short line as a name,
+  // producing ghosts like "```json", "❌ Wrong: NO_REPLY", "Rules:", etc.
+  // If none of the confident patterns (channel label, - Name:, You are,
+  // heading) match, return null → "Unknown Agent" which is filtered from
+  // persistence and display.
+  return null;
 }
 
 // ===================================================================
