@@ -100,7 +100,7 @@ const ROLE_SWITCH: SignatureDef[] = [
   {
     id: "rs_you_are_now",
     threatClass: ThreatClass.ROLE_SWITCH,
-    pattern: /you\s+are\s+now\s+(?!(?:looking|going|ready|able|about|welcome|connected|logged|signed|running|viewing|in\s+the))\S/gi,
+    pattern: /you\s+are\s+now\s+(?!(?:looking|going|ready|able|about|welcome|connected|logged|signed|running|viewing|in\s+(?:the|a\s|production|staging|debug|test|maintenance|safe)|on\s+the|at\s+the))\S/gi,
     severity: "high",
     description: "Role switch: you are now [persona]",
     direction: "request",
