@@ -159,8 +159,8 @@ export class AgentSessionTracker {
     const label = extractLabel(systemPrompt);
     const buildId = computeBuildId(systemPrompt, pluginList, modelId);
 
-    // Don't create sessions for unidentifiable prompts or framework preamble
-    if (label === "Unknown Agent" || label === "Claude Code") {
+    // Don't create sessions for unidentifiable prompts
+    if (label === "Unknown Agent") {
       // Still set current label so calls get tracked somewhere
       this._currentLabel = label;
       // Return a transient session that won't be persisted
@@ -612,11 +612,17 @@ function extractLabel(systemPrompt: string): string {
     if (name.length > 1 && name.length < 50) return name;
   }
 
-  // 2b. WhatsApp header: "WhatsApp message from [Name]" or "WhatsApp group [Name]"
+  // 2b. WhatsApp: header format or metadata JSON with e164 phone number
   const waMatch = systemPrompt.match(/WhatsApp\s+(?:message|group)\s+(?:from\s+|in\s+)?["']?([^"'\n]+)/i);
   if (waMatch) {
-    const name = waMatch[1].trim().replace(/\s*\(.*?\)\s*$/, ""); // strip phone in parens
+    const name = waMatch[1].trim().replace(/\s*\(.*?\)\s*$/, "");
     if (name.length > 1 && name.length < 50) return name;
+  }
+  // WhatsApp direct: metadata has e164 but no channel label — use "WA: [sender]"
+  const waE164 = systemPrompt.match(/"e164"\s*:\s*"\+\d+"/);
+  const waSender = systemPrompt.match(/"sender"\s*:\s*"([^"]+)"/);
+  if (waE164 && waSender && !systemPrompt.includes("conversation_label")) {
+    return "WA " + waSender[1].trim();
   }
 
   // 2c. TUI / terminal: "TUI session" or "terminal session" — use agent name from session key

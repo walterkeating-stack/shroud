@@ -528,6 +528,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // fetch intercept fires.
     if (typeof event?.prompt === "string" && event.prompt.length > 10) {
       const session = agentTracker.registerAgent(event.prompt);
+      // DEBUG: log failed identifications — dump messages[0] to find identity
+      if (session.agentLabel === "Claude Code" || session.agentLabel === "Unknown Agent") {
+        const msgs = Array.isArray(event?.messages) ? event.messages : [];
+        const msg0 = msgs.length > 0 ? JSON.stringify(msgs[0]).slice(0, 300) : "no messages";
+        const msg1 = msgs.length > 1 ? JSON.stringify(msgs[1]).slice(0, 300) : "no msg[1]";
+        try { writeFileSync("/tmp/shroud-identity-fail.log",
+          `LABEL=${session.agentLabel}\nMSG_COUNT=${msgs.length}\nMSG[0]=${msg0}\nMSG[1]=${msg1}\nPROMPT_FIRST200:\n${event.prompt.slice(0, 200)}\n===END===\n\n`, { flag: "a" }); } catch {}
+      }
       if (profiler) profiler.setAgentBuildId(session.agentBuildId);
       // Detect and record channel type + derive call reason
       const detectedCh = agentTracker.updateChannelFromPrompt(event.prompt);
@@ -1183,15 +1191,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             systemForIdentity = systemMsgs.join("\n");
           }
         }
-        // Do NOT register agents here — the fetch intercept sees body.system[0]
-        // which contains "You are Claude Code" (framework preamble), not the
-        // agent's identity. Agent registration happens in before_prompt_build
-        // from the conversation_label in OpenClaw session metadata.
-        // Only update model/tools on the ALREADY-registered agent.
+        // Agent identity: before_prompt_build is the primary source (channel labels).
+        // The fetch intercept is the FALLBACK — only used if before_prompt_build
+        // couldn't identify the agent (e.g. WhatsApp with no conversation_label).
         if (systemForIdentity && systemForIdentity.length > 10) {
-          // If no agent was registered by before_prompt_build, skip
           const existing = agentTracker.getCurrentSession();
-          if (existing && existing.agentLabel !== "Unknown Agent") {
+          if (!existing || existing.agentLabel === "Unknown Agent" || existing.sessionId === "transient") {
+            // before_prompt_build failed — try fetch intercept as fallback
+            const session = agentTracker.registerAgent(systemForIdentity);
+            if (profiler) profiler.setAgentBuildId(session.agentBuildId);
+          } else {
             if (profiler) profiler.setAgentBuildId(existing.agentBuildId);
           }
         }
