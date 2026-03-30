@@ -68,8 +68,12 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     denylist: Array.isArray(raw.denylist)
       ? (raw.denylist as string[])
       : [],
-    canaryEnabled:
-      typeof raw.canaryEnabled === "boolean" ? raw.canaryEnabled : false,
+    canaryEnabled: (() => {
+      const env = process.env.SHROUD_CANARY_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.canaryEnabled === "boolean" ? raw.canaryEnabled : false;
+    })(),
     canaryPrefix:
       typeof raw.canaryPrefix === "string"
         ? raw.canaryPrefix
@@ -170,10 +174,18 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     })(),
 
     // --- Canary security extensions ---
-    canarySystemInjection:
-      typeof raw.canarySystemInjection === "boolean" ? raw.canarySystemInjection : false,
-    canaryBehavioural:
-      typeof raw.canaryBehavioural === "boolean" ? raw.canaryBehavioural : false,
+    canarySystemInjection: (() => {
+      const env = process.env.SHROUD_CANARY_SYSTEM;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.canarySystemInjection === "boolean" ? raw.canarySystemInjection : false;
+    })(),
+    canaryBehavioural: (() => {
+      const env = process.env.SHROUD_CANARY_BEHAVIOURAL;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.canaryBehavioural === "boolean" ? raw.canaryBehavioural : false;
+    })(),
     canaryNearMatchDistance:
       typeof raw.canaryNearMatchDistance === "number" ? raw.canaryNearMatchDistance : 2,
 
