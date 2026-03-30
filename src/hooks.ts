@@ -1183,9 +1183,17 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             systemForIdentity = systemMsgs.join("\n");
           }
         }
+        // Do NOT register agents here — the fetch intercept sees body.system[0]
+        // which contains "You are Claude Code" (framework preamble), not the
+        // agent's identity. Agent registration happens in before_prompt_build
+        // from the conversation_label in OpenClaw session metadata.
+        // Only update model/tools on the ALREADY-registered agent.
         if (systemForIdentity && systemForIdentity.length > 10) {
-          const session = agentTracker.registerAgent(systemForIdentity);
-          if (profiler) profiler.setAgentBuildId(session.agentBuildId);
+          // If no agent was registered by before_prompt_build, skip
+          const existing = agentTracker.getCurrentSession();
+          if (existing && existing.agentLabel !== "Unknown Agent") {
+            if (profiler) profiler.setAgentBuildId(existing.agentBuildId);
+          }
         }
 
         // Extract tool inventory from body.tools
