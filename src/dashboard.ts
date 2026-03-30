@@ -111,8 +111,8 @@ export function startDashboard(
         const buildId = url.slice("/api/agents/".length);
         handleAgentDetail(res, deps, buildId);
       }
-      else if (url === "/api/events") {
-        handleEvents(res, deps);
+      else if (url?.startsWith("/api/events?") || url === "/api/events") {
+        handleEvents(res, deps, url);
       }
       else if (url === "/api/events/stream") {
         handleEventStream(req, res, sseClients);
@@ -238,14 +238,60 @@ function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: st
   });
 }
 
-function handleEvents(res: ServerResponse, deps: DashboardDeps) {
-  const events = deps.securityBus?.getEvents() ?? [];
+function handleEvents(res: ServerResponse, deps: DashboardDeps, urlStr = "/api/events") {
+  let events = [...(deps.securityBus?.getEvents() ?? [])];
   const stats = deps.securityBus?.getStats();
 
-  json(res, 200, {
-    stats,
-    events: events.slice(-100),
-  });
+  // Parse query params for filtering
+  const qIdx = urlStr.indexOf("?");
+  if (qIdx >= 0) {
+    const params = new URLSearchParams(urlStr.slice(qIdx));
+
+    // Filter by agent
+    const agent = params.get("agent");
+    if (agent) events = events.filter(e => e.agentBuildId === agent || e.agentLabel?.includes(agent));
+
+    // Filter by threat class
+    const threat = params.get("threat");
+    if (threat) events = events.filter(e => e.threatClass === threat);
+
+    // Filter by severity
+    const severity = params.get("severity");
+    if (severity) events = events.filter(e => e.severity === severity);
+
+    // Filter by event type
+    const type = params.get("type");
+    if (type) events = events.filter(e => e.eventType === type);
+
+    // Filter by direction
+    const direction = params.get("direction");
+    if (direction) events = events.filter(e => e.direction === direction);
+
+    // Filter by time range (unix ms)
+    const since = params.get("since");
+    if (since) events = events.filter(e => e.timestamp >= parseInt(since, 10));
+    const until = params.get("until");
+    if (until) events = events.filter(e => e.timestamp <= parseInt(until, 10));
+
+    // Text search in matchedText and description
+    const q = params.get("q");
+    if (q) {
+      const lower = q.toLowerCase();
+      events = events.filter(e =>
+        e.matchedText.toLowerCase().includes(lower) ||
+        e.description.toLowerCase().includes(lower) ||
+        e.signatureId.toLowerCase().includes(lower),
+      );
+    }
+
+    // Limit
+    const limit = parseInt(params.get("limit") || "100", 10);
+    events = events.slice(-limit);
+  } else {
+    events = events.slice(-100);
+  }
+
+  json(res, 200, { stats, count: events.length, events });
 }
 
 function handleEventStream(req: IncomingMessage, res: ServerResponse, clients: Set<ServerResponse>) {

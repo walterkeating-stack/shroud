@@ -951,6 +951,23 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
         }
 
+        // --- Canary planting (Track 2) ---
+        // Plant canary tokens in system prompts after obfuscation.
+        // If the canary appears in any response, injection was successful.
+        const canary = ob()["_canary"];
+        if (canary && config.canarySystemInjection) {
+          if (typeof body.system === "string") {
+            body.system = canary.injectSystem(body.system);
+            modified = true;
+          }
+          if (config.canaryBehavioural) {
+            if (typeof body.system === "string") {
+              const { prompt } = canary.injectBehavioural(body.system);
+              body.system = prompt;
+            }
+          }
+        }
+
         // Obfuscate system instruction (Google format)
         if (body.system_instruction) {
           const si = body.system_instruction;
@@ -1201,6 +1218,39 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             securityBus.emit(evt);
           }
           if (events.length > 0) agentTracker.recordSecurityEvent(events.length);
+        } catch { /* never break response pipeline */ }
+      }
+
+      // Canary leak detection (Track 2)
+      const canary = ob()["_canary"];
+      if (canary && securityBus) {
+        try {
+          const leaks = canary.checkLeakNearMatch(deobbed, config.canaryNearMatchDistance);
+          const behLeaks = canary.checkBehaviouralLeak(deobbed);
+          const allLeaks = [...leaks, ...behLeaks];
+          if (allLeaks.length > 0) {
+            const agentSession = agentTracker.getCurrentSession();
+            for (const leak of allLeaks) {
+              securityBus.emit({
+                timestamp: Date.now(),
+                eventType: "canary_triggered",
+                direction: "response",
+                threatClass: "instruction_override" as any,
+                signatureId: `canary_${leak.canary.type}_${leak.matchType}`,
+                severity: "high",
+                matchedText: leak.canary.token.slice(0, 50),
+                matchStart: 0,
+                matchEnd: 0,
+                textLength: deobbed.length,
+                action: "flagged",
+                description: `Canary ${leak.canary.type} leaked (${leak.matchType}, distance=${leak.distance})`,
+                agentBuildId: agentSession?.agentBuildId,
+                agentLabel: agentSession?.agentLabel,
+                agentSessionId: agentSession?.sessionId,
+              });
+            }
+            agentTracker.recordSecurityEvent(allLeaks.length);
+          }
         } catch { /* never break response pipeline */ }
       }
     }
