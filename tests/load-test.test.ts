@@ -274,6 +274,8 @@ describe("Load: BehaviouralProfiler throughput", () => {
           turnIndex: i,
           timestamp: Date.now(),
           tokenEstimate: 200,
+          detectedScript: "latin",
+          nonLatinRatio: 0,
         })),
         aggregates: {
           dominantCategories: ["email"],

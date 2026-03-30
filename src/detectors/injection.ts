@@ -18,6 +18,9 @@ import {
   REQUEST_SIGNATURES,
   RESPONSE_SIGNATURES,
 } from "./injection-signatures.js";
+import {
+  MULTILINGUAL_REQUEST_SIGNATURES,
+} from "./injection-multilingual.js";
 
 /** Configuration for the InjectionDetector. */
 export interface InjectionDetectorConfig {
@@ -54,6 +57,19 @@ const SEVERITY_RANK: Record<SecuritySeverity, number> = {
 };
 
 /**
+ * Strip token smuggling characters — invisible Unicode chars that attackers
+ * insert between tokens to break regex matching.
+ *
+ * Strips: zero-width space (U+200B), zero-width non-joiner (U+200C),
+ * zero-width joiner (U+200D), byte order mark (U+FEFF), word joiner (U+2060),
+ * soft hyphen (U+00AD), Mongolian vowel separator (U+180E),
+ * and all variation selectors (U+FE00-FE0F).
+ */
+function stripTokenSmuggling(text: string): string {
+  return text.replace(/[\u200B\u200C\u200D\uFEFF\u2060\u00AD\u180E\uFE00-\uFE0F]/g, "");
+}
+
+/**
  * Standalone injection scanner. Not a BaseDetector — runs parallel to
  * the obfuscation pipeline, never touches entity replacement.
  */
@@ -67,7 +83,8 @@ export class InjectionDetector {
     const minRank = SEVERITY_RANK[config.minSeverity];
 
     // Pre-filter signatures by severity and disabled list
-    this._requestSigs = REQUEST_SIGNATURES.filter(
+    // Include multilingual patterns alongside English ones
+    this._requestSigs = [...REQUEST_SIGNATURES, ...MULTILINGUAL_REQUEST_SIGNATURES].filter(
       (s) =>
         !config.disabledSignatures.has(s.id) &&
         SEVERITY_RANK[s.severity] >= minRank,
@@ -82,7 +99,45 @@ export class InjectionDetector {
   /** Scan request/outbound text for injection patterns. */
   scanRequest(text: string): SecurityEvent[] {
     if (this._config.action === "off") return [];
+
+    // Token smuggling defence: strip invisible characters then re-scan.
+    // Attackers insert zero-width spaces, soft hyphens, word joiners etc.
+    // between tokens to break regex matching: "ig​nore pre​vious in​structions"
+    const cleaned = stripTokenSmuggling(text);
+    const smuggled = cleaned !== text;
+
     const events = this._scanPatterns(text, this._requestSigs, "request");
+
+    // If smuggling chars were present, also scan the cleaned version
+    // to catch patterns that were broken by invisible chars
+    if (smuggled) {
+      const cleanedEvents = this._scanPatterns(cleaned, this._requestSigs, "request");
+      // Add cleaned-text detections that weren't found in original
+      const existingIds = new Set(events.map(e => e.signatureId));
+      for (const evt of cleanedEvents) {
+        if (!existingIds.has(evt.signatureId)) {
+          evt.description = `[token-smuggling stripped] ${evt.description}`;
+          events.push(evt);
+        }
+      }
+
+      // Also flag the smuggling itself
+      const action = this._config.action === "block" ? "blocked" : "flagged";
+      events.push({
+        timestamp: Date.now(),
+        eventType: "injection_detected",
+        direction: "request",
+        threatClass: ThreatClass.ENCODING_BYPASS,
+        signatureId: "eb_token_smuggling",
+        severity: "medium",
+        matchedText: `[${text.length - cleaned.length} invisible chars stripped]`,
+        matchStart: 0,
+        matchEnd: text.length,
+        textLength: text.length,
+        action,
+        description: `Token smuggling: ${text.length - cleaned.length} invisible characters removed, revealing injection patterns`,
+      });
+    }
 
     // Base64 decode-and-rescan
     events.push(...this._scanEncodedPayloads(text, "request"));

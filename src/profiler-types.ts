@@ -42,6 +42,11 @@ export interface FeatureVector {
   timestamp: number;
   /** Estimated token count (chars / 4). */
   tokenEstimate: number;
+
+  /** Detected script/language of the input (e.g. "latin", "cjk", "cyrillic", "arabic"). */
+  detectedScript: string;
+  /** Fraction of non-Latin characters in the input (0-1). */
+  nonLatinRatio: number;
 }
 
 /** Aggregate statistics for a session. */

@@ -142,6 +142,8 @@ describe("Anomaly Detection", () => {
       turnIndex: 0,
       timestamp: Date.now(),
       tokenEstimate: 200,
+      detectedScript: "latin",
+      nonLatinRatio: 0,
       ...overrides,
     };
   }
@@ -279,6 +281,8 @@ describe("BaselineStore — File Persistence", () => {
           turnIndex: 0,
           timestamp: Date.now(),
           tokenEstimate: 200,
+          detectedScript: "latin",
+          nonLatinRatio: 0,
         }],
         aggregates: {
           dominantCategories: ["email"],

@@ -118,6 +118,9 @@ export class BehaviouralProfiler {
     for (const w of words) this._allSessionWords.add(w);
     this._previousTurnBigrams = bigrams;
 
+    // Script/language detection
+    const { script, nonLatinRatio } = detectScript(text);
+
     this._pendingRequest = {
       entityCategoryCounts,
       entityDensityPer1k,
@@ -132,6 +135,8 @@ export class BehaviouralProfiler {
       turnIndex: this._turns.length,
       timestamp: Date.now(),
       tokenEstimate,
+      detectedScript: script,
+      nonLatinRatio,
     };
   }
 
@@ -172,6 +177,8 @@ export class BehaviouralProfiler {
       turnIndex: this._pendingRequest.turnIndex ?? this._turns.length,
       timestamp: this._pendingRequest.timestamp ?? Date.now(),
       tokenEstimate: this._pendingRequest.tokenEstimate ?? 0,
+      detectedScript: this._pendingRequest.detectedScript ?? "latin",
+      nonLatinRatio: this._pendingRequest.nonLatinRatio ?? 0,
     };
 
     this._turns.push(features);
@@ -299,6 +306,55 @@ export class BehaviouralProfiler {
       turnCount: n,
     };
   }
+}
+
+// ===================================================================
+// Script/language detection (zero-dep, Unicode range based)
+// ===================================================================
+
+/** Detect the dominant script and non-Latin ratio of text. */
+function detectScript(text: string): { script: string; nonLatinRatio: number } {
+  let latin = 0;
+  let cjk = 0;
+  let cyrillic = 0;
+  let arabic = 0;
+  let devanagari = 0;
+  let hangul = 0;
+  let total = 0;
+
+  for (const ch of text) {
+    const cp = ch.codePointAt(0)!;
+    if (cp < 0x20) continue; // control chars
+    if (cp < 0x7F) { latin++; total++; continue; } // Basic Latin (ASCII)
+    if (cp >= 0x00C0 && cp <= 0x024F) { latin++; total++; continue; } // Latin Extended
+    if (cp >= 0x4E00 && cp <= 0x9FFF) { cjk++; total++; continue; } // CJK Unified
+    if (cp >= 0x3040 && cp <= 0x30FF) { cjk++; total++; continue; } // Hiragana + Katakana
+    if (cp >= 0x3400 && cp <= 0x4DBF) { cjk++; total++; continue; } // CJK Extension A
+    if (cp >= 0x0400 && cp <= 0x04FF) { cyrillic++; total++; continue; } // Cyrillic
+    if (cp >= 0x0600 && cp <= 0x06FF) { arabic++; total++; continue; } // Arabic
+    if (cp >= 0x0900 && cp <= 0x097F) { devanagari++; total++; continue; } // Devanagari
+    if (cp >= 0xAC00 && cp <= 0xD7AF) { hangul++; total++; continue; } // Hangul
+    total++;
+  }
+
+  if (total === 0) return { script: "latin", nonLatinRatio: 0 };
+
+  const nonLatin = total - latin;
+  const nonLatinRatio = nonLatin / total;
+
+  // Determine dominant script
+  const counts: [string, number][] = [
+    ["latin", latin],
+    ["cjk", cjk],
+    ["cyrillic", cyrillic],
+    ["arabic", arabic],
+    ["devanagari", devanagari],
+    ["hangul", hangul],
+  ];
+  counts.sort((a, b) => b[1] - a[1]);
+  const dominant = counts[0][1] > 0 ? counts[0][0] : "unknown";
+
+  return { script: dominant, nonLatinRatio };
 }
 
 // ===================================================================

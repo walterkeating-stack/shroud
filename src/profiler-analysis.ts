@@ -115,6 +115,11 @@ const NUMERIC_FEATURES: Array<{
     extract: (fv) => fv.tokenEstimate,
     anomalyType: AnomalyType.ENTITY_DENSITY_SPIKE,
   },
+  {
+    name: "nonLatinRatio",
+    extract: (fv) => fv.nonLatinRatio,
+    anomalyType: AnomalyType.TOPIC_DISCONTINUITY,
+  },
 ];
 
 /**
