@@ -511,6 +511,29 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; animation: pulse 2s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
   .refresh { color: #484f58; font-size: 11px; }
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; padding: 0 24px; background: #161b22; }
+  .tab { padding: 10px 20px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; font-size: 13px; }
+  .tab:hover { color: #c9d1d9; }
+  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+  .policy-section { padding: 24px; }
+  .rule-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
+  .rule-card h3 { color: #58a6ff; font-size: 14px; margin-bottom: 8px; }
+  .input-group { margin-bottom: 12px; }
+  .input-group label { display: block; color: #8b949e; font-size: 12px; margin-bottom: 4px; }
+  .input-group select, .input-group input { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 10px; border-radius: 4px; font-size: 13px; width: 100%; }
+  .input-group select:focus, .input-group input:focus { border-color: #58a6ff; outline: none; }
+  .btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; }
+  .btn-primary { background: #238636; color: #fff; }
+  .btn-primary:hover { background: #2ea043; }
+  .btn-danger { background: #da3633; color: #fff; }
+  .btn-danger:hover { background: #f85149; }
+  .btn-secondary { background: #30363d; color: #c9d1d9; }
+  .btn-secondary:hover { background: #484f58; }
+  .btn-group { display: flex; gap: 8px; margin-top: 12px; }
+  .history-item { padding: 8px 12px; background: #0d1117; border-radius: 4px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+  .history-item .ver { color: #58a6ff; font-weight: 600; }
+  .toast { position: fixed; bottom: 24px; right: 24px; background: #238636; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 13px; display: none; z-index: 100; }
+  .toast.error { background: #da3633; }
 </style>
 </head>
 <body>
@@ -519,9 +542,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <span class="live-dot"></span>
   <span class="refresh" id="lastUpdate">Loading...</span>
 </div>
+<div class="tabs">
+  <div class="tab active" onclick="switchTab('overview')">Overview</div>
+  <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
+</div>
 <div class="grid" id="content">
   <div class="card"><h2>Loading...</h2></div>
 </div>
+<div id="rulesContent" style="display:none"></div>
+<div class="toast" id="toast"></div>
 
 <script>
 const BASE = location.origin;
@@ -703,9 +732,198 @@ async function showAgent(buildId) {
   }
 }
 
-// Auto-refresh every 3 seconds
+// Tab switching
+let currentTab = 'overview';
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('.tab[onclick*=\"' + tab + '\"]').classList.add('active');
+  if (tab === 'overview') {
+    document.getElementById('content').style.display = 'grid';
+    document.getElementById('rulesContent').style.display = 'none';
+    refresh();
+  } else if (tab === 'rules') {
+    document.getElementById('content').style.display = 'none';
+    document.getElementById('rulesContent').style.display = 'block';
+    refreshRules();
+  }
+}
+
+function showToast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast' + (isError ? ' error' : '');
+  t.style.display = 'block';
+  setTimeout(() => t.style.display = 'none', 3000);
+}
+
+async function refreshRules() {
+  try {
+    const [policy, history, agents] = await Promise.all([
+      fetchJson('/api/policy'),
+      fetchJson('/api/policy/history'),
+      fetchJson('/api/agents'),
+    ]);
+
+    let html = '<div class="policy-section">';
+
+    // Default policy
+    html += '<div class="rule-card"><h3>Default Policy (applies to all agents)</h3>';
+    html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+    html += '<div class="input-group"><label>Detection Mode</label><select id="def-mode">';
+    ['flag','block','off'].forEach(m => {
+      html += '<option value="' + m + '"' + (policy.policy?.default?.injectionDetection === m ? ' selected' : '') + '>' + m + '</option>';
+    });
+    html += '</select></div>';
+    html += '<div class="input-group"><label>Min Severity</label><select id="def-severity">';
+    ['low','medium','high'].forEach(s => {
+      html += '<option value="' + s + '"' + (policy.policy?.default?.injectionMinSeverity === s ? ' selected' : '') + '>' + s + '</option>';
+    });
+    html += '</select></div>';
+    html += '<div class="input-group"><label>Disabled Signatures</label><input id="def-disabled" value="' + ((policy.policy?.default?.injectionDisabledSignatures || []).join(', ')) + '" placeholder="e.g. rs_jailbreak, io_ignore_previous"></div>';
+    html += '</div>';
+    html += '<div class="btn-group"><button class="btn btn-primary" onclick="saveDefault()">Save Default</button></div>';
+    html += '</div>';
+
+    // Per-agent policies
+    html += '<h2 style="color:#c9d1d9;margin:24px 0 12px;font-size:16px">Per-Agent Rules</h2>';
+
+    const agentList = agents.agents || [];
+    const agentPolicies = policy.policy?.agents || {};
+
+    for (const a of agentList) {
+      const ap = agentPolicies[a.agentBuildId] || {};
+      const bid = a.agentBuildId;
+      const hasOverride = Object.keys(ap).length > 0;
+
+      html += '<div class="rule-card" style="border-left:3px solid ' + (hasOverride ? '#58a6ff' : '#30363d') + '">';
+      html += '<h3>' + (a.agentLabel || bid) + (hasOverride ? ' <span style="color:#58a6ff;font-size:11px">(custom rules)</span>' : '') + '</h3>';
+      html += '<div style="font-size:11px;color:#484f58;margin-bottom:8px">Build: ' + bid + ' | ' + a.llmCallCount + ' calls | ' + a.securityEventCount + ' events</div>';
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
+      html += '<div class="input-group"><label>Detection Mode</label><select id="agent-mode-' + bid + '">';
+      html += '<option value="">inherit default</option>';
+      ['flag','block','off'].forEach(m => {
+        html += '<option value="' + m + '"' + (ap.injectionDetection === m ? ' selected' : '') + '>' + m + '</option>';
+      });
+      html += '</select></div>';
+      html += '<div class="input-group"><label>Min Severity</label><select id="agent-severity-' + bid + '">';
+      html += '<option value="">inherit default</option>';
+      ['low','medium','high'].forEach(s => {
+        html += '<option value="' + s + '"' + (ap.injectionMinSeverity === s ? ' selected' : '') + '>' + s + '</option>';
+      });
+      html += '</select></div>';
+      html += '<div class="input-group"><label>Disabled Signatures</label><input id="agent-disabled-' + bid + '" value="' + ((ap.injectionDisabledSignatures || []).join(', ')) + '" placeholder="inherit default"></div>';
+      html += '</div>';
+      html += '<div class="input-group"><label>Notes</label><input id="agent-notes-' + bid + '" value="' + (ap.notes || '') + '" placeholder="Why this agent has custom rules"></div>';
+      html += '<div class="btn-group">';
+      html += '<button class="btn btn-primary" onclick="saveAgent(\\'' + bid + '\\')">Save</button>';
+      if (hasOverride) html += '<button class="btn btn-danger" onclick="removeAgent(\\'' + bid + '\\')">Remove Override</button>';
+      html += '</div></div>';
+    }
+
+    // Commit / History
+    html += '<h2 style="color:#c9d1d9;margin:24px 0 12px;font-size:16px">Version History</h2>';
+    html += '<div class="rule-card">';
+    html += '<div style="display:flex;gap:8px;margin-bottom:16px">';
+    html += '<input id="commit-desc" placeholder="Describe this change..." style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 10px;border-radius:4px;font-size:13px">';
+    html += '<button class="btn btn-primary" onclick="commitPolicy()">Commit</button>';
+    html += '</div>';
+
+    if (history.commits && history.commits.length > 0) {
+      html += '<div style="font-size:12px;color:#8b949e;margin-bottom:8px">Current version: ' + history.current + '</div>';
+      for (const c of [...history.commits].reverse()) {
+        const isCurrent = c.version === history.current;
+        html += '<div class="history-item">';
+        html += '<span><span class="ver">v' + c.version + '</span> ' + c.description + ' <span style="color:#484f58">' + c.timestamp + '</span></span>';
+        html += isCurrent ? '<span style="color:#3fb950">current</span>' : '<button class="btn btn-secondary" onclick="rollbackPolicy(' + c.version + ')">Rollback</button>';
+        html += '</div>';
+      }
+    } else {
+      html += '<div style="color:#484f58;font-size:12px">No commits yet. Make changes and commit to start version tracking.</div>';
+    }
+    html += '</div></div>';
+
+    document.getElementById('rulesContent').innerHTML = html;
+  } catch(err) {
+    document.getElementById('rulesContent').innerHTML = '<div class="policy-section"><div class="rule-card"><h3>Error loading policy: ' + err.message + '</h3></div></div>';
+  }
+}
+
+async function saveDefault() {
+  const mode = document.getElementById('def-mode').value;
+  const severity = document.getElementById('def-severity').value;
+  const disabled = document.getElementById('def-disabled').value.split(',').map(s => s.trim()).filter(Boolean);
+  try {
+    await fetch(BASE + '/api/policy/default', {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ injectionDetection: mode, injectionMinSeverity: severity, injectionDisabledSignatures: disabled }),
+    });
+    showToast('Default policy saved');
+    refreshRules();
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function saveAgent(bid) {
+  const mode = document.getElementById('agent-mode-' + bid).value;
+  const severity = document.getElementById('agent-severity-' + bid).value;
+  const disabled = document.getElementById('agent-disabled-' + bid).value.split(',').map(s => s.trim()).filter(Boolean);
+  const notes = document.getElementById('agent-notes-' + bid).value;
+  const body = { notes };
+  if (mode) body.injectionDetection = mode;
+  if (severity) body.injectionMinSeverity = severity;
+  if (disabled.length) body.injectionDisabledSignatures = disabled;
+  try {
+    await fetch(BASE + '/api/policy/agent/' + bid, {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    showToast('Agent policy saved for ' + bid.slice(0,8));
+    refreshRules();
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function removeAgent(bid) {
+  if (!confirm('Remove custom rules for this agent? It will inherit default policy.')) return;
+  try {
+    await fetch(BASE + '/api/policy/agent/' + bid, {
+      method: 'PUT', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({}),
+    });
+    showToast('Agent override removed');
+    refreshRules();
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function commitPolicy() {
+  const desc = document.getElementById('commit-desc').value || 'Manual commit';
+  try {
+    const r = await fetch(BASE + '/api/policy/commit', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ description: desc }),
+    });
+    const data = await r.json();
+    showToast('Committed as v' + data.version);
+    document.getElementById('commit-desc').value = '';
+    refreshRules();
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function rollbackPolicy(ver) {
+  if (!confirm('Rollback to v' + ver + '? This will restore the policy from that point.')) return;
+  try {
+    const r = await fetch(BASE + '/api/policy/rollback', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ version: ver }),
+    });
+    const data = await r.json();
+    showToast('Rolled back to v' + data.version);
+    refreshRules();
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+// Auto-refresh every 3 seconds (only overview tab)
 refresh();
-setInterval(refresh, 3000);
+setInterval(() => { if (currentTab === 'overview') refresh(); }, 3000);
 
 // SSE for real-time event count badge
 try {
