@@ -570,6 +570,112 @@ function timeAgo(ts) {
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n) + '...' : s; }
 
+const SIG_HELP = {
+  // Instruction Override
+  io_ignore_previous: 'Attempts to make the LLM disregard its system prompt using "ignore previous instructions" or similar phrases.',
+  io_disregard_prompt: 'Direct request to disregard the system prompt or programming.',
+  io_forget_everything: 'Tells the LLM to forget all prior context — a clean-slate override attempt.',
+  io_do_not_follow: 'Explicitly instructs the LLM to stop following its original instructions.',
+  io_new_instructions: 'Injects a "new instructions:" directive to replace the system prompt.',
+  io_override_rules: 'Attempts to override safety rules, restrictions, or guidelines.',
+  io_from_now_on: 'Uses "from now on" to establish new behavioral rules.',
+  io_system_directive: 'Fake [SYSTEM]: tag injected in user input to mimic a system-level instruction.',
+
+  // Role Switch
+  rs_you_are_now: 'Attempts persona hijack — "you are now [malicious role]".',
+  rs_act_as_unrestricted: 'Asks the LLM to act as an unrestricted or uncensored AI.',
+  rs_dan_mode: 'DAN (Do Anything Now) jailbreak — a well-known persona bypass.',
+  rs_developer_mode: 'Claims "developer mode" is enabled to bypass safety.',
+  rs_jailbreak: 'Explicit jailbreak keyword detected.',
+  rs_pretend_unrestricted: 'Asks the LLM to pretend it has no restrictions.',
+  rs_no_restrictions: 'Claims the LLM has no rules, restrictions, or limitations.',
+  rs_enter_mode: 'Attempts to enter a special mode (god, sudo, admin, etc.).',
+
+  // Prompt Extraction
+  pe_repeat_instructions: 'Asks the LLM to repeat, show, or reveal its system prompt.',
+  pe_what_is_prompt: 'Directly asks "what is your system prompt?"',
+  pe_copy_above: 'Asks the LLM to copy or paste everything above the user message.',
+  pe_verbatim: 'Requests verbatim reproduction of the system instructions.',
+  pe_beginning_conversation: 'References the "beginning of the conversation" to extract system context.',
+  pe_between_tags: 'Attempts to extract content between system/instruction tags.',
+
+  // Conversation Mockup
+  cm_role_markers: 'Fake System:/Assistant:/User: role markers injected in user text to confuse message boundaries.',
+  cm_llama_markers: 'Llama-style [INST]/[/INST] markers — attempts to inject a fake instruction block.',
+  cm_chatml_markers: 'ChatML <|system|>/<|im_end|> markers — attempts to inject a fake system message.',
+  cm_llama2_sys: '<<SYS>> markers from Llama 2 format — fake system prompt injection.',
+  cm_xml_system_tags: 'XML tags like </tool_result> or <system_instruction> injected to break message structure.',
+
+  // Encoding Bypass
+  eb_zero_width_chars: 'Invisible zero-width Unicode characters detected — may be hiding injection text.',
+  eb_html_entities_dense: 'Dense HTML entity encoding (&#x69;&#x67;...) — likely obfuscating an injection payload.',
+  eb_hex_sequence: 'Hex-encoded byte sequence (\\\\x49\\\\x67...) — obfuscated injection.',
+  eb_unicode_escape: 'Unicode escape sequences (\\\\u0069\\\\u0067...) — encoded injection text.',
+  eb_invisible_text: 'Invisible text characters (word joiners, soft hyphens) — hidden content.',
+  eb_base64_injection: 'Base64-encoded text decoded and found to contain injection keywords.',
+  eb_token_smuggling: 'Invisible characters stripped between tokens, revealing hidden injection patterns.',
+
+  // Data Exfiltration
+  de_markdown_image: 'Markdown image tag pointing to external URL — potential data exfiltration channel.',
+  de_html_img: 'HTML <img> tag to external URL — can exfiltrate data via URL parameters.',
+  de_script_tag: '<script> tag injection — JavaScript execution attempt.',
+  de_iframe_tag: '<iframe> to external URL — embedded content from attacker-controlled site.',
+  de_fetch_call: 'fetch() call to external URL in generated code — data exfiltration.',
+  de_curl_wget: 'curl/wget to external URL — command-line data exfiltration.',
+  de_redirect: 'JavaScript redirect (window.location) — sends user to attacker site.',
+
+  // Privilege Escalation
+  priv_granted_admin: 'Claims admin/root access has been granted — social engineering the LLM.',
+  priv_new_role: 'Tells the LLM its role/instructions have changed.',
+  priv_safety_disabled: 'Claims safety protocols or filters have been disabled.',
+  priv_training_override: 'Claims access to training mode or data override.',
+  priv_authorized_override: 'Claims to be an authorized admin or developer.',
+
+  // MCP Tool Poisoning
+  mcp_ignore_in_tool: 'Tool description contains "ignore instructions" — poisoned tool metadata.',
+  mcp_read_sensitive: 'Tool targets sensitive files (.ssh, credentials, secrets, private keys).',
+  mcp_execute_command: 'Tool description directs execution of shell commands.',
+  mcp_tool_override: 'Tool metadata override marker detected.',
+
+  // Response side
+  resp_system_prompt_leak: 'LLM response contains "system prompt:" or "system instructions:" header — prompt leaked.',
+  resp_prompt_boundary: 'Response contains "--- BEGIN SYSTEM PROMPT ---" markers — full prompt extraction.',
+
+  // Tool Guard
+  tg_rm_rf: 'Destructive: rm -rf on root, home, or parent directory.',
+  tg_shutdown: 'System shutdown, reboot, or halt command.',
+  tg_format_disk: 'Disk format/wipe command (mkfs, dd, wipefs, shred).',
+  tg_drop_table: 'SQL DROP TABLE/DATABASE — destructive database operation.',
+  tg_truncate_table: 'SQL TRUNCATE TABLE — mass data deletion.',
+  tg_kill_all: 'Kill all processes (kill -9 -1, killall -9).',
+  tg_curl_exfil: 'curl POST/upload to external URL — data exfiltration.',
+  tg_wget_pipe: 'wget piped to shell (bash/sh/python) — remote code execution.',
+  tg_curl_pipe_shell: 'curl piped to shell — downloads and executes remote payload.',
+  tg_scp_external: 'scp to external host — file exfiltration.',
+  tg_netcat_listener: 'Netcat listener or reverse shell setup.',
+  tg_read_shadow: 'Reading /etc/shadow — password hash extraction.',
+  tg_read_ssh_keys: 'Reading SSH keys or GPG data — credential theft.',
+  tg_env_dump: 'Dumping environment variables — may contain API keys and secrets.',
+  tg_reverse_shell_bash: 'Bash reverse shell via /dev/tcp — attacker gains shell access.',
+  tg_reverse_shell_python: 'Python reverse shell via socket — attacker gains shell access.',
+  tg_reverse_shell_nc: 'Netcat reverse shell (nc -e) — attacker gains shell access.',
+  tg_sudo_command: 'sudo command (non-package-manager) — privilege escalation.',
+  tg_chmod_world: 'chmod 777/666 — world-writable permissions (security risk).',
+  tg_chown_root: 'chown to root — ownership escalation.',
+  tg_crypto_miner: 'Crypto mining binary or stratum protocol detected.',
+
+  // Canary
+  canary_marker_exact: 'System prompt canary token found in LLM response (exact match) — proves context was leaked.',
+  canary_marker_near: 'System prompt canary token found with slight mutation — partial leak detected.',
+  canary_behavioural_exact: 'LLM followed a planted false instruction — confirms injection succeeded.',
+};
+
+function sigTooltip(sigId) {
+  const help = SIG_HELP[sigId] || SIG_HELP[sigId.replace(/_exact|_near/, '')] || '';
+  if (!help) return sigId;
+  return '<span class="sig" style="position:relative;cursor:help" title="' + help.replace(/"/g, '&quot;') + '">' + sigId + ' <span style="color:#484f58;font-size:9px">&#9432;</span></span>';
+}
+
 async function refresh() {
   try {
     const [overview, agents, events] = await Promise.all([
@@ -659,7 +765,7 @@ async function refresh() {
     for (const e of (events.events || []).reverse()) {
       html += '<div class="event ' + e.severity + '">';
       html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
-      html += '<span class="sig">' + e.signatureId + '</span> ';
+      html += sigTooltip(e.signatureId) + ' ';
       html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || '', 40) + '</span>';
       html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
       html += '</div>';
@@ -719,7 +825,7 @@ async function showAgent(buildId) {
       for (const e of evts.reverse()) {
         html += '<div class="event ' + e.severity + '">';
         html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
-        html += '<span class="sig">' + e.signatureId + '</span>';
+        html += sigTooltip(e.signatureId);
         html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
         html += '</div>';
       }
