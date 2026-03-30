@@ -836,6 +836,24 @@ async function refresh() {
     }
     html += '</div>';
 
+    // LLM Grading (if enabled)
+    const grading = overview.grading;
+    if (grading) {
+      html += '<div class="card"><h2>LLM Event Grading</h2>';
+      if (grading.graded > 0) {
+        html += '<div class="stat" style="color:#58a6ff">' + grading.graded + '</div>';
+        html += '<div class="stat-label">Events graded</div>';
+        html += '<div class="row"><span class="label">True Positive</span><span class="value" style="color:#f85149">' + grading.truePositive + '</span></div>';
+        html += '<div class="row"><span class="label">False Positive</span><span class="value" style="color:#3fb950">' + grading.falsePositive + '</span></div>';
+        html += '<div class="row"><span class="label">Needs Review</span><span class="value" style="color:#d29922">' + grading.needsReview + '</span></div>';
+        html += '<div class="row"><span class="label">Pending</span><span class="value">' + grading.pending + '</span></div>';
+      } else {
+        html += '<div class="stat" style="color:#484f58">' + grading.pending + '</div>';
+        html += '<div class="stat-label">Events pending grading</div>';
+      }
+      html += '</div>';
+    }
+
     // Threat breakdown
     if (events.stats && Object.keys(events.stats.byThreatClass || {}).length > 0) {
       html += '<div class="card"><h2>Threats by Class</h2>';
