@@ -7,18 +7,23 @@ All notable changes to this project will be documented in this file.
 ### Added — Security Extension: Agent Application-Layer Firewall
 
 **Track 1 — Injection Signature Detection (WAF):**
-- 87 injection signatures across 8 threat classes and 14 languages (Chinese, Spanish, French, German, Japanese, Korean, Russian, Portuguese, Arabic, Hindi, Turkish, Italian, Dutch, Polish)
+- ~115 built-in injection signatures across 8 threat classes and 14 languages
+- ~55 tool call guard patterns (up from 22): reverse shells (8 languages), cloud credential access, SSRF, DNS exfil, LD_PRELOAD, Docker escape, SQL DELETE without WHERE
 - Request-side scanning with configurable block/flag/off action modes
 - Response-side exfiltration pattern detection (9 patterns: img, script, iframe, curl, markdown injection)
 - Token smuggling defence: strips invisible Unicode characters, re-scans cleaned text
 - Base64 decode-and-rescan for encoded injection payloads
 - Context-aware false positive reduction: patterns inside quotes/academic discussion → severity "low"
+- OpenClaw `System: [timestamp]` metadata exempted from `cm_role_markers` (eliminated 99% FP noise)
 - 59 false positive scenarios tested across 7 agent types
+- **Hot-refresh external signature feed**: poll URL or local file on interval, atomic swap, no restart needed. Validation: ext_ prefix required, ReDoS protection, 512KB/500 sig cap
+- Community signature repo: github.com/wkeything/shroud-signatures
 
 **Track 2 — Canary Confirmation:**
 - System prompt marker canaries (planted in system context, detected in response)
 - Behavioural canaries (false instruction tripwires with detectable signature codes)
 - Levenshtein near-match detection (distance ≤ 2) for partial/paraphrased leaks
+- Environment variable activation: `SHROUD_CANARY_ENABLED`, `SHROUD_CANARY_SYSTEM`, `SHROUD_CANARY_BEHAVIOURAL`
 
 **Track 3 — Behavioural Profiling (IDS):**
 - Per-turn feature extraction: 14 features including entity density, tool patterns, lexical delta, script/language detection, image payload tracking
@@ -26,22 +31,32 @@ All notable changes to this project will be documented in this file.
 - Z-score anomaly detection with 7 named types: entity category shift, density spike, tool outside profile, topic discontinuity, credential emergence, exfiltration pattern
 - Baseline maturity phases: learning (0-4 sessions) → reliable (5-49) → mature (50+)
 - File-based persistence at ~/.shroud/profiles/
+- Incremental baseline flush every 5 turns (no session-end needed)
+- **Per-agent LLM cache anomaly detection**: tracks cache hit ratio per agent, alerts on ratio drop (prompt injection), zero hits (prompt replaced), write spikes (prompt stuffing)
 
 **Tool Call Guard:**
-- 22 patterns blocking dangerous commands before execution: rm -rf, shutdown, DROP TABLE, reverse shells, curl exfiltration, credential access, crypto mining
+- ~55 patterns blocking dangerous commands before execution: rm -rf, shutdown, DROP TABLE, reverse shells (bash/python/nc/perl/ruby/php/node/powershell/socat/openssl/telnet), curl exfiltration, credential access, crypto mining, cloud metadata SSRF, Docker escape, LD_PRELOAD, SUID bit, crontab -r, iptables -F, DNS exfil, rsync/git exfil
 - Wired into before_tool_call hook — blocks before the command reaches the shell
 
 **Agent Identity:**
-- Automatic agent recognition from system prompt content (fuzzy prompt skeleton)
-- Resilient to dynamic content (timestamps, emails, IPs, UUIDs normalized)
-- Model ID detection from API request body
+- Channel-label extraction from OpenClaw session metadata (`conversation_label`, Slack channel, WhatsApp, TUI)
+- Label-based session keying — same agent name = same session across prompt variations
+- Tool inventory extraction from `body.tools` (instant profiling without baseline)
+- SOUL.md extraction from message content (scans 20 messages + system blocks)
+- 14-role classification taxonomy with confidence scoring (label → SOUL → tools → prompt)
+- Health/compliance indicators: event rate, role-based tool expectations, severity thresholds
+- **Persistence across gateway restarts**: sessions, classifications, tools, SOUL saved to disk
 - All security events enriched with agentBuildId, agentLabel, agentSessionId
 
-**Dashboard API:**
-- Real-time HTTP dashboard on localhost:9380 (configurable)
+**Dashboard:**
+- Real-time HTTP dashboard on localhost:9380 (configurable, Tailscale accessible)
 - 15 endpoints: overview, agents, events (searchable), profiling, stats, policy management
 - SSE real-time event stream at /api/events/stream
 - Event search: filter by agent, threat class, severity, keyword, time range
+- Clickable expandable events with full detail (signature, match position, description)
+- Collapsible signature catalog with summary bar
+- Per-agent: health dot, compliance badge, classification with confidence %, cache stats
+- LLM Cache card: global hit ratio with colour coding, external signature feed status
 
 **Policy Engine:**
 - Per-agent firewall rules (buildId → config overrides)
@@ -64,12 +79,20 @@ All notable changes to this project will be documented in this file.
 
 **Configuration (all via environment variables):**
 - `SHROUD_INJECTION_DETECTION`: flag | block | off
-- `SHROUD_PROFILING_ENABLED`: true | false
-- `SHROUD_DASHBOARD`: true | false
+- `SHROUD_PROFILING_ENABLED`, `SHROUD_PROFILING_MODE`: learning | active | strict
+- `SHROUD_DASHBOARD`, `SHROUD_DASHBOARD_PORT`, `SHROUD_DASHBOARD_BIND`
+- `SHROUD_CANARY_ENABLED`, `SHROUD_CANARY_SYSTEM`, `SHROUD_CANARY_BEHAVIOURAL`
+- `SHROUD_SIGNATURES_URL`, `SHROUD_SIGNATURES_REFRESH`
 - `SHROUD_SIEM_WEBHOOK_URL`, `SHROUD_SIEM_JSONL_PATH`
 - Full documentation: docs/SECURITY.md
 
-**Zero regressions.** Obfuscation pipeline completely untouched. All existing 870 unit + 359 harness tests pass unchanged.
+**Testing:**
+- 1,285 unit tests (30 files) + 359 harness = 1,644 total
+- Agent identity live tests (16 scenarios: channel labels, SOUL.md, classification)
+- Tool guard: 55 patterns across 8 categories
+- Memory leak and load tests (bounded growth, <5ms per 1KB payload)
+
+**Zero regressions.** Obfuscation pipeline completely untouched. All existing tests pass unchanged.
 
 ## [2.2.9] - 2026-03-28
 

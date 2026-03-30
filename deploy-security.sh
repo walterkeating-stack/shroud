@@ -66,6 +66,15 @@ export SHROUD_SIEM_JSONL_PATH="/tmp/shroud-security-events.jsonl"
 # Optional: Tailscale accessible
 export SHROUD_DASHBOARD_BIND="0.0.0.0"
 
+# Canary tokens
+export SHROUD_CANARY_ENABLED="true"
+export SHROUD_CANARY_SYSTEM="true"
+export SHROUD_CANARY_BEHAVIOURAL="true"
+
+# Hot-refresh external signatures
+export SHROUD_SIGNATURES_URL="https://raw.githubusercontent.com/wkeything/shroud-signatures/main/signatures.json"
+export SHROUD_SIGNATURES_REFRESH="3600"
+
 echo "  SHROUD_INJECTION_DETECTION=${MODE}"
 echo "  SHROUD_PROFILING_ENABLED=true"
 echo "  SHROUD_DASHBOARD=true (port ${DASHBOARD_PORT})"
@@ -86,16 +95,19 @@ echo "  Mode:      ${MODE}"
 echo "============================================="
 echo ""
 echo "  Security features active:"
-echo "    ✓ 109 injection signatures (14 languages)"
-echo "    ✓ 22 tool call guard patterns"
+echo "    ✓ ~115 injection signatures (14 languages)"
+echo "    ✓ ~55 tool call guard patterns"
 echo "    ✓ Token smuggling detection"
-echo "    ✓ Canary leak monitoring"
+echo "    ✓ Canary leak monitoring (marker + behavioural)"
 echo "    ✓ Behavioural profiling (learning mode)"
 echo "    ✓ Per-agent WAF rules"
-echo "    ✓ Real-time dashboard"
+echo "    ✓ Per-agent LLM cache anomaly detection"
+echo "    ✓ Hot-refresh external signature feed"
+echo "    ✓ Agent classification (14 roles)"
+echo "    ✓ Real-time dashboard with health/compliance"
 echo ""
 echo "  Press Ctrl+C to stop."
 echo ""
 
-# Start OpenClaw — it will load Shroud with the security env vars
-exec openclaw start
+# Start OpenClaw gateway with Shroud security extension
+exec openclaw gateway
