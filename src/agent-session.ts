@@ -680,24 +680,25 @@ function _extractLabelFromText(text: string): string | null {
   }
 
   // 6. Fallback — only accept short, name-like strings (not instructions)
-  //    Reject lines that look like instructions, sentences, or descriptions.
-  //    A valid name is typically 1-4 words, no verbs, no punctuation mid-line.
+  //    A valid name is 1-3 words, no trailing punctuation, no metadata patterns.
   const firstLine = text
     .split("\n")
     .map((l) => l.trim())
     .find((l) =>
       l.length > 2 &&
-      l.length < 40 &&
+      l.length < 30 &&
       !l.startsWith("#") &&
       !l.startsWith("<!--") &&
       !l.startsWith("System:") &&
       !l.startsWith("- ") &&
+      !l.endsWith(":") &&           // reject "Rules:", "Conversation info:"
+      !l.endsWith(")") &&           // reject "(untrusted metadata)"
+      !l.includes("(") &&           // reject parenthetical context
+      !l.includes("{") &&           // reject JSON
       !/^\d{4}-\d{2}-\d{2}/.test(l) &&
       !/^\[.*\]$/.test(l) &&
-      // Reject instruction-like text: starts with verb, contains commas, "you", "when", etc.
-      !/^(when|if|do|don't|always|never|you |respond|make|use|keep|try|be |note|remember|ensure|for |the |this |please)/i.test(l) &&
-      // Reject sentences (more than 5 words)
-      l.split(/\s+/).length <= 5,
+      !/^(when|if|do|don't|always|never|you |respond|make|use|keep|try|be |note|remember|ensure|for |the |this |please|conversation|session|sender|channel|message)/i.test(l) &&
+      l.split(/\s+/).length <= 4,
     );
   if (!firstLine) return null;
   return firstLine;

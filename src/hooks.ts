@@ -431,9 +431,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       // and no PII-like content (IPs, emails, phone numbers)
       const sessions = agentTracker.getAllSessions().filter(
         s => s.llmCallCount > 0 && s.agentLabel !== "Unknown Agent" &&
-             s.agentLabel.length < 35 && s.agentLabel.split(/\s+/).length <= 4 &&
+             s.agentLabel.length < 30 && s.agentLabel.split(/\s+/).length <= 4 &&
              !/@/.test(s.agentLabel) && !/\d{1,3}\.\d{1,3}\.\d{1,3}/.test(s.agentLabel) &&
-             !/\+\d{5,}/.test(s.agentLabel)
+             !/\+\d{5,}/.test(s.agentLabel) &&
+             !s.agentLabel.endsWith(":") && !s.agentLabel.includes("(") &&
+             !/^(conversation|session|sender|channel|message|rules|metadata)/i.test(s.agentLabel)
       );
       if (sessions.length > 0) {
         mkdirSync(_persistDir, { recursive: true });
