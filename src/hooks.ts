@@ -324,7 +324,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
     // --- LLM Event Grading ---
-    if (config.llmGradingEnabled && !(globalThis as any).__shroudEventGrader) {
+    // Always recreate — env vars (OPENCLAW_BIN) may change between restarts
+    if (config.llmGradingEnabled) {
+      if ((globalThis as any).__shroudEventGrader) {
+        (globalThis as any).__shroudEventGrader.stop();
+      }
       const grader = new EventGrader({
         threshold: config.llmGradingThreshold,
         intervalSec: config.llmGradingIntervalSec,
