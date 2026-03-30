@@ -1850,11 +1850,17 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               // Extract LLM cache usage from message_start (Anthropic) or stream events (OpenAI)
               const usage = json.message?.usage || json.usage;
               if (usage) {
+                const cacheRead = usage.cache_read_input_tokens || usage.prompt_tokens_details?.cached_tokens || 0;
+                const cacheWrite = usage.cache_creation_input_tokens || 0;
+                // Anthropic: input_tokens is the non-cached portion.
+                // Total input = input_tokens + cache_read + cache_write
+                const rawInput = usage.input_tokens || usage.prompt_tokens || 0;
+                const totalInput = rawInput + cacheRead + cacheWrite;
                 responseCacheUsage = {
-                  inputTokens: usage.input_tokens || usage.prompt_tokens || 0,
+                  inputTokens: totalInput,
                   outputTokens: usage.output_tokens || usage.completion_tokens || 0,
-                  cacheReadTokens: usage.cache_read_input_tokens || usage.prompt_tokens_details?.cached_tokens || 0,
-                  cacheWriteTokens: usage.cache_creation_input_tokens || 0,
+                  cacheReadTokens: cacheRead,
+                  cacheWriteTokens: cacheWrite,
                 };
               }
 
@@ -1952,11 +1958,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           // Extract cache usage from JSON response
           const jsonUsage = json.usage;
           if (jsonUsage) {
+            const jCacheRead = jsonUsage.cache_read_input_tokens || jsonUsage.prompt_tokens_details?.cached_tokens || 0;
+            const jCacheWrite = jsonUsage.cache_creation_input_tokens || 0;
+            const jRawInput = jsonUsage.input_tokens || jsonUsage.prompt_tokens || 0;
             responseCacheUsage = {
-              inputTokens: jsonUsage.input_tokens || jsonUsage.prompt_tokens || 0,
+              inputTokens: jRawInput + jCacheRead + jCacheWrite,
               outputTokens: jsonUsage.output_tokens || jsonUsage.completion_tokens || 0,
-              cacheReadTokens: jsonUsage.cache_read_input_tokens || jsonUsage.prompt_tokens_details?.cached_tokens || 0,
-              cacheWriteTokens: jsonUsage.cache_creation_input_tokens || 0,
+              cacheReadTokens: jCacheRead,
+              cacheWriteTokens: jCacheWrite,
             };
           }
           if (Array.isArray(json.content)) {
