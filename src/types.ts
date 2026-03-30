@@ -139,6 +139,14 @@ export interface ShroudConfig {
   /** Max Levenshtein distance for near-match scanning. */
   canaryNearMatchDistance: number;
 
+  // --- Hot-refresh signatures ---
+  /** URL to fetch external signature JSON. Polled on interval. */
+  signaturesUrl: string | null;
+  /** Local file path for external signatures (fallback if URL unavailable). */
+  signaturesFile: string | null;
+  /** Refresh interval in seconds for polling signature URL (default: 3600). */
+  signaturesRefreshSec: number;
+
   // --- Dashboard ---
 
   // --- SIEM ---

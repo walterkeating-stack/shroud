@@ -1,0 +1,111 @@
+{
+  "version": "0.1.0",
+  "updated": "2026-03-30T12:00:00Z",
+  "description": "Shroud external signature feed. Place at a URL or local path. Polled by SHROUD_SIGNATURES_URL or SHROUD_SIGNATURES_FILE.",
+  "schema": "https://github.com/wkeything/shroud/blob/main/docs/signatures-schema.md",
+
+  "injectionSignatures": [
+    {
+      "id": "ext_llm_token_llama3",
+      "threatClass": "conversation_mockup",
+      "pattern": "<\\|begin_of_text\\|>|<\\|end_of_text\\|>|<\\|eot_id\\|>",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Llama 3 special tokens injected in user input",
+      "direction": "request"
+    },
+    {
+      "id": "ext_llm_token_gemma",
+      "threatClass": "conversation_mockup",
+      "pattern": "<start_of_turn>|<end_of_turn>",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Gemma turn markers injected in user input",
+      "direction": "request"
+    },
+    {
+      "id": "ext_llm_token_mistral",
+      "threatClass": "conversation_mockup",
+      "pattern": "\\[AVAILABLE_TOOLS\\]|\\[TOOL_CALLS\\]|\\[TOOL_RESULTS\\]",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Mistral tool markers injected in user input",
+      "direction": "request"
+    },
+    {
+      "id": "ext_llm_token_phi",
+      "threatClass": "conversation_mockup",
+      "pattern": "<\\|endoftext\\|>|<\\|assistant\\|>|<\\|user\\|>",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Phi format tokens injected in user input",
+      "direction": "request"
+    },
+    {
+      "id": "ext_hidden_html_injection",
+      "threatClass": "instruction_override",
+      "pattern": "<div[^>]*style=[^>]*display\\s*:\\s*none[^>]*>",
+      "flags": "gi",
+      "severity": "medium",
+      "description": "Hidden HTML div — may contain invisible injection text in fetched content",
+      "direction": "request"
+    },
+    {
+      "id": "ext_ssrf_cloud_metadata",
+      "threatClass": "data_exfiltration",
+      "pattern": "(?:169\\.254\\.169\\.254|metadata\\.google\\.internal|100\\.100\\.100\\.200|fd00:ec2::254)",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Cloud metadata SSRF — AWS/GCP/Alibaba instance metadata access",
+      "direction": "both"
+    },
+    {
+      "id": "ext_ssi_injection",
+      "threatClass": "data_exfiltration",
+      "pattern": "<!--#\\s*(?:exec|include|echo|config)\\s",
+      "flags": "gi",
+      "severity": "high",
+      "description": "SSI (Server-Side Include) injection in response",
+      "direction": "response"
+    },
+    {
+      "id": "ext_ssti_injection",
+      "threatClass": "data_exfiltration",
+      "pattern": "\\{\\{.*(?:config|self|request|lipsum|cycler).*\\}\\}|\\$\\{.*Runtime.*\\}|<%=.*exec.*%>",
+      "flags": "gi",
+      "severity": "high",
+      "description": "SSTI (Server-Side Template Injection) pattern in response",
+      "direction": "response"
+    }
+  ],
+
+  "toolGuardPatterns": [
+    {
+      "id": "ext_kubectl_delete_ns",
+      "toolName": null,
+      "paramPattern": "\\bkubectl\\s+delete\\s+(?:ns|namespace|deploy|pod)\\b",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Kubernetes: destructive kubectl delete command",
+      "block": true
+    },
+    {
+      "id": "ext_terraform_destroy",
+      "toolName": null,
+      "paramPattern": "\\bterraform\\s+destroy\\b",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Terraform: infrastructure destruction",
+      "block": true
+    },
+    {
+      "id": "ext_git_force_push",
+      "toolName": null,
+      "paramPattern": "\\bgit\\s+push\\s+.*(?:--force|-f)\\s",
+      "flags": "gi",
+      "severity": "medium",
+      "description": "Git: force push (can destroy remote history)",
+      "block": false
+    }
+  ]
+}

@@ -36,6 +36,7 @@ import { BehaviouralProfiler } from "./profiler.js";
 import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
 import { PolicyEngine } from "./policy.js";
+import * as sigLoaderMod from "./signature-loader.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -300,6 +301,26 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     });
     // Share via globalThis for shroud_security tool access
     (globalThis as any).__shroudSecurityBus = securityBus;
+
+    // --- Hot-refresh external signatures ---
+    if ((config.signaturesUrl || config.signaturesFile) && !(globalThis as any).__shroudSigLoader) {
+      const loader = new sigLoaderMod.SignatureLoader({
+        url: config.signaturesUrl,
+        filePath: config.signaturesFile,
+        refreshSec: config.signaturesRefreshSec,
+        cacheDir: (config.profilingProfileDir || "~/.shroud/profiles").replace("~", process.env.HOME || "/root"),
+      });
+      loader.onUpdate((compiled) => {
+        // Merge external signatures into ALL detectors (base + per-agent cached)
+        if (injectionDetector) {
+          injectionDetector.loadExternalSignatures(compiled.injection);
+        }
+        _agentDetectorCache.clear(); // Force per-agent detectors to reload
+        (globalThis as any).__shroudExternalSigs = compiled;
+      });
+      loader.start().catch(() => {}); // fire-and-forget, non-fatal
+      (globalThis as any).__shroudSigLoader = loader;
+    }
   }
 
   // Per-agent detector cache — avoids recreating for the same agent

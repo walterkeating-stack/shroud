@@ -118,6 +118,8 @@ export class InjectionDetector {
   private _config: InjectionDetectorConfig;
   private _requestSigs: SignatureDef[];
   private _responseSigs: SignatureDef[];
+  private _externalRequestSigs: SignatureDef[] = [];
+  private _externalResponseSigs: SignatureDef[] = [];
 
   constructor(config: InjectionDetectorConfig) {
     this._config = config;
@@ -137,6 +139,38 @@ export class InjectionDetector {
     );
   }
 
+  /** Hot-load external signatures. Atomic swap — takes effect on next scan. */
+  loadExternalSignatures(sigs: Array<{
+    id: string; threatClass: string; pattern: RegExp;
+    severity: "low" | "medium" | "high"; description: string;
+    direction: "request" | "response" | "both";
+  }>): void {
+    const minRank = SEVERITY_RANK[this._config.minSeverity];
+    const asSigDef = sigs.map(s => ({
+      id: s.id,
+      threatClass: s.threatClass as ThreatClass,
+      pattern: s.pattern,
+      severity: s.severity,
+      description: s.description,
+      direction: s.direction,
+    })).filter(s =>
+      !this._config.disabledSignatures.has(s.id) &&
+      SEVERITY_RANK[s.severity] >= minRank,
+    );
+
+    this._externalRequestSigs = asSigDef.filter(
+      s => s.direction === "request" || s.direction === "both",
+    );
+    this._externalResponseSigs = asSigDef.filter(
+      s => s.direction === "response" || s.direction === "both",
+    );
+  }
+
+  /** Get count of loaded external signatures. */
+  getExternalSignatureCount(): number {
+    return this._externalRequestSigs.length + this._externalResponseSigs.length;
+  }
+
   /** Scan request/outbound text for injection patterns. */
   scanRequest(text: string): SecurityEvent[] {
     if (this._config.action === "off") return [];
@@ -147,7 +181,10 @@ export class InjectionDetector {
     const cleaned = stripTokenSmuggling(text);
     const smuggled = cleaned !== text;
 
-    const events = this._scanPatterns(text, this._requestSigs, "request");
+    const allRequestSigs = this._externalRequestSigs.length > 0
+      ? [...this._requestSigs, ...this._externalRequestSigs]
+      : this._requestSigs;
+    const events = this._scanPatterns(text, allRequestSigs, "request");
 
     // If smuggling chars were present, also scan the cleaned version
     // to catch patterns that were broken by invisible chars
@@ -189,7 +226,10 @@ export class InjectionDetector {
   /** Scan response/inbound text for exfiltration patterns. */
   scanResponse(text: string): SecurityEvent[] {
     if (this._config.action === "off" || !this._config.scanResponses) return [];
-    return this._scanPatterns(text, this._responseSigs, "response");
+    const allResponseSigs = this._externalResponseSigs.length > 0
+      ? [...this._responseSigs, ...this._externalResponseSigs]
+      : this._responseSigs;
+    return this._scanPatterns(text, allResponseSigs, "response");
   }
 
   private _scanPatterns(

@@ -189,6 +189,17 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     canaryNearMatchDistance:
       typeof raw.canaryNearMatchDistance === "number" ? raw.canaryNearMatchDistance : 2,
 
+    // --- Hot-refresh signatures ---
+    signaturesUrl: process.env.SHROUD_SIGNATURES_URL
+      || (typeof raw.signaturesUrl === "string" ? raw.signaturesUrl : null),
+    signaturesFile: process.env.SHROUD_SIGNATURES_FILE
+      || (typeof raw.signaturesFile === "string" ? raw.signaturesFile : null),
+    signaturesRefreshSec: (() => {
+      const env = process.env.SHROUD_SIGNATURES_REFRESH;
+      if (env) return parseInt(env, 10) || 3600;
+      return typeof raw.signaturesRefreshSec === "number" ? raw.signaturesRefreshSec : 3600;
+    })(),
+
     // --- SIEM ---
     siemWebhookUrl: (() => {
       const env = process.env.SHROUD_SIEM_WEBHOOK_URL;
