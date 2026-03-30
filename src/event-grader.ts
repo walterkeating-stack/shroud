@@ -30,8 +30,11 @@ export interface GradedEvent {
   gradedAt: number;
 }
 
-/** Marker prefix for grading session keys — used to self-whitelist. */
+/** Marker prefix for grading session keys. */
 export const GRADING_SESSION_PREFIX = "shroud-grading-";
+
+/** The agent label that grading sessions will produce via extractLabel. */
+export const GRADING_AGENT_LABEL = "Security Event Grader";
 
 /** The grading system prompt. */
 const GRADING_PROMPT = `You are a security event grader for an AI agent firewall (Shroud).
@@ -171,17 +174,6 @@ export class EventGrader {
     const message = `Grade these ${batch.length} security events:\n\n${eventsText}`;
     const sessionKey = `${GRADING_SESSION_PREFIX}${Date.now()}`;
 
-    // Register session key for self-whitelist (server-side, not content-based)
-    if (!(globalThis as any).__shroudGradingSessionKeys) {
-      (globalThis as any).__shroudGradingSessionKeys = new Set<string>();
-    }
-    (globalThis as any).__shroudGradingSessionKeys.add(sessionKey);
-    // Clean up old keys (keep last 10)
-    const keys = (globalThis as any).__shroudGradingSessionKeys as Set<string>;
-    if (keys.size > 10) {
-      const oldest = keys.values().next().value as string | undefined;
-      if (oldest) keys.delete(oldest);
-    }
 
     try {
       const result = execFileSync(this._openclawBin, [

@@ -37,7 +37,7 @@ import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
 import { PolicyEngine } from "./policy.js";
 import * as sigLoaderMod from "./signature-loader.js";
-import { EventGrader, GRADING_SESSION_PREFIX } from "./event-grader.js";
+import { EventGrader, GRADING_SESSION_PREFIX, GRADING_AGENT_LABEL } from "./event-grader.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -1381,11 +1381,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
             // Self-whitelist: skip scanning for grading sessions (they contain
             // real injection examples by definition).
-            // SECURITY: whitelist by registered session key only, NOT by text content.
-            // The grader registers its session key on the tracker before calling the gateway.
-            const isGradingSession = (globalThis as any).__shroudGradingSessionKeys?.has(
-              agentTracker.getCurrentSession()?.sessionId,
-            );
+            // SECURITY: whitelist by agent LABEL match — the grading session's
+            // system prompt produces a known label via extractLabel().
+            // Not content-based — attacker can't inject the label into their text.
+            const isGradingSession = agentTracker.getCurrentSession()?.agentLabel === GRADING_AGENT_LABEL;
             const events = isGradingSession ? [] : activeDetector.scanRequest(allText);
 
             // Enrich events with agent identity
