@@ -765,87 +765,157 @@ async function refreshRules() {
       fetchJson('/api/agents'),
     ]);
 
+    const defPolicy = policy.policy?.default || {};
+    const agentPolicies = policy.policy?.agents || {};
+    const agentList = agents.agents || [];
+
     let html = '<div class="policy-section">';
 
-    // Default policy
-    html += '<div class="rule-card"><h3>Default Policy (applies to all agents)</h3>';
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
-    html += '<div class="input-group"><label>Detection Mode</label><select id="def-mode">';
-    ['flag','block','off'].forEach(m => {
-      html += '<option value="' + m + '"' + (policy.policy?.default?.injectionDetection === m ? ' selected' : '') + '>' + m + '</option>';
-    });
-    html += '</select></div>';
-    html += '<div class="input-group"><label>Min Severity</label><select id="def-severity">';
-    ['low','medium','high'].forEach(s => {
-      html += '<option value="' + s + '"' + (policy.policy?.default?.injectionMinSeverity === s ? ' selected' : '') + '>' + s + '</option>';
-    });
-    html += '</select></div>';
-    html += '<div class="input-group"><label>Disabled Signatures</label><input id="def-disabled" value="' + ((policy.policy?.default?.injectionDisabledSignatures || []).join(', ')) + '" placeholder="e.g. rs_jailbreak, io_ignore_previous"></div>';
-    html += '</div>';
-    html += '<div class="btn-group"><button class="btn btn-primary" onclick="saveDefault()">Save Default</button></div>';
-    html += '</div>';
+    // Rulebase header bar (Palo Alto style)
+    html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">';
+    html += '<div><h2 style="color:#c9d1d9;font-size:16px;margin:0">Security Policy Rulebase</h2>';
+    html += '<span style="color:#484f58;font-size:11px">' + (agentList.length + 1) + ' rules | Version ' + (history.current || 0) + '</span></div>';
+    html += '<div class="btn-group">';
+    html += '<input id="commit-desc" placeholder="Change description..." style="width:250px;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 10px;border-radius:4px;font-size:12px">';
+    html += '<button class="btn btn-primary" onclick="commitPolicy()">Commit</button>';
+    html += '</div></div>';
 
-    // Per-agent policies
-    html += '<h2 style="color:#c9d1d9;margin:24px 0 12px;font-size:16px">Per-Agent Rules</h2>';
+    // Rulebase table
+    html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+    html += '<thead><tr style="background:#161b22;border-bottom:2px solid #30363d">';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e;width:35px">#</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e">Name</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e;width:70px">Scope</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e;width:90px">Action</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e;width:90px">Severity</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e;width:90px">Profiling</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e">Exceptions</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e;width:50px">Hits</th>';
+    html += '<th style="padding:8px 12px;text-align:left;color:#8b949e;width:80px"></th>';
+    html += '</tr></thead><tbody>';
 
-    const agentList = agents.agents || [];
-    const agentPolicies = policy.policy?.agents || {};
+    // Rule 1: Default
+    const defAction = defPolicy.injectionDetection || 'flag';
+    const defSev = defPolicy.injectionMinSeverity || 'low';
+    const defDisabled = (defPolicy.injectionDisabledSignatures || []).join(', ');
+    const actionColors = { block: '#f85149', flag: '#d29922', off: '#484f58' };
+    const actionIcons = { block: '&#x1f6d1;', flag: '&#x26a0;', off: '&#x23f8;' };
 
+    html += '<tr id="rule-default" style="border-bottom:1px solid #21262d;background:#0d1117">';
+    html += '<td style="padding:10px 12px;color:#484f58">1</td>';
+    html += '<td style="padding:10px 12px"><span style="color:#3fb950;font-weight:600">Default Policy</span><br><span style="color:#484f58">All agents without custom rules</span></td>';
+    html += '<td style="padding:10px 12px"><span style="background:#238636;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">GLOBAL</span></td>';
+    html += '<td style="padding:10px 12px"><select id="def-mode" style="background:#161b22;border:1px solid #30363d;color:' + actionColors[defAction] + ';padding:4px;border-radius:3px;font-size:11px;font-weight:600;width:75px">';
+    ['flag','block','off'].forEach(m => { html += '<option value="' + m + '"' + (defAction===m?' selected':'') + ' style="color:' + actionColors[m] + '">' + m.toUpperCase() + '</option>'; });
+    html += '</select></td>';
+    html += '<td style="padding:10px 12px"><select id="def-severity" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:4px;border-radius:3px;font-size:11px;width:75px">';
+    ['low','medium','high'].forEach(s => { html += '<option value="' + s + '"' + (defSev===s?' selected':'') + '>' + s + '</option>'; });
+    html += '</select></td>';
+    html += '<td style="padding:10px 12px;color:#8b949e">—</td>';
+    html += '<td style="padding:10px 12px"><input id="def-disabled" value="' + defDisabled + '" placeholder="none" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:3px;font-size:11px;width:100%"></td>';
+    html += '<td style="padding:10px 12px;color:#8b949e">—</td>';
+    html += '<td style="padding:10px 12px"><button class="btn btn-primary" style="padding:3px 10px;font-size:11px" onclick="saveDefault()">Save</button></td>';
+    html += '</tr>';
+
+    // Per-agent rules
+    let ruleNum = 2;
     for (const a of agentList) {
       const ap = agentPolicies[a.agentBuildId] || {};
       const bid = a.agentBuildId;
-      const hasOverride = Object.keys(ap).length > 0;
+      const hasOverride = Object.keys(ap).filter(k => k !== 'label' && k !== 'notes').length > 0;
+      const agentAction = ap.injectionDetection || '';
+      const agentSev = ap.injectionMinSeverity || '';
+      const agentDisabled = (ap.injectionDisabledSignatures || []).join(', ');
+      const agentProfile = ap.profilingMode || '';
+      const effectiveAction = agentAction || defAction;
 
-      html += '<div class="rule-card" style="border-left:3px solid ' + (hasOverride ? '#58a6ff' : '#30363d') + '">';
-      html += '<h3>' + (a.agentLabel || bid) + (hasOverride ? ' <span style="color:#58a6ff;font-size:11px">(custom rules)</span>' : '') + '</h3>';
-      html += '<div style="font-size:11px;color:#484f58;margin-bottom:8px">Build: ' + bid + ' | ' + a.llmCallCount + ' calls | ' + a.securityEventCount + ' events</div>';
-      html += '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">';
-      html += '<div class="input-group"><label>Detection Mode</label><select id="agent-mode-' + bid + '">';
-      html += '<option value="">inherit default</option>';
-      ['flag','block','off'].forEach(m => {
-        html += '<option value="' + m + '"' + (ap.injectionDetection === m ? ' selected' : '') + '>' + m + '</option>';
-      });
-      html += '</select></div>';
-      html += '<div class="input-group"><label>Min Severity</label><select id="agent-severity-' + bid + '">';
-      html += '<option value="">inherit default</option>';
-      ['low','medium','high'].forEach(s => {
-        html += '<option value="' + s + '"' + (ap.injectionMinSeverity === s ? ' selected' : '') + '>' + s + '</option>';
-      });
-      html += '</select></div>';
-      html += '<div class="input-group"><label>Disabled Signatures</label><input id="agent-disabled-' + bid + '" value="' + ((ap.injectionDisabledSignatures || []).join(', ')) + '" placeholder="inherit default"></div>';
-      html += '</div>';
-      html += '<div class="input-group"><label>Notes</label><input id="agent-notes-' + bid + '" value="' + (ap.notes || '') + '" placeholder="Why this agent has custom rules"></div>';
-      html += '<div class="btn-group">';
-      html += '<button class="btn btn-primary" onclick="saveAgent(\\'' + bid + '\\')">Save</button>';
-      if (hasOverride) html += '<button class="btn btn-danger" onclick="removeAgent(\\'' + bid + '\\')">Remove Override</button>';
-      html += '</div></div>';
+      html += '<tr style="border-bottom:1px solid #21262d;' + (hasOverride ? 'background:#0d1117' : '') + '">';
+      html += '<td style="padding:10px 12px;color:#484f58">' + ruleNum + '</td>';
+      html += '<td style="padding:10px 12px">';
+      html += '<span style="color:#58a6ff;font-weight:600;cursor:pointer" onclick="showAgent(\\'' + bid + '\\')">' + (a.agentLabel || bid.slice(0,12)) + '</span>';
+      html += '<br><span style="color:#484f58;font-size:10px">' + bid.slice(0,12) + ' | ' + (a.profiling?.maturity || 'none') + ' | ' + (a.profiling?.knownCategories || []).join(', ') + '</span>';
+      html += '</td>';
+      html += '<td style="padding:10px 12px"><span style="background:#1f6feb;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">AGENT</span></td>';
+
+      // Action select
+      html += '<td style="padding:10px 12px"><select id="agent-mode-' + bid + '" style="background:#161b22;border:1px solid #30363d;color:' + (agentAction ? actionColors[agentAction] : '#484f58') + ';padding:4px;border-radius:3px;font-size:11px;font-weight:600;width:75px">';
+      html += '<option value=""' + (!agentAction?' selected':'') + ' style="color:#484f58">inherit</option>';
+      ['flag','block','off'].forEach(m => { html += '<option value="' + m + '"' + (agentAction===m?' selected':'') + ' style="color:' + actionColors[m] + '">' + m.toUpperCase() + '</option>'; });
+      html += '</select></td>';
+
+      // Severity select
+      html += '<td style="padding:10px 12px"><select id="agent-severity-' + bid + '" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:4px;border-radius:3px;font-size:11px;width:75px">';
+      html += '<option value=""' + (!agentSev?' selected':'') + '>inherit</option>';
+      ['low','medium','high'].forEach(s => { html += '<option value="' + s + '"' + (agentSev===s?' selected':'') + '>' + s + '</option>'; });
+      html += '</select></td>';
+
+      // Profiling mode
+      html += '<td style="padding:10px 12px"><select id="agent-profile-' + bid + '" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:4px;border-radius:3px;font-size:11px;width:75px">';
+      html += '<option value=""' + (!agentProfile?' selected':'') + '>inherit</option>';
+      ['learning','active','strict'].forEach(m => { html += '<option value="' + m + '"' + (agentProfile===m?' selected':'') + '>' + m + '</option>'; });
+      html += '</select></td>';
+
+      // Exceptions
+      html += '<td style="padding:10px 12px"><input id="agent-disabled-' + bid + '" value="' + agentDisabled + '" placeholder="none" style="background:#161b22;border:1px solid #30363d;color:#c9d1d9;padding:3px 6px;border-radius:3px;font-size:11px;width:100%"></td>';
+
+      // Hits
+      html += '<td style="padding:10px 12px;color:' + (a.securityEventCount > 0 ? '#f85149' : '#3fb950') + ';font-weight:600">' + a.securityEventCount + '</td>';
+
+      // Save
+      html += '<td style="padding:10px 12px"><button class="btn btn-primary" style="padding:3px 10px;font-size:11px" onclick="saveAgent(\\'' + bid + '\\')">Save</button></td>';
+      html += '</tr>';
+      ruleNum++;
     }
 
-    // Commit / History
-    html += '<h2 style="color:#c9d1d9;margin:24px 0 12px;font-size:16px">Version History</h2>';
-    html += '<div class="rule-card">';
-    html += '<div style="display:flex;gap:8px;margin-bottom:16px">';
-    html += '<input id="commit-desc" placeholder="Describe this change..." style="flex:1;background:#0d1117;border:1px solid #30363d;color:#c9d1d9;padding:6px 10px;border-radius:4px;font-size:13px">';
-    html += '<button class="btn btn-primary" onclick="commitPolicy()">Commit</button>';
-    html += '</div>';
+    html += '</tbody></table>';
 
+    // Version history (compact)
+    html += '<div style="margin-top:24px;display:flex;gap:24px">';
+
+    // Left: history
+    html += '<div style="flex:1"><h2 style="color:#8b949e;font-size:13px;margin-bottom:8px">COMMIT HISTORY</h2>';
     if (history.commits && history.commits.length > 0) {
-      html += '<div style="font-size:12px;color:#8b949e;margin-bottom:8px">Current version: ' + history.current + '</div>';
-      for (const c of [...history.commits].reverse()) {
+      for (const c of [...history.commits].reverse().slice(0, 8)) {
         const isCurrent = c.version === history.current;
         html += '<div class="history-item">';
-        html += '<span><span class="ver">v' + c.version + '</span> ' + c.description + ' <span style="color:#484f58">' + c.timestamp + '</span></span>';
-        html += isCurrent ? '<span style="color:#3fb950">current</span>' : '<button class="btn btn-secondary" onclick="rollbackPolicy(' + c.version + ')">Rollback</button>';
-        html += '</div>';
+        html += '<span><span class="ver">v' + c.version + '</span> ' + c.description + '</span>';
+        html += '<span style="display:flex;align-items:center;gap:8px">';
+        html += '<span style="color:#484f58;font-size:10px">' + c.timestamp.slice(0,16) + '</span>';
+        html += isCurrent ? '<span style="color:#3fb950;font-size:10px">ACTIVE</span>' : '<button class="btn btn-secondary" style="padding:2px 8px;font-size:10px" onclick="rollbackPolicy(' + c.version + ')">Rollback</button>';
+        html += '</span></div>';
       }
     } else {
-      html += '<div style="color:#484f58;font-size:12px">No commits yet. Make changes and commit to start version tracking.</div>';
+      html += '<div style="color:#484f58;font-size:12px;padding:8px">No commits yet</div>';
     }
+    html += '</div>';
+
+    // Right: signature reference
+    html += '<div style="width:280px"><h2 style="color:#8b949e;font-size:13px;margin-bottom:8px">SIGNATURE GROUPS</h2>';
+    const sigGroups = [
+      { prefix: 'io_', name: 'Instruction Override', count: 8 },
+      { prefix: 'rs_', name: 'Role Switch', count: 8 },
+      { prefix: 'pe_', name: 'Prompt Extraction', count: 6 },
+      { prefix: 'cm_', name: 'Conversation Mockup', count: 5 },
+      { prefix: 'eb_', name: 'Encoding Bypass', count: 6 },
+      { prefix: 'de_', name: 'Data Exfiltration', count: 7 },
+      { prefix: 'priv_', name: 'Privilege Escalation', count: 5 },
+      { prefix: 'mcp_', name: 'MCP Tool Poisoning', count: 4 },
+      { prefix: 'ml_', name: 'Multilingual (14 lang)', count: 38 },
+      { prefix: 'tg_', name: 'Tool Guard', count: 22 },
+    ];
+    for (const g of sigGroups) {
+      html += '<div style="display:flex;justify-content:space-between;padding:4px 8px;font-size:11px;border-bottom:1px solid #21262d">';
+      html += '<span style="color:#8b949e">' + g.name + '</span>';
+      html += '<span style="color:#58a6ff">' + g.prefix + '* (' + g.count + ')</span>';
+      html += '</div>';
+    }
+    html += '<div style="padding:4px 8px;font-size:11px;color:#484f58;margin-top:4px">Use prefix in Exceptions to disable a group</div>';
     html += '</div></div>';
 
+    html += '</div>';
     document.getElementById('rulesContent').innerHTML = html;
   } catch(err) {
-    document.getElementById('rulesContent').innerHTML = '<div class="policy-section"><div class="rule-card"><h3>Error loading policy: ' + err.message + '</h3></div></div>';
+    document.getElementById('rulesContent').innerHTML = '<div class="policy-section"><div class="rule-card"><h3>Error: ' + err.message + '</h3></div></div>';
   }
 }
 
