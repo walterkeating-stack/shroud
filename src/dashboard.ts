@@ -145,8 +145,10 @@ export function startDashboard(
     }
   });
 
-  server.listen(port, "127.0.0.1", () => {
-    // Bind to localhost only — dashboard is not for external access
+  const bindAddr = process.env.SHROUD_DASHBOARD_BIND || "0.0.0.0";
+  server.listen(port, bindAddr, () => {
+    // Default: 0.0.0.0 (all interfaces including Tailscale)
+    // Set SHROUD_DASHBOARD_BIND=127.0.0.1 to restrict to localhost
   });
 
   return server;
