@@ -739,9 +739,17 @@ async function refresh() {
         : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more sessions needed'
         : 'Active - ' + maturity + ' baseline';
 
+      const cls = a.classification || {};
+      const roleLabel = cls.role && cls.role !== 'General Agent' ? cls.role : '';
+      const roleConf = cls.confidence === 'high' ? '#3fb950' : '#d29922';
+
       html += '<div class="agent-card ' + maturity + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)" style="cursor:pointer">';
       html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<div class="agent-name" style="font-size:15px">' + (a.agentLabel || a.agentBuildId) + '</div>';
+      html += '<div class="agent-name" style="font-size:15px">' + (a.agentLabel || a.agentBuildId);
+      if (roleLabel) {
+        html += ' <span style="font-size:11px;color:' + roleConf + ';font-weight:400;margin-left:8px;padding:1px 6px;border:1px solid ' + roleConf + ';border-radius:10px">' + roleLabel + '</span>';
+      }
+      html += '</div>';
       html += '<span class="badge' + (a.securityEventCount > 5 ? ' danger' : a.securityEventCount > 0 ? ' warn' : '') + '">' + a.securityEventCount + ' events</span>';
       html += '</div>';
       html += '<table style="width:100%;margin-top:8px;font-size:12px;color:#8b949e"><tr>';
@@ -801,6 +809,8 @@ async function showAgent(buildId) {
     html += '<tr class="row"><td class="label">Security Events</td><td class="value">' + a.securityEventCount + '</td></tr>';
     html += '<tr class="row"><td class="label">Model</td><td class="value">' + (a.detectedModel || 'unknown') + '</td></tr>';
     html += '<tr class="row"><td class="label">Channel</td><td class="value">' + (a.channelSource || 'none') + '</td></tr>';
+    const dcls = a.classification || {};
+    html += '<tr class="row"><td class="label">Classification</td><td class="value">' + (dcls.role || 'Unknown') + ' <span style="color:#8b949e;font-size:11px">(' + (dcls.confidence || '?') + (dcls.signals?.length ? ', signals: ' + dcls.signals.join(', ') : '') + ')</span></td></tr>';
     html += '<tr class="row"><td class="label">Started</td><td class="value">' + new Date(a.startedAt).toLocaleString() + '</td></tr>';
     html += '</tbody></table>';
     html += '</div>';
