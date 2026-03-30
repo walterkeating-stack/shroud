@@ -146,6 +146,7 @@ export function startDashboard(
           enabled: true,
           stats: grader.getStats(),
           graded: grader.getAllGraded().slice(-50),
+          batchLog: grader.getBatchLog(),
         } : { enabled: false });
       }
       else {
@@ -1555,6 +1556,37 @@ async function renderCalls() {
           html += '</tr>';
         }
         html += '</tbody></table>';
+      }
+      // Grading batch log — full audit trail
+      const batches = gradingData.batchLog || [];
+      if (batches.length > 0) {
+        html += '<h3 style="color:#8b949e;font-size:13px;margin-top:16px;margin-bottom:8px">Grading Batch Log</h3>';
+        for (const b of [...batches].reverse().slice(0, 10)) {
+          const statusColor = b.success ? '#3fb950' : '#f85149';
+          const bid = 'gbatch-' + b.timestamp;
+          html += '<div class="event ' + (b.success ? 'low' : 'high') + '" style="cursor:pointer;margin-bottom:4px" onclick="var d=document.getElementById(\\'' + bid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
+          html += '<span class="time">' + timeAgo(b.timestamp) + '</span>';
+          html += '<span style="color:' + statusColor + ';font-weight:600;margin-left:8px">' + (b.success ? 'OK' : 'FAILED') + '</span>';
+          html += ' <span style="color:#8b949e">' + b.eventCount + ' events, ' + b.trigger + ', ' + (b.responseTimeMs/1000).toFixed(1) + 's</span>';
+          if (b.verdicts.length > 0) {
+            const tp = b.verdicts.filter(v => v.verdict === 'TRUE_POSITIVE').length;
+            const fp = b.verdicts.filter(v => v.verdict === 'FALSE_POSITIVE').length;
+            const nr = b.verdicts.filter(v => v.verdict === 'NEEDS_REVIEW').length;
+            html += ' <span style="color:#f85149">' + tp + ' TP</span> <span style="color:#3fb950">' + fp + ' FP</span> <span style="color:#d29922">' + nr + ' REV</span>';
+          }
+          html += '<div id="' + bid + '" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">';
+          html += '<div style="margin-bottom:8px"><strong style="color:#8b949e">Prompt sent:</strong><pre style="background:#0d1117;padding:8px;border-radius:4px;color:#c9d1d9;max-height:200px;overflow:auto;white-space:pre-wrap;font-size:10px">' + (b.prompt || '').replace(/</g, '&lt;') + '</pre></div>';
+          html += '<div style="margin-bottom:8px"><strong style="color:#8b949e">LLM Response:</strong><pre style="background:#0d1117;padding:8px;border-radius:4px;color:#c9d1d9;max-height:200px;overflow:auto;white-space:pre-wrap;font-size:10px">' + (b.rawResponse || b.error || '').replace(/</g, '&lt;') + '</pre></div>';
+          if (b.verdicts.length > 0) {
+            html += '<div><strong style="color:#8b949e">Decisions:</strong><table style="width:100%;margin-top:4px;border-collapse:collapse">';
+            for (const v of b.verdicts) {
+              const vc = v.verdict === 'FALSE_POSITIVE' ? '#3fb950' : v.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
+              html += '<tr style="border-bottom:1px solid #21262d"><td style="padding:3px;color:#8b949e">' + v.agentLabel + '</td><td style="padding:3px"><code style="color:#58a6ff">' + v.signatureId + '</code></td><td style="padding:3px;color:' + vc + ';font-weight:600">' + v.verdict.replace(/_/g,' ') + '</td><td style="padding:3px;color:#8b949e">' + v.reasoning + '</td></tr>';
+            }
+            html += '</table></div>';
+          }
+          html += '</div></div>';
+        }
       }
       html += '</div>';
     }

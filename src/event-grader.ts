@@ -54,9 +54,32 @@ Respond with ONLY a JSON array. Each element:
 
 Do not include any other text outside the JSON array.`;
 
+/** A logged grading batch — full audit trail. */
+export interface GradingBatchLog {
+  /** When the batch was executed. */
+  timestamp: number;
+  /** Why it was triggered: "threshold" or "timer". */
+  trigger: "threshold" | "timer";
+  /** Number of events in the batch. */
+  eventCount: number;
+  /** The prompt sent to the LLM. */
+  prompt: string;
+  /** The raw LLM response. */
+  rawResponse: string;
+  /** Parsed verdicts. */
+  verdicts: Array<{ signatureId: string; agentLabel: string; verdict: GradingVerdict; reasoning: string }>;
+  /** Whether the grading call succeeded. */
+  success: boolean;
+  /** Error message if failed. */
+  error: string;
+  /** LLM response time in ms. */
+  responseTimeMs: number;
+}
+
 export class EventGrader {
   private _pending: SecurityEvent[] = [];
-  private _graded: Map<number, GradedEvent> = new Map(); // keyed by event timestamp
+  private _graded: Map<number, GradedEvent> = new Map();
+  private _batchLog: GradingBatchLog[] = [];
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _threshold: number;
   private _intervalMs: number;
@@ -105,7 +128,7 @@ export class EventGrader {
 
     // Trigger immediately if threshold met
     if (this._pending.length >= this._threshold) {
-      this._tryGrade();
+      this._tryGrade("threshold");
     }
   }
 
@@ -130,20 +153,41 @@ export class EventGrader {
     return { pending: this._pending.length, graded: this._graded.size, truePositive: tp, falsePositive: fp, needsReview: nr };
   }
 
+  /** Get the grading batch log (last 50 batches). */
+  getBatchLog(): readonly GradingBatchLog[] {
+    return this._batchLog;
+  }
+
   /** Attempt a grading batch. */
-  private _tryGrade(): void {
+  private _tryGrade(trigger: "threshold" | "timer" = "timer"): void {
     if (this._running || this._pending.length === 0) return;
     this._running = true;
 
-    // Take up to 20 events per batch
     const batch = this._pending.splice(0, 20);
+    const startTime = Date.now();
+    const log: GradingBatchLog = {
+      timestamp: startTime,
+      trigger,
+      eventCount: batch.length,
+      prompt: "",
+      rawResponse: "",
+      verdicts: [],
+      success: false,
+      error: "",
+      responseTimeMs: 0,
+    };
 
     try {
-      const verdicts = this._callGateway(batch);
+      const { verdicts, prompt, rawResponse } = this._callGateway(batch);
+      log.prompt = prompt;
+      log.rawResponse = rawResponse;
+      log.responseTimeMs = Date.now() - startTime;
+      log.success = true;
+
       for (const v of verdicts) {
         if (v.index >= 0 && v.index < batch.length) {
           const event = batch[v.index];
-          this._graded.set(event.timestamp, {
+          const graded: GradedEvent = {
             eventTimestamp: event.timestamp,
             signatureId: event.signatureId,
             agentLabel: event.agentLabel || "unknown",
@@ -151,20 +195,34 @@ export class EventGrader {
             verdict: v.verdict,
             reasoning: v.reasoning || "",
             gradedAt: Date.now(),
+          };
+          this._graded.set(event.timestamp, graded);
+          log.verdicts.push({
+            signatureId: event.signatureId,
+            agentLabel: event.agentLabel || "unknown",
+            verdict: v.verdict,
+            reasoning: v.reasoning || "",
           });
         }
       }
-    } catch {
-      // Put events back if grading failed
+    } catch (err: any) {
+      log.error = err?.message || "Unknown error";
+      log.responseTimeMs = Date.now() - startTime;
       this._pending.unshift(...batch);
     }
+
+    this._batchLog.push(log);
+    if (this._batchLog.length > 50) this._batchLog.shift();
 
     this._running = false;
   }
 
   /** Call the OpenClaw gateway to grade a batch of events. */
-  private _callGateway(batch: SecurityEvent[]): Array<{ index: number; verdict: GradingVerdict; reasoning: string }> {
-    // Format events for the LLM
+  private _callGateway(batch: SecurityEvent[]): {
+    verdicts: Array<{ index: number; verdict: GradingVerdict; reasoning: string }>;
+    prompt: string;
+    rawResponse: string;
+  } {
     const eventsText = batch.map((e, i) =>
       `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${e.agentLabel || "?"}" ` +
       `class=${e.threatClass} match="${(e.matchedText || "").slice(0, 150)}" ` +
@@ -172,8 +230,8 @@ export class EventGrader {
     ).join("\n");
 
     const message = `Grade these ${batch.length} security events:\n\n${eventsText}`;
+    const fullPrompt = `${GRADING_PROMPT}\n\n${message}`;
     const sessionKey = `${GRADING_SESSION_PREFIX}${Date.now()}`;
-
 
     try {
       const result = execFileSync(this._openclawBin, [
@@ -192,14 +250,13 @@ export class EventGrader {
         env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
       });
 
-      // Parse the LLM response — extract JSON array
       const jsonMatch = result.match(/\[[\s\S]*?\]/);
-      if (!jsonMatch) return [];
+      if (!jsonMatch) return { verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) };
 
       const parsed = JSON.parse(jsonMatch[0]);
-      if (!Array.isArray(parsed)) return [];
+      if (!Array.isArray(parsed)) return { verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) };
 
-      return parsed
+      const verdicts = parsed
         .filter((v: any) =>
           typeof v.index === "number" &&
           ["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"].includes(v.verdict),
@@ -209,8 +266,10 @@ export class EventGrader {
           verdict: v.verdict as GradingVerdict,
           reasoning: typeof v.reasoning === "string" ? v.reasoning.slice(0, 200) : "",
         }));
-    } catch {
-      return [];
+
+      return { verdicts, prompt: fullPrompt, rawResponse: result.slice(0, 2000) };
+    } catch (err: any) {
+      throw new Error(err?.message?.slice(0, 200) || "Gateway call failed");
     }
   }
 }
