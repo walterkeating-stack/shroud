@@ -57,6 +57,47 @@ const SEVERITY_RANK: Record<SecuritySeverity, number> = {
 };
 
 /**
+ * Check if a text span is inside quotation marks, backticks, or code blocks.
+ * Used to reduce severity of injection patterns that are being discussed/quoted
+ * rather than used as actual attacks.
+ */
+function isInsideQuotes(text: string, matchStart: number, matchEnd: number): boolean {
+  // Look backwards from matchStart for an unmatched opening quote
+  const before = text.slice(Math.max(0, matchStart - 200), matchStart);
+  const after = text.slice(matchEnd, Math.min(text.length, matchEnd + 200));
+
+  // Check for surrounding double quotes
+  if (before.includes('"') && after.includes('"')) {
+    const lastQuoteBefore = before.lastIndexOf('"');
+    const quotesBefore = before.slice(lastQuoteBefore).split('"').length - 1;
+    if (quotesBefore % 2 === 1) return true; // odd number = inside quotes
+  }
+
+  // Check for surrounding single quotes
+  if (before.includes("'") && after.includes("'")) {
+    const lastQuoteBefore = before.lastIndexOf("'");
+    const quotesBefore = before.slice(lastQuoteBefore).split("'").length - 1;
+    if (quotesBefore % 2 === 1) return true;
+  }
+
+  // Check for backticks (inline code)
+  if (before.includes("`") && after.includes("`")) return true;
+
+  // Check for parenthetical context: (DAN), (XSS), etc.
+  // The match might include the closing paren, so check if before ends with (
+  // or the matched text itself starts right after a (
+  if (before.endsWith("(")) return true;
+  if (before.trimEnd().endsWith("(")) return true;
+
+  // Check for 'like "X"' or 'such as "X"' or 'phrases like "X"' patterns
+  // These indicate the text is being discussed, not executed
+  const discussionPatterns = /(?:like|such\s+as|example|e\.g\.|called|known\s+as|termed|phrase|pattern|classified|documented|described|first\s+appeared)/i;
+  if (discussionPatterns.test(before.slice(-100))) return true;
+
+  return false;
+}
+
+/**
  * Strip token smuggling characters — invisible Unicode chars that attackers
  * insert between tokens to break regex matching.
  *
@@ -165,19 +206,29 @@ export class InjectionDetector {
 
       let match: RegExpExecArray | null;
       while ((match = sig.pattern.exec(text)) !== null) {
+        // Context-aware severity reduction: if the match is inside
+        // quotation marks or backticks, it's likely being discussed/quoted
+        // rather than used as an attack. Reduce severity to "low".
+        let severity = sig.severity;
+        if (isInsideQuotes(text, match.index, match.index + match[0].length)) {
+          severity = "low";
+        }
+
         events.push({
           timestamp: Date.now(),
           eventType: "injection_detected",
           direction,
           threatClass: sig.threatClass,
           signatureId: sig.id,
-          severity: sig.severity,
-          matchedText: match[0].slice(0, 200), // truncate long matches
+          severity,
+          matchedText: match[0].slice(0, 200),
           matchStart: match.index,
           matchEnd: match.index + match[0].length,
           textLength: text.length,
           action,
-          description: sig.description,
+          description: severity !== sig.severity
+            ? `[quoted context] ${sig.description}`
+            : sig.description,
         });
 
         // For non-global patterns, break after first match

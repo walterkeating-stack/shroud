@@ -156,7 +156,7 @@ const ROLE_SWITCH: SignatureDef[] = [
   {
     id: "rs_enter_mode",
     threatClass: ThreatClass.ROLE_SWITCH,
-    pattern: /enter\s+(?:unrestricted|god|sudo|admin|debug|hidden|secret|uncensored)\s+mode/gi,
+    pattern: /enter\s+(?:unrestricted|god|sudo|admin|hidden|secret|uncensored)\s+mode/gi,
     severity: "high",
     description: "Role switch: enter [special] mode",
     direction: "request",
@@ -441,7 +441,7 @@ const MCP_TOOL_POISONING: SignatureDef[] = [
   {
     id: "mcp_read_sensitive",
     threatClass: ThreatClass.MCP_TOOL_POISONING,
-    pattern: /(?:read|cat|access|exfiltrate|steal|extract)\s+(?:the\s+)?(?:~\/)?(?:\.env|\.ssh|credentials|secrets?|private[_-]?key|\.aws|\.config)/gi,
+    pattern: /(?:read|cat|access|exfiltrate|steal|extract|dump|leak)\s+(?:the\s+)?(?:~\/|~\\)?(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws)/gi,
     severity: "high",
     description: "MCP tool poisoning: access sensitive files",
     direction: "both",

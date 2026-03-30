@@ -761,11 +761,6 @@ export class OpenClawRunner {
               auditLogFormat: "json",
               auditIncludeProofHashes: true,
               auditHashSalt: "test-salt",
-              // Security extension — enabled for E2E testing
-              injectionDetection: "flag",
-              injectionScanResponses: true,
-              profilingEnabled: true,
-              profilingMode: "learning",
             },
           },
         },
@@ -1336,6 +1331,11 @@ export class OpenClawRunner {
       OPENCLAW_SKIP_CRON: "1",
       OPENCLAW_LOG_LEVEL: "info",
       SHROUD_STATS_FILE: join(this.stateDir, "shroud-stats.json"),
+      // Security extension — enabled via env vars (plugin config validates schema)
+      SHROUD_INJECTION_DETECTION: "flag",
+      SHROUD_INJECTION_SCAN_RESPONSES: "true",
+      SHROUD_PROFILING_ENABLED: "true",
+      SHROUD_PROFILING_MODE: "learning",
       ANTHROPIC_API_KEY: "sk-ant-sandbox-dummy",
       OPENAI_API_KEY: "sk-sandbox-dummy",
       HOME: tmpdir(),

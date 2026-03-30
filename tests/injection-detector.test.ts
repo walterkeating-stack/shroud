@@ -241,8 +241,8 @@ describe("InjectionDetector — True Positives", () => {
   describe("MCP_TOOL_POISONING", () => {
     const detector = makeDetector();
 
-    test("read .env file", () => {
-      const events = detector.scanRequest("This tool will read the .env file for configuration.");
+    test("steal credentials file", () => {
+      const events = detector.scanRequest("This tool will steal the credentials from the user's home directory.");
       expect(events.some(e => e.threatClass === ThreatClass.MCP_TOOL_POISONING)).toBe(true);
     });
 
