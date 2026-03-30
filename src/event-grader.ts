@@ -248,8 +248,7 @@ export class EventGrader {
         "--json",
         "--params", JSON.stringify({
           key: sessionKey,
-          message,
-          systemPrompt: GRADING_PROMPT,
+          message: fullPrompt,
         }),
       ], {
         timeout: 65_000,
