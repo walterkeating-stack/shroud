@@ -1456,10 +1456,10 @@ function renderSignatures() {
 
   let html = '<div class="policy-section">';
   html += '<h2 style="color:#c9d1d9;font-size:16px;margin-bottom:4px">Signature Catalog</h2>';
-  html += '<p style="color:#484f58;font-size:12px;margin-bottom:24px">' + totalSigs + ' built-in signatures across ' + groups.length + ' groups. Use signature IDs in Firewall Rules exceptions to disable specific patterns per agent.</p>';
-
   let totalSigs = 0;
   for (const g of groups) totalSigs += g.sigs.length;
+
+  html += '<p style="color:#484f58;font-size:12px;margin-bottom:24px">' + totalSigs + ' built-in signatures across ' + groups.length + ' groups. Use signature IDs in Firewall Rules exceptions to disable specific patterns per agent.</p>';
 
   // Summary bar
   html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px">';
