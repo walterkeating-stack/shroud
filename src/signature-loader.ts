@@ -180,7 +180,15 @@ export class SignatureLoader {
 
       if (!json) return;
 
+      // Max feed size: 500KB — reject bloated/malicious payloads
+      if (json.length > 512_000) return;
+
       const feed = JSON.parse(json) as SignatureFeed;
+
+      // Max 500 signatures per feed — prevent resource exhaustion
+      if ((feed.injectionSignatures?.length || 0) > 500) return;
+      if ((feed.toolGuardPatterns?.length || 0) > 500) return;
+
       const compiled = this._compile(feed);
 
       // Only update if version changed or first load
@@ -194,25 +202,29 @@ export class SignatureLoader {
     }
   }
 
-  /** Compile JSON signature definitions into RegExp objects. */
+  /** Compile JSON signature definitions into RegExp objects with safety validation. */
   private _compile(feed: SignatureFeed): CompiledSignatures {
-    const injection = (feed.injectionSignatures || []).map(sig => ({
-      id: sig.id,
-      threatClass: sig.threatClass,
-      pattern: new RegExp(sig.pattern, sig.flags || "gi"),
-      severity: sig.severity,
-      description: sig.description,
-      direction: sig.direction,
-    }));
+    const injection = (feed.injectionSignatures || [])
+      .filter(sig => this._validateSig(sig))
+      .map(sig => ({
+        id: sig.id,
+        threatClass: sig.threatClass,
+        pattern: new RegExp(sig.pattern, this._sanitizeFlags(sig.flags)),
+        severity: sig.severity,
+        description: sig.description,
+        direction: sig.direction,
+      }));
 
-    const toolGuard = (feed.toolGuardPatterns || []).map(tg => ({
-      id: tg.id,
-      toolName: tg.toolName,
-      paramPattern: new RegExp(tg.paramPattern, tg.flags || "gi"),
-      severity: tg.severity,
-      description: tg.description,
-      block: tg.block,
-    }));
+    const toolGuard = (feed.toolGuardPatterns || [])
+      .filter(tg => this._validateToolGuard(tg))
+      .map(tg => ({
+        id: tg.id,
+        toolName: tg.toolName,
+        paramPattern: new RegExp(tg.paramPattern, this._sanitizeFlags(tg.flags)),
+        severity: tg.severity,
+        description: tg.description,
+        block: tg.block,
+      }));
 
     return {
       injection,
@@ -221,6 +233,45 @@ export class SignatureLoader {
       feedUpdated: feed.updated || new Date().toISOString(),
       loadedAt: Date.now(),
     };
+  }
+
+  /** Validate an injection signature before compilation. */
+  private _validateSig(sig: ExternalSignature): boolean {
+    // Must have required fields
+    if (!sig.id || !sig.pattern || !sig.severity || !sig.direction) return false;
+    // ID must be prefixed with ext_ (external signatures can't impersonate built-ins)
+    if (!sig.id.startsWith("ext_")) return false;
+    // Severity must be valid
+    if (!["low", "medium", "high"].includes(sig.severity)) return false;
+    // Direction must be valid
+    if (!["request", "response", "both"].includes(sig.direction)) return false;
+    // Pattern length cap — prevents ReDoS via catastrophic backtracking
+    if (sig.pattern.length > 500) return false;
+    // Block nested quantifiers (ReDoS: (a+)+ or (a*)*b)
+    if (/\([^)]*[+*][^)]*\)[+*]/.test(sig.pattern)) return false;
+    // Test compile — reject if regex is invalid
+    try { new RegExp(sig.pattern); } catch { return false; }
+    // Description length cap
+    if ((sig.description || "").length > 300) return false;
+    return true;
+  }
+
+  /** Validate a tool guard pattern before compilation. */
+  private _validateToolGuard(tg: ExternalToolGuard): boolean {
+    if (!tg.id || !tg.paramPattern || !tg.severity) return false;
+    if (!tg.id.startsWith("ext_")) return false;
+    if (!["low", "medium", "high"].includes(tg.severity)) return false;
+    if (tg.paramPattern.length > 500) return false;
+    if (/\([^)]*[+*][^)]*\)[+*]/.test(tg.paramPattern)) return false;
+    try { new RegExp(tg.paramPattern); } catch { return false; }
+    if ((tg.description || "").length > 300) return false;
+    return true;
+  }
+
+  /** Sanitize regex flags — only allow safe flags. */
+  private _sanitizeFlags(flags?: string): string {
+    if (!flags) return "gi";
+    return flags.replace(/[^gimsuy]/g, "") || "gi";
   }
 
   /** Fetch a URL using Node.js built-in http/https. Zero dependencies. */
