@@ -28,6 +28,7 @@ import {
   assertNoUlaLeak,
 } from "../lib/assertions.mjs";
 import { Reporter } from "./reporter.mjs";
+import { SecurityTestRunner } from "./security-runner.mjs";
 
 export class OpenClawRunner {
   constructor(opts = {}) {
@@ -95,6 +96,31 @@ export class OpenClawRunner {
 
     // 4. Run all scenarios via gateway RPC
     await this._runScenariosViaGateway();
+
+    // 5. Run multi-agent security scenarios (if injection detection available)
+    await this._runSecurityScenarios();
+  }
+
+  async _runSecurityScenarios() {
+    try {
+      const secRunner = new SecurityTestRunner({
+        stateDir: this.stateDir,
+        verbose: this.verbose,
+      });
+      // Share gateway and mock ports with the security runner
+      secRunner.gatewayPort = this.gatewayPort;
+      secRunner.mockLlmPort = this.mockLlmPort;
+
+      this._log("\n" + "=".repeat(50));
+      const secResults = await secRunner.run();
+
+      // Merge security results into main results
+      this.results.passed += secResults.passed;
+      this.results.failed += secResults.failed;
+      this.results.skipped += secResults.skipped;
+    } catch (err) {
+      this._log(`Security scenarios skipped: ${err.message}`);
+    }
   }
 
   async _startGateway() {
@@ -735,6 +761,11 @@ export class OpenClawRunner {
               auditLogFormat: "json",
               auditIncludeProofHashes: true,
               auditHashSalt: "test-salt",
+              // Security extension — enabled for E2E testing
+              injectionDetection: "flag",
+              injectionScanResponses: true,
+              profilingEnabled: true,
+              profilingMode: "learning",
             },
           },
         },

@@ -910,7 +910,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
 
       // Track this LLM call against the current agent session
-      agentTracker.recordLlmCall();
+      const callSession = agentTracker.recordLlmCall();
 
       // Parse the body and obfuscate user message content
       try {
@@ -924,6 +924,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
 
         const body = JSON.parse(bodyStr);
+
+        // Extract model ID for agent tracking
+        if (typeof body.model === "string") {
+          agentTracker.updateModel(body.model);
+        }
 
         let modified = false;
 

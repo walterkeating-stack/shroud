@@ -27,6 +27,10 @@ export interface AgentSession {
   securityEventCount: number;
   /** Last LLM call timestamp. */
   lastCallAt: number;
+  /** LLM model ID detected from API calls (e.g. "claude-3-opus", "gpt-4"). */
+  detectedModel: string;
+  /** Channel source if detected (e.g. "slack:C00000001", "whatsapp:+353..."). */
+  channelSource: string;
 }
 
 /**
@@ -64,11 +68,29 @@ export class AgentSessionTracker {
         llmCallCount: 0,
         securityEventCount: 0,
         lastCallAt: Date.now(),
+        detectedModel: modelId,
+        channelSource: "",
       };
       this._sessions.set(buildId, session);
     }
 
     return session;
+  }
+
+  /** Update detected model from LLM API request body. */
+  updateModel(model: string): void {
+    const session = this._sessions.get(this._currentBuildId);
+    if (session && model) {
+      session.detectedModel = model;
+    }
+  }
+
+  /** Update channel source (e.g. "slack:C00000001"). */
+  updateChannel(source: string): void {
+    const session = this._sessions.get(this._currentBuildId);
+    if (session && source) {
+      session.channelSource = source;
+    }
   }
 
   /** Record an LLM API call for the current agent. */
