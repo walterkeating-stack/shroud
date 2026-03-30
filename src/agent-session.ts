@@ -11,6 +11,16 @@
 
 import { createHash } from "node:crypto";
 
+/** Agent role classification derived from name, channel, and behaviour. */
+export interface AgentClassification {
+  /** Primary role category. */
+  role: string;
+  /** Confidence: "high" from explicit signals, "inferred" from heuristics. */
+  confidence: "high" | "inferred";
+  /** Keywords that triggered the classification. */
+  signals: string[];
+}
+
 /** Represents a tracked agent session. */
 export interface AgentSession {
   /** Stable identity hash: SHA256(systemPrompt + pluginList + modelId). */
@@ -31,6 +41,8 @@ export interface AgentSession {
   detectedModel: string;
   /** Channel source if detected (e.g. "slack:C00000001", "whatsapp:+353..."). */
   channelSource: string;
+  /** Inferred role classification. */
+  classification: AgentClassification;
 }
 
 /**
@@ -79,6 +91,7 @@ export class AgentSessionTracker {
         lastCallAt: Date.now(),
         detectedModel: modelId,
         channelSource: "",
+        classification: classifyAgent(label, systemPrompt),
       };
       this._sessions.set(label, session);
     } else {
@@ -361,4 +374,72 @@ function _extractLabelFromText(text: string): string | null {
   if (!firstLine) return null;
   const short = firstLine.replace(/\s+(?:at|for|who|that|which)\s+.*/i, "");
   return short.length > 40 ? short.slice(0, 37) + "..." : short;
+}
+
+// ===================================================================
+// Agent role classifier — keyword-based, zero dependencies
+// ===================================================================
+
+/** Role taxonomy with keyword signals. Ordered by specificity (most specific first). */
+const ROLE_TAXONOMY: { role: string; keywords: RegExp }[] = [
+  { role: "Security Research",    keywords: /security|threat|vulnerab|pentest|exploit|malware|incident|forensic|soc\b|siem|ids|ips|firewall/i },
+  { role: "DevOps / SRE",        keywords: /devops|sre\b|deploy|infra|kubernetes|k8s|docker|terraform|ansible|ci\s*\/?\s*cd|pipeline|monitoring|grafana|prometheus/i },
+  { role: "System Admin",        keywords: /sysadmin|system\s*admin|server|linux|network\s*admin|dns|dhcp|ldap|active\s*directory/i },
+  { role: "Network Engineering",  keywords: /network|router|switch|vlan|bgp|ospf|firewall\s*rule|palo\s*alto|juniper|cisco/i },
+  { role: "Software Engineering", keywords: /software|develop|program|code|engineer|fullstack|backend|frontend|api\b|microservice/i },
+  { role: "Data / Analytics",     keywords: /data\s*scien|analytics|machine\s*learn|ml\b|ai\b|model|dataset|pipeline|etl|warehouse/i },
+  { role: "Customer Support",     keywords: /support|customer|helpdesk|ticket|billing|account\s*issue|service\s*desk|crm/i },
+  { role: "Sales / Outreach",     keywords: /sales|outreach|prospect|lead\s*gen|crm|pipeline|deal|quota|revenue/i },
+  { role: "Research",             keywords: /research|investigat|analy[sz]|report|study|academic|paper|journal|semicond|alpha/i },
+  { role: "Coaching / Training",  keywords: /coach|train|mentor|fitness|endurance|athlete|workout|nutrition|performance/i },
+  { role: "Writing / Content",    keywords: /writ|content|blog|article|copy|editor|journalist|marketing\s*content/i },
+  { role: "Legal / Compliance",   keywords: /legal|compliance|regulat|audit|policy|gdpr|hipaa|sox\b|contract/i },
+  { role: "Finance",              keywords: /financ|accounting|budget|invest|portfolio|trading|revenue|forecast/i },
+  { role: "Personal Assistant",   keywords: /personal|assistant|scheduler|organiz|reminder|task\s*manag|daily|general\s*purpose/i },
+];
+
+/**
+ * Classify an agent's role from its label and system prompt content.
+ * Uses keyword matching against a role taxonomy — no LLM call needed.
+ *
+ * Strategy: check the LABEL first (high confidence), then fall back to
+ * the system prompt (inferred). This prevents noisy metadata in the
+ * prompt from overriding the agent's actual identity.
+ */
+export function classifyAgent(label: string, systemPrompt: string): AgentClassification {
+  // 1. Match against label first — highest confidence signal
+  const labelLower = label.toLowerCase();
+  for (const { role, keywords } of ROLE_TAXONOMY) {
+    const match = labelLower.match(keywords);
+    if (match) {
+      return { role, confidence: "high", signals: [match[0]] };
+    }
+  }
+
+  // 2. Extract SOUL.md content — look for "You are a [role]" patterns
+  //    Skip framework preamble and metadata
+  const soulMatch = systemPrompt.match(
+    /[Yy]ou\s+are\s+(?:a\s+|an\s+|the\s+)?(.{10,200})(?:\.|$)/m,
+  );
+  const soulText = soulMatch ? soulMatch[1].toLowerCase() : "";
+
+  if (soulText) {
+    for (const { role, keywords } of ROLE_TAXONOMY) {
+      const match = soulText.match(keywords);
+      if (match) {
+        return { role, confidence: "inferred", signals: [match[0]] };
+      }
+    }
+  }
+
+  // 3. Last resort: scan the full prompt but with lower confidence
+  const fullLower = systemPrompt.toLowerCase();
+  for (const { role, keywords } of ROLE_TAXONOMY) {
+    const match = fullLower.match(keywords);
+    if (match) {
+      return { role, confidence: "inferred", signals: [match[0]] };
+    }
+  }
+
+  return { role: "General Agent", confidence: "inferred", signals: [] };
 }

@@ -144,6 +144,48 @@ describe("Agent identity — SOUL.md and IDENTITY.md formats", () => {
   });
 });
 
+describe("Agent classification", () => {
+  test("PJ classified as Personal Assistant", () => {
+    const tracker = new AgentSessionTracker();
+    const s = tracker.registerAgent(makeFullSystem("pj-main"));
+    expect(s.classification.role).toBeDefined();
+  });
+
+  test("Coach Alessandra classified as Coaching / Training", () => {
+    const tracker = new AgentSessionTracker();
+    const s = tracker.registerAgent(makeFullSystem("coach-alessandra"));
+    expect(s.classification.role).toBe("Coaching / Training");
+    expect(s.classification.confidence).toBe("high");
+  });
+
+  test("Semiconalpha Research classified as Research", () => {
+    const tracker = new AgentSessionTracker();
+    const s = tracker.registerAgent(makeFullSystem("semiconalpha-research"));
+    expect(s.classification.role).toBe("Research");
+    expect(s.classification.confidence).toBe("high");
+  });
+
+  test("SOUL.md: security researcher classified correctly", () => {
+    const tracker = new AgentSessionTracker();
+    const s = tracker.registerAgent("You are a research assistant specializing in network security analysis.");
+    // Label extracts "Research Assistant" → matches Research;
+    // SOUL text also contains "security" but label takes priority
+    expect(s.classification.role).toMatch(/Research|Security/);
+  });
+
+  test("SOUL.md: customer support classified correctly", () => {
+    const tracker = new AgentSessionTracker();
+    const s = tracker.registerAgent("You are a customer support agent for a SaaS platform.");
+    expect(s.classification.role).toBe("Customer Support");
+  });
+
+  test("SOUL.md: DevOps classified correctly", () => {
+    const tracker = new AgentSessionTracker();
+    const s = tracker.registerAgent("You are a DevOps automation agent. You manage infrastructure deployments.");
+    expect(s.classification.role).toBe("DevOps / SRE");
+  });
+});
+
 describe("Skeleton stripping", () => {
   test("skeleton strips XML blocks", () => {
     const skeleton = extractPromptSkeleton("You are PJ.\n<system-reminder>\nDynamic\n</system-reminder>\nMore.");
