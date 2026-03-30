@@ -201,8 +201,25 @@ export function extractPromptSkeleton(prompt: string): string {
   return s;
 }
 
-/** Extract a human-readable label from system prompt (first meaningful line, max 60 chars). */
+/**
+ * Extract a human-readable agent name from system prompt.
+ *
+ * Looks for "You are a/an [ROLE]" pattern first (most common in SOUL.md).
+ * Falls back to first meaningful line.
+ */
 function extractLabel(systemPrompt: string): string {
+  // Try to extract role from "You are a/an [role]" pattern
+  const roleMatch = systemPrompt.match(
+    /[Yy]ou\s+are\s+(?:a|an)\s+(.+?)(?:\.|,|\n|$)/,
+  );
+  if (roleMatch) {
+    const role = roleMatch[1].trim();
+    if (role.length > 5 && role.length < 80) {
+      return role.length > 60 ? role.slice(0, 57) + "..." : role;
+    }
+  }
+
+  // Fallback: first meaningful line
   const firstLine = systemPrompt
     .split("\n")
     .map((l) => l.trim())

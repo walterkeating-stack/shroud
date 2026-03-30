@@ -595,18 +595,32 @@ async function refresh() {
     for (const a of agents.agents || []) {
       const p = a.profiling || {};
       const maturity = p.maturity || 'none';
-      html += '<div class="agent-card ' + maturity + '">';
-      html += '<div class="agent-name">' + truncate(a.agentLabel || a.agentBuildId, 70) + '</div>';
-      html += '<div class="agent-meta">';
-      html += 'ID: ' + a.agentBuildId.slice(0,8) + ' | ';
-      html += a.llmCallCount + ' calls | ';
-      html += a.securityEventCount + ' events | ';
-      html += 'Maturity: <b>' + maturity + '</b> (' + (p.sessionCount||0) + ' sessions)';
-      if (p.knownCategories && p.knownCategories.length > 0) {
-        html += ' | Categories: ' + p.knownCategories.join(', ');
-      }
+      const cats = (p.knownCategories || []).join(', ') || 'none yet';
+      const tools = (p.knownTools || []).join(', ') || 'none';
+      const sessNeeded = p.sessionsUntilActive || 0;
+      const statusText = maturity === 'none' ? 'No baseline - first session'
+        : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more sessions needed'
+        : 'Active - ' + maturity + ' baseline';
+
+      html += '<div class="agent-card ' + maturity + '" onclick="showAgent(\\'' + a.agentBuildId + '\\')" style="cursor:pointer">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
+      html += '<div class="agent-name" style="font-size:15px">' + (a.agentLabel || a.agentBuildId) + '</div>';
+      html += '<span class="badge' + (a.securityEventCount > 5 ? ' danger' : a.securityEventCount > 0 ? ' warn' : '') + '">' + a.securityEventCount + ' events</span>';
       html += '</div>';
-      html += '<div class="progress"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%"></div></div>';
+      html += '<table style="width:100%;margin-top:8px;font-size:12px;color:#8b949e"><tr>';
+      html += '<td>Build: <span style="color:#58a6ff">' + a.agentBuildId.slice(0,12) + '</span></td>';
+      html += '<td>Calls: <span style="color:#c9d1d9">' + a.llmCallCount + '</span></td>';
+      html += '<td>Sessions: <span style="color:#c9d1d9">' + (p.sessionCount||0) + '</span></td>';
+      html += '<td>Model: <span style="color:#c9d1d9">' + (a.detectedModel || 'unknown') + '</span></td>';
+      html += '</tr></table>';
+      html += '<table style="width:100%;margin-top:4px;font-size:12px;color:#8b949e"><tr>';
+      html += '<td>Entity categories: <span style="color:#d2a8ff">' + cats + '</span></td>';
+      html += '<td>Tools: <span style="color:#d2a8ff">' + tools + '</span></td>';
+      html += '</tr></table>';
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
+      html += '<div class="progress" style="flex:1"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%;background:' + (maturity==='mature'?'#3fb950':maturity==='reliable'?'#58a6ff':'#d29922') + '"></div></div>';
+      html += '<span style="font-size:11px;color:#8b949e">' + statusText + '</span>';
+      html += '</div>';
       html += '</div>';
     }
     html += '</div>';
@@ -627,6 +641,65 @@ async function refresh() {
     document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
   } catch (err) {
     document.getElementById('lastUpdate').textContent = 'Error: ' + err.message;
+  }
+}
+
+// Agent detail view
+async function showAgent(buildId) {
+  try {
+    const data = await fetchJson('/api/agents/' + buildId);
+    const a = data.agent;
+    const b = data.baseline;
+    const evts = data.recentEvents || [];
+
+    let html = '<div class="card" style="grid-column: span 2">';
+    html += '<h2 style="cursor:pointer" onclick="refresh()">< Back to Overview</h2>';
+    html += '<h2 style="margin-top:12px;color:#58a6ff;font-size:16px">' + (a.agentLabel || a.agentBuildId) + '</h2>';
+
+    html += '<table style="width:100%;margin-top:12px;font-size:13px"><tbody>';
+    html += '<tr class="row"><td class="label">Build ID</td><td class="value">' + a.agentBuildId + '</td></tr>';
+    html += '<tr class="row"><td class="label">Session ID</td><td class="value">' + a.sessionId + '</td></tr>';
+    html += '<tr class="row"><td class="label">LLM Calls</td><td class="value">' + a.llmCallCount + '</td></tr>';
+    html += '<tr class="row"><td class="label">Security Events</td><td class="value">' + a.securityEventCount + '</td></tr>';
+    html += '<tr class="row"><td class="label">Model</td><td class="value">' + (a.detectedModel || 'unknown') + '</td></tr>';
+    html += '<tr class="row"><td class="label">Channel</td><td class="value">' + (a.channelSource || 'none') + '</td></tr>';
+    html += '<tr class="row"><td class="label">Started</td><td class="value">' + new Date(a.startedAt).toLocaleString() + '</td></tr>';
+    html += '</tbody></table>';
+    html += '</div>';
+
+    if (b) {
+      html += '<div class="card"><h2>Baseline Profile</h2>';
+      html += '<div class="row"><span class="label">Maturity</span><span class="value">' + b.maturity + '</span></div>';
+      html += '<div class="row"><span class="label">Sessions</span><span class="value">' + b.sessionCount + '</span></div>';
+      html += '<div class="row"><span class="label">Tools</span><span class="value">' + (b.toolProfile||[]).join(', ') + '</span></div>';
+      html += '<div class="row"><span class="label">Categories</span><span class="value">' + (b.categoryProfile||[]).join(', ') + '</span></div>';
+      html += '<div class="row"><span class="label">Updated</span><span class="value">' + b.lastUpdated + '</span></div>';
+
+      if (b.features) {
+        html += '<h2 style="margin-top:16px">Feature Baselines</h2>';
+        for (const [name, stats] of Object.entries(b.features)) {
+          const s = stats;
+          html += '<div class="row"><span class="label">' + name + '</span><span class="value">mean=' + s.mean.toFixed(2) + ' stddev=' + Math.sqrt(s.m2/Math.max(s.n,1)).toFixed(2) + ' (n=' + s.n + ')</span></div>';
+        }
+      }
+      html += '</div>';
+    }
+
+    if (evts.length > 0) {
+      html += '<div class="card"><h2>Recent Events for this Agent</h2><div class="events-list">';
+      for (const e of evts.reverse()) {
+        html += '<div class="event ' + e.severity + '">';
+        html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
+        html += '<span class="sig">' + e.signatureId + '</span>';
+        html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+
+    document.getElementById('content').innerHTML = html;
+  } catch(err) {
+    document.getElementById('content').innerHTML = '<div class="card"><h2>Error loading agent: ' + err.message + '</h2></div>';
   }
 }
 
