@@ -22,7 +22,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
@@ -380,6 +380,72 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     profiler = g.__shroudProfiler as BehaviouralProfiler;
   }
 
+  // --- Persistence: flush profiler + agent sessions on shutdown & periodically ---
+  const _rawPersistDir = config.profilingProfileDir || "~/.shroud/profiles";
+  const _persistDir = _rawPersistDir.startsWith("~")
+    ? _rawPersistDir.replace("~", process.env.HOME || "/root")
+    : _rawPersistDir;
+  const _agentSessionFile = _persistDir + "/agent-sessions.json";
+
+  function _flushToDisk(): void {
+    try {
+      if (profiler) profiler.finalizeSession();
+      // Only persist real agent sessions — must have calls, a short clean label,
+      // and no PII-like content (IPs, emails, phone numbers)
+      const sessions = agentTracker.getAllSessions().filter(
+        s => s.llmCallCount > 0 && s.agentLabel !== "Unknown Agent" &&
+             s.agentLabel.length < 35 && s.agentLabel.split(/\s+/).length <= 4 &&
+             !/@/.test(s.agentLabel) && !/\d{1,3}\.\d{1,3}\.\d{1,3}/.test(s.agentLabel) &&
+             !/\+\d{5,}/.test(s.agentLabel)
+      );
+      if (sessions.length > 0) {
+        mkdirSync(_persistDir, { recursive: true });
+        writeFileSync(_agentSessionFile, JSON.stringify(sessions, null, 2), "utf-8");
+      }
+    } catch {}
+  }
+
+  // Flush on gateway shutdown
+  if (!(globalThis as any).__shroudShutdownWired) {
+    (globalThis as any).__shroudShutdownWired = true;
+    process.on("SIGTERM", _flushToDisk);
+    process.on("SIGINT", _flushToDisk);
+  }
+
+  // Reset in-memory tracker and reload from disk on each plugin init.
+  // This clears stale test data and ensures disk is the source of truth.
+  agentTracker.reset();
+
+  // Reload persisted agent sessions from disk
+  try {
+    if (existsSync(_agentSessionFile)) {
+      const saved = JSON.parse(readFileSync(_agentSessionFile, "utf-8")) as any[];
+      for (const s of saved) {
+        if (s.agentLabel && !agentTracker.getSessionByLabel(s.agentLabel)) {
+          const session = agentTracker.registerAgent(
+            `"conversation_label": "#${s.agentLabel.toLowerCase().replace(/\s+/g, "-")}"`
+          );
+          session.llmCallCount = s.llmCallCount || 0;
+          session.securityEventCount = s.securityEventCount || 0;
+          session.detectedModel = s.detectedModel || "unknown";
+          session.channelSource = s.channelSource || "";
+          session.toolInventory = s.toolInventory || [];
+          session.soulExtract = s.soulExtract || "";
+          if (s.classification) session.classification = s.classification;
+          if (s.startedAt) session.startedAt = s.startedAt;
+        }
+      }
+    }
+  } catch {}
+
+  // Periodic flush every 10 LLM calls
+  let _flushCounter = 0;
+  const _origRecordCall = agentTracker.recordLlmCall.bind(agentTracker);
+  agentTracker.recordLlmCall = function(): any {
+    const result = _origRecordCall();
+    if (++_flushCounter % 10 === 0) _flushToDisk();
+    return result;
+  };
 
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt

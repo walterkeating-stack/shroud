@@ -24,7 +24,10 @@ export class BaselineStore {
   private readonly _profileDir: string;
 
   constructor(profileDir: string) {
-    this._profileDir = profileDir;
+    // Expand ~ to actual home directory (Node.js doesn't do this automatically)
+    this._profileDir = profileDir.startsWith("~")
+      ? join(process.env.HOME || "/tmp", profileDir.slice(1))
+      : profileDir;
   }
 
   /** Load a baseline for the given agent build ID. Returns null if not found. */
