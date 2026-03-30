@@ -241,7 +241,8 @@ export class EventGrader {
     const sessionKey = `${GRADING_SESSION_PREFIX}${Date.now()}`;
 
     return new Promise((resolve, reject) => {
-      const child = execFile(this._openclawBin, [
+      // Step 1: Create session
+      execFile(this._openclawBin, [
         "gateway", "call", "sessions.create",
         "--expect-final",
         "--timeout", "60000",
@@ -254,41 +255,80 @@ export class EventGrader {
         timeout: 65_000,
         encoding: "utf-8",
         env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
-      }, (err, stdout, stderr) => {
+      }, (err, stdout) => {
         if (err) {
           reject(new Error(`Command failed: ${err.message?.slice(0, 200)}`));
           return;
         }
 
-        const result = stdout || "";
-        const jsonMatch = result.match(/\[[\s\S]*?\]/);
-        if (!jsonMatch) {
-          resolve({ verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
+        // Step 2: Extract session file path from response
+        const createResult = stdout || "";
+        let sessionFile = "";
+        try {
+          const parsed = JSON.parse(createResult);
+          sessionFile = parsed?.entry?.sessionFile || "";
+        } catch {}
+
+        if (!sessionFile) {
+          resolve({ verdicts: [], prompt: fullPrompt, rawResponse: createResult.slice(0, 2000) });
           return;
         }
 
-        try {
-          const parsed = JSON.parse(jsonMatch[0]);
-          if (!Array.isArray(parsed)) {
-            resolve({ verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
-            return;
+        // Step 3: Poll session file for assistant response (max 30s)
+        let attempts = 0;
+        const poll = () => {
+          attempts++;
+          try {
+            const { readFileSync: rfs } = require("node:fs");
+            const lines = rfs(sessionFile, "utf-8").split("\n").filter((l: string) => l.trim());
+            // Find assistant message with text content
+            for (const line of lines.reverse()) {
+              try {
+                const entry = JSON.parse(line);
+                const msg = entry?.message;
+                if (msg?.role === "assistant") {
+                  let text = "";
+                  if (typeof msg.content === "string") text = msg.content;
+                  else if (Array.isArray(msg.content)) {
+                    text = msg.content.map((b: any) => b?.text || "").join("\n");
+                  }
+                  if (text.length > 5) {
+                    // Found the response — parse verdicts
+                    const jsonMatch = text.match(/\[[\s\S]*\]/);
+                    if (jsonMatch) {
+                      try {
+                        const arr = JSON.parse(jsonMatch[0]);
+                        if (Array.isArray(arr)) {
+                          const verdicts = arr
+                            .filter((v: any) => typeof v.index === "number" &&
+                              ["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"].includes(v.verdict))
+                            .map((v: any) => ({
+                              index: v.index,
+                              verdict: v.verdict as GradingVerdict,
+                              reasoning: typeof v.reasoning === "string" ? v.reasoning.slice(0, 200) : "",
+                            }));
+                          resolve({ verdicts, prompt: fullPrompt, rawResponse: text.slice(0, 2000) });
+                          return;
+                        }
+                      } catch {}
+                    }
+                    resolve({ verdicts: [], prompt: fullPrompt, rawResponse: text.slice(0, 2000) });
+                    return;
+                  }
+                }
+              } catch {}
+            }
+          } catch {}
+
+          if (attempts < 15) {
+            setTimeout(poll, 2000); // retry every 2s, max 30s
+          } else {
+            resolve({ verdicts: [], prompt: fullPrompt, rawResponse: "Timeout waiting for LLM response" });
           }
+        };
 
-          const verdicts = parsed
-            .filter((v: any) =>
-              typeof v.index === "number" &&
-              ["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"].includes(v.verdict),
-            )
-            .map((v: any) => ({
-              index: v.index,
-              verdict: v.verdict as GradingVerdict,
-              reasoning: typeof v.reasoning === "string" ? v.reasoning.slice(0, 200) : "",
-            }));
-
-          resolve({ verdicts, prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
-        } catch {
-          resolve({ verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
-        }
+        // Start polling after initial delay
+        setTimeout(poll, 3000);
       });
     });
   }
