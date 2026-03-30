@@ -923,8 +923,22 @@ async function refresh() {
       if (channels.length > 0) {
         html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">Channels: ';
         for (const ch of channels) {
-          const chColor = ch === 'slack' ? '#4A154B' : ch === 'whatsapp' ? '#25D366' : ch === 'tui' ? '#58a6ff' : ch === 'email' ? '#d29922' : '#8b949e';
+          const chColor = ch === 'slack' ? '#4A154B' : ch === 'whatsapp' ? '#25D366' : ch === 'tui' ? '#58a6ff' : ch === 'email' ? '#d29922' : ch === 'heartbeat' ? '#f85149' : ch === 'cron' ? '#bc4c00' : '#8b949e';
           html += '<span style="color:' + chColor + ';border:1px solid ' + chColor + ';padding:0 4px;border-radius:3px;margin-right:4px">' + ch + '</span>';
+        }
+        html += '</div>';
+      }
+      const hb = a.heartbeat || {};
+      if (hb.enabled) {
+        const hbColor = hb.status === 'alive' ? '#3fb950' : hb.status === 'stale' ? '#d29922' : hb.status === 'dead' ? '#f85149' : '#8b949e';
+        const hbIcon = hb.status === 'alive' ? '&#x2764;' : hb.status === 'stale' ? '&#x26A0;' : hb.status === 'dead' ? '&#x1F480;' : '&#x2753;';
+        const hbInterval = hb.avgIntervalMs > 0 ? Math.round(hb.avgIntervalMs / 60000) + 'm' : '?';
+        const hbLast = hb.lastAt > 0 ? timeAgo(hb.lastAt) : 'never';
+        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
+        html += 'Heartbeat: <span style="color:' + hbColor + '">' + hbIcon + ' ' + hb.status + '</span>';
+        html += ' (every ~' + hbInterval + ', last: ' + hbLast + ')';
+        if (hb.lastResponse && !hb.lastResponse.includes('HEARTBEAT_OK')) {
+          html += ' <span style="color:#f85149">ALERT: ' + hb.lastResponse.slice(0, 60) + '</span>';
         }
         html += '</div>';
       }

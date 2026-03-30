@@ -71,6 +71,24 @@ export interface AgentSession {
   cache: AgentCacheStats;
   /** Active channels this agent has been seen on. */
   channels: string[];
+  /** Heartbeat tracking. */
+  heartbeat: AgentHeartbeat;
+}
+
+/** Per-agent heartbeat tracking. */
+export interface AgentHeartbeat {
+  /** Whether heartbeat has been detected for this agent. */
+  enabled: boolean;
+  /** Timestamps of recent heartbeats (last 10). */
+  recent: number[];
+  /** Average interval between heartbeats (ms). -1 if not enough data. */
+  avgIntervalMs: number;
+  /** Last heartbeat timestamp. */
+  lastAt: number;
+  /** Status: "alive", "stale" (2x interval missed), "dead" (5x missed). */
+  status: "alive" | "stale" | "dead" | "unknown";
+  /** Last heartbeat response (HEARTBEAT_OK or alert text). */
+  lastResponse: string;
 }
 
 /** Per-agent LLM cache tracking for anomaly detection. */
@@ -145,6 +163,10 @@ export class AgentSessionTracker {
           baselineSamples: 0, callsWithCache: 0,
         },
         channels: [],
+        heartbeat: {
+          enabled: false, recent: [], avgIntervalMs: -1,
+          lastAt: 0, status: "unknown", lastResponse: "",
+        },
       };
       this._sessions.set(label, session);
     } else {
@@ -235,6 +257,73 @@ export class AgentSessionTracker {
     }
 
     return null;
+  }
+
+  /** Record a heartbeat for the current agent. Returns alert if missed. */
+  recordHeartbeat(response?: string): { alert: string; severity: "medium" | "high" } | null {
+    const session = this._sessions.get(this._currentLabel);
+    if (!session) return null;
+
+    const hb = session.heartbeat;
+    const now = Date.now();
+    hb.enabled = true;
+    hb.lastAt = now;
+    hb.lastResponse = (response || "").slice(0, 200);
+    hb.recent.push(now);
+    if (hb.recent.length > 10) hb.recent.shift();
+    hb.status = "alive";
+
+    // Calculate average interval from recent timestamps
+    if (hb.recent.length >= 3) {
+      let totalGap = 0;
+      for (let i = 1; i < hb.recent.length; i++) {
+        totalGap += hb.recent[i] - hb.recent[i - 1];
+      }
+      hb.avgIntervalMs = totalGap / (hb.recent.length - 1);
+    }
+
+    // Check if response is an alert (not HEARTBEAT_OK)
+    if (response && !response.includes("HEARTBEAT_OK") && response.trim().length > 5) {
+      return {
+        alert: `Heartbeat alert from ${session.agentLabel}: ${response.slice(0, 150)}`,
+        severity: "medium",
+      };
+    }
+
+    return null;
+  }
+
+  /** Check all agents for missed heartbeats. Call periodically. */
+  checkHeartbeatHealth(): Array<{ agentLabel: string; status: string; alert: string }> {
+    const alerts: Array<{ agentLabel: string; status: string; alert: string }> = [];
+    const now = Date.now();
+
+    for (const session of this._sessions.values()) {
+      const hb = session.heartbeat;
+      if (!hb.enabled || hb.avgIntervalMs <= 0) continue;
+
+      const sinceLastHb = now - hb.lastAt;
+      const prevStatus = hb.status;
+
+      if (sinceLastHb > hb.avgIntervalMs * 5) {
+        hb.status = "dead";
+      } else if (sinceLastHb > hb.avgIntervalMs * 2) {
+        hb.status = "stale";
+      } else {
+        hb.status = "alive";
+      }
+
+      // Alert on status transitions
+      if (hb.status !== prevStatus && hb.status !== "alive") {
+        alerts.push({
+          agentLabel: session.agentLabel,
+          status: hb.status,
+          alert: `${session.agentLabel} heartbeat ${hb.status} — last seen ${Math.round(sinceLastHb / 60000)}m ago (expected every ${Math.round(hb.avgIntervalMs / 60000)}m)`,
+        });
+      }
+    }
+
+    return alerts;
   }
 
   /** Detect and record the channel from prompt metadata. */
@@ -728,5 +817,16 @@ export function detectChannel(prompt: string): string | null {
   if (/Discord\s+message/i.test(prompt)) return "discord";
   if (/Telegram\s+message/i.test(prompt)) return "telegram";
   if (/Teams\s+message/i.test(prompt)) return "teams";
+  if (/HEARTBEAT\.md|HEARTBEAT_OK|heartbeat\s+(?:check|run|turn)/i.test(prompt)) return "heartbeat";
   return null;
+}
+
+/** Check if a prompt is a heartbeat prompt. */
+export function isHeartbeatPrompt(prompt: string): boolean {
+  return /HEARTBEAT\.md|Read\s+HEARTBEAT|heartbeat\s+(?:check|run|turn)|nothing\s+needs\s+attention.*HEARTBEAT_OK/i.test(prompt);
+}
+
+/** Check if a response is a heartbeat OK response. */
+export function isHeartbeatOk(response: string): boolean {
+  return /HEARTBEAT_OK/i.test(response);
 }

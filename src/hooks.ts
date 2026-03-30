@@ -31,7 +31,7 @@ import { DnsCache } from "./dns-cache.js";
 import { InjectionDetector } from "./detectors/injection.js";
 import { SecurityEventBus } from "./security-event.js";
 import type { SecurityEvent } from "./security-event.js";
-import { AgentSessionTracker } from "./agent-session.js";
+import { AgentSessionTracker, isHeartbeatPrompt } from "./agent-session.js";
 import { BehaviouralProfiler } from "./profiler.js";
 import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
@@ -480,7 +480,29 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const _origRecordCall = agentTracker.recordLlmCall.bind(agentTracker);
   agentTracker.recordLlmCall = function(): any {
     const result = _origRecordCall();
-    if (++_flushCounter % 10 === 0) _flushToDisk();
+    if (++_flushCounter % 10 === 0) {
+      _flushToDisk();
+      // Check heartbeat health on all agents
+      const hbAlerts = agentTracker.checkHeartbeatHealth();
+      if (hbAlerts.length > 0 && securityBus) {
+        for (const a of hbAlerts) {
+          securityBus.emit({
+            timestamp: Date.now(),
+            eventType: "anomaly_detected",
+            direction: "request",
+            threatClass: "instruction_override" as any,
+            signatureId: `heartbeat_${a.status}`,
+            severity: a.status === "dead" ? "high" : "medium",
+            matchedText: a.alert,
+            matchStart: 0, matchEnd: 0, textLength: 0,
+            action: "flagged",
+            description: a.alert,
+            agentLabel: a.agentLabel,
+            channel: "heartbeat",
+          });
+        }
+      }
+    }
     return result;
   };
 
@@ -504,6 +526,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (profiler) profiler.setAgentBuildId(session.agentBuildId);
       // Detect and record channel type
       agentTracker.updateChannelFromPrompt(event.prompt);
+      // Tag heartbeat calls
+      if (isHeartbeatPrompt(event.prompt)) {
+        (globalThis as any).__shroudCurrentHeartbeat = true;
+      }
     }
 
     // ── DNS cache warming ──
@@ -1576,6 +1602,31 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     /** Complete profiler turn with accumulated response text. Called at stream end. */
     function finalizeResponseProfiling(): void {
+      // Record heartbeat if this was a heartbeat call
+      if ((globalThis as any).__shroudCurrentHeartbeat) {
+        (globalThis as any).__shroudCurrentHeartbeat = false;
+        const hbAlert = agentTracker.recordHeartbeat(responseTextAccum);
+        if (hbAlert && securityBus) {
+          const agentSession = agentTracker.getCurrentSession();
+          securityBus.emit({
+            timestamp: Date.now(),
+            eventType: "anomaly_detected",
+            direction: "response",
+            threatClass: "instruction_override" as any,
+            signatureId: "heartbeat_alert",
+            severity: hbAlert.severity,
+            matchedText: hbAlert.alert,
+            matchStart: 0, matchEnd: 0, textLength: responseTextAccum.length,
+            action: "flagged",
+            description: hbAlert.alert,
+            agentBuildId: agentSession?.agentBuildId,
+            agentLabel: agentSession?.agentLabel,
+            agentSessionId: agentSession?.sessionId,
+            channel: "heartbeat",
+          });
+        }
+      }
+
       if (profiler && responseTextAccum.length > 0) {
         try {
           const fv = profiler.extractResponseFeatures(responseTextAccum, [], responseCacheUsage ?? undefined);
