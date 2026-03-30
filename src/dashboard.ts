@@ -191,12 +191,89 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
   });
 }
 
+/** Expected entity categories and tools for each role classification. */
+const ROLE_EXPECTATIONS: Record<string, { expectedCategories: string[]; suspiciousTools: string[] }> = {
+  "Security Research":    { expectedCategories: ["ip_address", "hostname", "email"], suspiciousTools: ["deploy", "billing", "payment"] },
+  "DevOps / SRE":        { expectedCategories: ["ip_address", "hostname", "file_path"], suspiciousTools: ["billing", "payment", "crm"] },
+  "System Admin":        { expectedCategories: ["ip_address", "hostname", "file_path"], suspiciousTools: ["billing", "payment"] },
+  "Network Engineering": { expectedCategories: ["ip_address", "hostname"], suspiciousTools: ["billing", "payment", "crm"] },
+  "Customer Support":    { expectedCategories: ["email", "phone", "person_name"], suspiciousTools: ["exec", "deploy", "rm", "kill"] },
+  "Sales / Outreach":    { expectedCategories: ["email", "phone", "person_name"], suspiciousTools: ["exec", "deploy", "rm", "kill"] },
+  "Coaching / Training": { expectedCategories: ["person_name"], suspiciousTools: ["exec", "deploy", "rm", "kill", "read_file"] },
+  "Research":            { expectedCategories: ["email", "ip_address"], suspiciousTools: ["deploy", "rm", "kill"] },
+  "Personal Assistant":  { expectedCategories: ["email", "phone", "person_name"], suspiciousTools: ["exec", "deploy"] },
+};
+
+function computeAgentHealth(
+  agent: import("./agent-session.js").AgentSession,
+  baseline: any | null,
+  securityEvents: import("./security-event.js").SecurityEvent[],
+): import("./agent-session.js").AgentHealth {
+  const issues: string[] = [];
+  const now = Date.now();
+
+  // 1. Liveness — how recently was the agent active?
+  const sinceLastCall = now - agent.lastCallAt;
+  const lastActiveAgo = sinceLastCall < 60_000 ? "just now"
+    : sinceLastCall < 3_600_000 ? Math.floor(sinceLastCall / 60_000) + "m ago"
+    : sinceLastCall < 86_400_000 ? Math.floor(sinceLastCall / 3_600_000) + "h ago"
+    : Math.floor(sinceLastCall / 86_400_000) + "d ago";
+
+  // 2. Security event rate
+  const eventRate = agent.llmCallCount > 0
+    ? Math.round((agent.securityEventCount / agent.llmCallCount) * 100)
+    : 0;
+  if (eventRate > 50) issues.push("High security event rate (" + eventRate + "%)");
+
+  // 3. Behavioural compliance — check entity categories and tools against role expectations
+  let compliant = true;
+  const role = agent.classification?.role || "General Agent";
+  const expectations = ROLE_EXPECTATIONS[role];
+
+  if (expectations && baseline) {
+    const knownCategories: string[] = baseline.categoryProfile || [];
+    const knownTools: string[] = baseline.toolProfile || [];
+
+    // Check for suspicious tool usage
+    for (const tool of knownTools) {
+      if (expectations.suspiciousTools.some(s => tool.toLowerCase().includes(s))) {
+        issues.push("Unexpected tool: " + tool);
+        compliant = false;
+      }
+    }
+  }
+
+  // Recent high-severity security events
+  const recentHighSev = securityEvents.filter(
+    e => e.severity === "high" && (now - e.timestamp) < 3_600_000,
+  );
+  if (recentHighSev.length > 0) {
+    issues.push(recentHighSev.length + " high-severity events in last hour");
+    compliant = false;
+  }
+
+  // Determine overall status
+  let status: "healthy" | "warning" | "critical" = "healthy";
+  if (!compliant || eventRate > 50) status = "warning";
+  if (recentHighSev.length >= 3 || eventRate > 200) status = "critical";
+
+  const colour = status === "healthy" ? "#3fb950"
+    : status === "warning" ? "#d29922"
+    : "#f85149";
+
+  return { status, colour, compliant, issues, lastActiveAgo, eventRate };
+}
+
 function handleAgents(res: ServerResponse, deps: DashboardDeps) {
   const agents = deps.agentTracker.getAllSessions();
+  const allEvents = deps.securityBus?.getEvents() ?? [];
+
   const enriched = agents.map(agent => {
     const baseline = deps.baselineStore?.load(agent.agentBuildId);
+    const agentEvents = allEvents.filter(e => e.agentLabel === agent.agentLabel);
     return {
       ...agent,
+      health: computeAgentHealth(agent, baseline, agentEvents),
       profiling: baseline ? {
         maturity: baseline.maturity,
         sessionCount: baseline.sessionCount,
@@ -744,13 +821,29 @@ async function refresh() {
       const roleColour = cls.colour || '#8b949e';
       const rolePct = cls.confidencePct ?? 0;
 
+      const h = a.health || {};
+      const healthIcon = h.status === 'healthy' ? '&#x25CF;' : h.status === 'warning' ? '&#x25B2;' : '&#x25CF;';
+      const healthColour = h.colour || '#8b949e';
+      const complianceText = h.compliant === false ? 'non-compliant' : h.compliant === true ? 'compliant' : 'pending';
+      const complianceColour = h.compliant === false ? '#f85149' : h.compliant === true ? '#3fb950' : '#8b949e';
+
       html += '<div class="agent-card ' + maturity + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)" style="cursor:pointer">';
       html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<div class="agent-name" style="font-size:15px">' + (a.agentLabel || a.agentBuildId);
+      html += '<div class="agent-name" style="font-size:15px">';
+      html += '<span style="color:' + healthColour + ';margin-right:6px" title="' + (h.status || 'unknown') + '">' + healthIcon + '</span>';
+      html += (a.agentLabel || a.agentBuildId);
       html += ' <span style="font-size:11px;color:' + roleColour + ';font-weight:400;margin-left:8px;padding:1px 6px;border:1px solid ' + roleColour + ';border-radius:10px">' + roleLabel + ' <span style="opacity:0.7">' + rolePct + '%</span></span>';
       html += '</div>';
+      html += '<div style="display:flex;gap:8px;align-items:center">';
+      html += '<span style="font-size:10px;color:' + complianceColour + ';border:1px solid ' + complianceColour + ';padding:1px 5px;border-radius:8px">' + complianceText + '</span>';
       html += '<span class="badge' + (a.securityEventCount > 5 ? ' danger' : a.securityEventCount > 0 ? ' warn' : '') + '">' + a.securityEventCount + ' events</span>';
       html += '</div>';
+      html += '</div>';
+      if (h.issues && h.issues.length > 0) {
+        html += '<div style="margin-top:4px;font-size:11px;color:#f85149">';
+        for (const issue of h.issues) html += '&#x26A0; ' + issue + '<br>';
+        html += '</div>';
+      }
       html += '<table style="width:100%;margin-top:8px;font-size:12px;color:#8b949e"><tr>';
       html += '<td>Build: <span style="color:#58a6ff">' + a.agentBuildId.slice(0,12) + '</span></td>';
       html += '<td>Calls: <span style="color:#c9d1d9">' + a.llmCallCount + '</span></td>';

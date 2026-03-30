@@ -25,6 +25,22 @@ export interface AgentClassification {
   signals: string[];
 }
 
+/** Agent health and behavioural compliance status. */
+export interface AgentHealth {
+  /** Overall health: "healthy", "warning", "critical". */
+  status: "healthy" | "warning" | "critical";
+  /** Health colour for dashboard. */
+  colour: string;
+  /** Is the agent behaving according to its classification? */
+  compliant: boolean;
+  /** Compliance detail messages. */
+  issues: string[];
+  /** Last active relative indicator. */
+  lastActiveAgo: string;
+  /** Security event rate per 100 calls. */
+  eventRate: number;
+}
+
 /** Represents a tracked agent session. */
 export interface AgentSession {
   /** Stable identity hash: SHA256(systemPrompt + pluginList + modelId). */
