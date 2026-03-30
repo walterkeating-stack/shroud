@@ -2737,14 +2737,14 @@ describe("EXIT 44: Hostname patterns", () => {
     const r = ob.obfuscate("host VIE-CORE-RTR-01");
     expect(r.entities.some((e: any) => e.category === "hostname")).toBe(true);
   });
-  test("short CNET: FCNETR1", () => {
+  test("short device code: LABSWT01", () => {
     const ob = resolvedObfuscator();
-    const r = ob.obfuscate("device FCNETR1");
+    const r = ob.obfuscate("device LABSWT01");
     expect(r.entities.some((e: any) => e.category === "hostname")).toBe(true);
   });
-  test("short CNET: WCNETR2", () => {
+  test("short device code: DCRTR02", () => {
     const ob = resolvedObfuscator();
-    const r = ob.obfuscate("device WCNETR2");
+    const r = ob.obfuscate("device DCRTR02");
     expect(r.entities.some((e: any) => e.category === "hostname")).toBe(true);
   });
 });

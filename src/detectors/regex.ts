@@ -580,9 +580,9 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.90,
   },
   {
-    // Short device codes: FCNETR1, WCNETR2, LCNETR3 — uppercase letter(s) + "CNET" or role + digit(s)
+    // Short device codes: LABSW01, DCRTR02 — uppercase prefix + role abbreviation + digit(s)
     name: "device_name_short",
-    pattern: /\b([A-Z]{1,4}(?:CNET|ONET|MNET|ANET)[A-Z]?\d{1,2})\b/g,
+    pattern: /\b([A-Z]{2,6}(?:RTR|SWT|FWL|APX|DST|AGG|CPE|WLC)[A-Z]?\d{1,2})\b/g,
     category: Category.HOSTNAME,
     confidence: 0.85,
   },
