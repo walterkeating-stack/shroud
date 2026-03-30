@@ -334,11 +334,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         intervalSec: config.llmGradingIntervalSec,
         gatewayUrl: config.llmGradingGatewayUrl,
       });
-      // Feed security events to the grader — use globalThis bus (survives plugin reloads)
-      const activeBus = securityBus || (globalThis as any).__shroudSecurityBus;
-      if (activeBus) {
-        activeBus.onEvent((event: any) => grader.addEvent(event));
-      }
+      // Feed security events to the grader.
+      // Wire to BOTH the local bus AND the globalThis bus — covers all cases.
+      const graderCb = (event: any) => grader.addEvent(event);
+      if (securityBus) securityBus.onEvent(graderCb);
+      const gBus = (globalThis as any).__shroudSecurityBus;
+      if (gBus && gBus !== securityBus) gBus.onEvent(graderCb);
       grader.start();
       (globalThis as any).__shroudEventGrader = grader;
     }
@@ -493,7 +494,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const hbAlerts = agentTracker.checkHeartbeatHealth();
       if (hbAlerts.length > 0 && securityBus) {
         for (const a of hbAlerts) {
-          securityBus.emit({
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit({
             timestamp: Date.now(),
             eventType: "anomaly_detected",
             direction: "request",
@@ -850,7 +851,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           evt.agentLabel = agentSession?.agentLabel;
           evt.channel = agentSession?.channels?.[agentSession.channels.length - 1];
           evt.agentSessionId = agentSession?.sessionId;
-          securityBus.emit(evt);
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
         }
         agentTracker.recordSecurityEvent(toolResult.events.length);
 
@@ -1463,7 +1464,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               evt.channel = agentSession.channels?.[agentSession.channels.length - 1];
                 evt.agentSessionId = agentSession.sessionId;
               }
-              securityBus.emit(evt);
+              ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
             }
             if (events.length > 0) {
               agentTracker.recordSecurityEvent(events.length);
@@ -1601,7 +1602,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               evt.channel = agentSession.channels?.[agentSession.channels.length - 1];
               evt.agentSessionId = agentSession.sessionId;
             }
-            securityBus.emit(evt);
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
           }
           if (events.length > 0) agentTracker.recordSecurityEvent(events.length);
         } catch { /* never break response pipeline */ }
@@ -1617,7 +1618,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (allLeaks.length > 0) {
             const agentSession = agentTracker.getCurrentSession();
             for (const leak of allLeaks) {
-              securityBus.emit({
+              ((globalThis as any).__shroudSecurityBus || securityBus)?.emit({
                 timestamp: Date.now(),
                 eventType: "canary_triggered",
                 direction: "response",
@@ -1649,7 +1650,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         const hbAlert = agentTracker.recordHeartbeat(responseTextAccum);
         if (hbAlert && securityBus) {
           const agentSession = agentTracker.getCurrentSession();
-          securityBus.emit({
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit({
             timestamp: Date.now(),
             eventType: "anomaly_detected",
             direction: "response",
@@ -1677,7 +1678,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             if (alerts.length > 0 && securityBus) {
               const agentSession = agentTracker.getCurrentSession();
               for (const alert of alerts) {
-                securityBus.emit({
+                ((globalThis as any).__shroudSecurityBus || securityBus)?.emit({
                   timestamp: alert.timestamp,
                   eventType: "anomaly_detected",
                   direction: "response",
@@ -1703,7 +1704,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             const cacheAlert = agentTracker.updateCache(responseCacheUsage);
             if (cacheAlert && securityBus) {
               const agentSession = agentTracker.getCurrentSession();
-              securityBus.emit({
+              ((globalThis as any).__shroudSecurityBus || securityBus)?.emit({
                 timestamp: Date.now(),
                 eventType: "anomaly_detected",
                 direction: "response",
