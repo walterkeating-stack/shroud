@@ -13,7 +13,7 @@
  * `openclaw gateway call sessions.create`.
  */
 
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import type { SecurityEvent } from "./security-event.js";
 
 /** Verdict from LLM grading. */
@@ -98,8 +98,7 @@ export class EventGrader {
     // Find openclaw binary
     this._openclawBin = process.env.OPENCLAW_BIN || "openclaw";
     try {
-      const { execFileSync: efs } = require("node:child_process");
-      const which = efs("which", ["openclaw"], { encoding: "utf-8" }).trim();
+      const which = execFileSync("which", ["openclaw"], { encoding: "utf-8" }).trim();
       if (which) this._openclawBin = which;
     } catch {}
   }
