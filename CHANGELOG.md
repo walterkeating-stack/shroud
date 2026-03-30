@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.11] - 2026-03-30
+
+### Fixed
+- **Removed real infrastructure naming conventions from codebase.** Device name regex pattern and test data contained identifiable naming schemes. Replaced with generic examples (LABRTR01, DCRTR02, etc.). The `device_name_short` regex now matches common role abbreviations (RTR, SWT, FWL, APX, DST, AGG, CPE, WLC) instead of site-specific patterns.
+
 ## [2.2.9] - 2026-03-28
 
 ### Fixed
