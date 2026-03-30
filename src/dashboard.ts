@@ -219,11 +219,12 @@ function computeAgentHealth(
     : sinceLastCall < 86_400_000 ? Math.floor(sinceLastCall / 3_600_000) + "h ago"
     : Math.floor(sinceLastCall / 86_400_000) + "d ago";
 
-  // 2. Security event rate
+  // 2. Security event rate — exclude "low" severity (quoted context, FPs)
+  const significantEvents = securityEvents.filter(e => e.severity !== "low");
   const eventRate = agent.llmCallCount > 0
-    ? Math.round((agent.securityEventCount / agent.llmCallCount) * 100)
+    ? Math.round((significantEvents.length / agent.llmCallCount) * 100)
     : 0;
-  if (eventRate > 50) issues.push("High security event rate (" + eventRate + "%)");
+  if (eventRate > 50) issues.push("High security event rate (" + eventRate + "% of calls)");
 
   // 3. Behavioural compliance — check entity categories and tools against role expectations
   let compliant = true;
@@ -231,7 +232,6 @@ function computeAgentHealth(
   const expectations = ROLE_EXPECTATIONS[role];
 
   if (expectations && baseline) {
-    const knownCategories: string[] = baseline.categoryProfile || [];
     const knownTools: string[] = baseline.toolProfile || [];
 
     // Check for suspicious tool usage
@@ -243,19 +243,19 @@ function computeAgentHealth(
     }
   }
 
-  // Recent high-severity security events
+  // Recent high/medium-severity security events
   const recentHighSev = securityEvents.filter(
-    e => e.severity === "high" && (now - e.timestamp) < 3_600_000,
+    e => (e.severity === "high" || e.severity === "medium") && (now - e.timestamp) < 3_600_000,
   );
   if (recentHighSev.length > 0) {
-    issues.push(recentHighSev.length + " high-severity events in last hour");
+    issues.push(recentHighSev.length + " medium/high-severity events in last hour");
     compliant = false;
   }
 
   // Determine overall status
   let status: "healthy" | "warning" | "critical" = "healthy";
   if (!compliant || eventRate > 50) status = "warning";
-  if (recentHighSev.length >= 3 || eventRate > 200) status = "critical";
+  if (recentHighSev.filter(e => e.severity === "high").length >= 3 || eventRate > 200) status = "critical";
 
   const colour = status === "healthy" ? "#3fb950"
     : status === "warning" ? "#d29922"
@@ -864,12 +864,28 @@ async function refresh() {
 
     // Recent events
     html += '<div class="card" style="grid-column: span 2"><h2>Recent Security Events</h2><div class="events-list">';
-    for (const e of (events.events || []).reverse()) {
-      html += '<div class="event ' + e.severity + '">';
+    for (let i = 0; i < (events.events || []).length; i++) {
+      const e = events.events[events.events.length - 1 - i];
+      const eid = 'evt-' + i;
+      html += '<div class="event ' + e.severity + '" style="cursor:pointer" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
       html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
       html += sigTooltip(e.signatureId) + ' ';
       html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || '', 40) + '</span>';
       html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
+      html += '<div id="' + eid + '" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">';
+      html += '<table style="width:100%;color:#8b949e"><tbody>';
+      html += '<tr><td style="width:120px">Signature</td><td style="color:#58a6ff">' + e.signatureId + '</td></tr>';
+      html += '<tr><td>Threat Class</td><td>' + (e.threatClass || '').replace(/_/g, ' ') + '</td></tr>';
+      html += '<tr><td>Severity</td><td style="color:' + (e.severity === 'high' ? '#f85149' : e.severity === 'medium' ? '#d29922' : '#3fb950') + '">' + e.severity + '</td></tr>';
+      html += '<tr><td>Direction</td><td>' + (e.direction || '') + '</td></tr>';
+      html += '<tr><td>Action</td><td>' + (e.action || '') + '</td></tr>';
+      html += '<tr><td>Agent</td><td>' + (e.agentLabel || e.agentBuildId || 'unknown') + '</td></tr>';
+      html += '<tr><td>Match Position</td><td>' + (e.matchStart || 0) + '-' + (e.matchEnd || 0) + ' of ' + (e.textLength || 0) + ' chars</td></tr>';
+      html += '<tr><td>Description</td><td style="color:#c9d1d9">' + (e.description || '') + '</td></tr>';
+      html += '<tr><td>Full Match</td><td style="color:#c9d1d9;font-family:monospace;word-break:break-all">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
+      html += '<tr><td>Timestamp</td><td>' + new Date(e.timestamp).toLocaleString() + '</td></tr>';
+      html += '</tbody></table>';
+      html += '</div>';
       html += '</div>';
     }
     html += '</div></div>';
