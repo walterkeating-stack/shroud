@@ -441,9 +441,27 @@ const MCP_TOOL_POISONING: SignatureDef[] = [
   {
     id: "mcp_read_sensitive",
     threatClass: ThreatClass.MCP_TOOL_POISONING,
-    pattern: /(?:read|cat|access|exfiltrate|steal|extract|dump|leak|show|display|print|output)\s+(?:the\s+|me\s+)?(?:~\/|~\\|\/etc\/)?(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws|passwd|shadow|master\.passwd|gshadow|sudoers)/gi,
+    pattern: /(?:read|cat|access|exfiltrate|steal|extract|dump|leak|show|display|print|output)\s+(?:the\s+|me\s+)?(?:~\/|~\\|\/etc\/)?(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws|passwd|shadow|master\.passwd|gshadow|sudoers|\.kube\/config|\.config\/gcloud|\.docker\/config|\.npmrc|\.pypirc|\.gem\/credentials|\.git-credentials|\.pgpass|\.my\.cnf|\.env\.(?:local|prod|production|staging)|\.vault-token|\.boto|\.netrc)/gi,
     severity: "high",
     description: "MCP tool poisoning: access sensitive files",
+    direction: "both",
+  },
+  // Cloud metadata SSRF — classic cloud attack
+  {
+    id: "mcp_cloud_metadata_ssrf",
+    threatClass: ThreatClass.MCP_TOOL_POISONING,
+    pattern: /(?:169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|metadata\.azure\.com|169\.254\.170\.2)/gi,
+    severity: "high",
+    description: "MCP tool poisoning: cloud metadata service SSRF",
+    direction: "both",
+  },
+  // file:// URI — local file read bypass
+  {
+    id: "mcp_file_uri",
+    threatClass: ThreatClass.MCP_TOOL_POISONING,
+    pattern: /file:\/\/\/(?:etc|home|root|tmp|var|proc|sys)\//gi,
+    severity: "high",
+    description: "MCP tool poisoning: file:// URI local file access",
     direction: "both",
   },
   {
