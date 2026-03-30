@@ -37,6 +37,7 @@ import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
 import { PolicyEngine } from "./policy.js";
 import * as sigLoaderMod from "./signature-loader.js";
+import { EventGrader, GRADING_SESSION_PREFIX } from "./event-grader.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -320,6 +321,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       });
       loader.start().catch(() => {}); // fire-and-forget, non-fatal
       (globalThis as any).__shroudSigLoader = loader;
+    }
+
+    // --- LLM Event Grading ---
+    if (config.llmGradingEnabled && !(globalThis as any).__shroudEventGrader) {
+      const grader = new EventGrader({
+        threshold: config.llmGradingThreshold,
+        intervalSec: config.llmGradingIntervalSec,
+        gatewayUrl: config.llmGradingGatewayUrl,
+      });
+      // Feed security events to the grader
+      if (securityBus) {
+        securityBus.onEvent((event) => grader.addEvent(event));
+      }
+      grader.start();
+      (globalThis as any).__shroudEventGrader = grader;
     }
   }
 
@@ -1362,7 +1378,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             }
 
             const allText = textsToScan.join("\n");
-            const events = activeDetector.scanRequest(allText);
+
+            // Self-whitelist: skip scanning for grading sessions (they contain
+            // real injection examples by definition).
+            // SECURITY: whitelist by registered session key only, NOT by text content.
+            // The grader registers its session key on the tracker before calling the gateway.
+            const isGradingSession = (globalThis as any).__shroudGradingSessionKeys?.has(
+              agentTracker.getCurrentSession()?.sessionId,
+            );
+            const events = isGradingSession ? [] : activeDetector.scanRequest(allText);
 
             // Enrich events with agent identity
             const agentSession = agentTracker.getCurrentSession();

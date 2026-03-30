@@ -196,6 +196,9 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
              (globalThis as any).__shroudExternalSigs.toolGuard.length,
       loadedAt: new Date((globalThis as any).__shroudExternalSigs.loadedAt).toISOString(),
     } : null,
+    grading: (globalThis as any).__shroudEventGrader
+      ? (globalThis as any).__shroudEventGrader.getStats()
+      : null,
   });
 }
 
@@ -381,7 +384,14 @@ function handleEvents(res: ServerResponse, deps: DashboardDeps, urlStr = "/api/e
     events = events.slice(-100);
   }
 
-  json(res, 200, { stats, count: events.length, events });
+  // Enrich events with LLM grading verdicts
+  const grader = (globalThis as any).__shroudEventGrader as import("./event-grader.js").EventGrader | undefined;
+  const enriched = grader ? events.map(e => {
+    const v = grader.getVerdict(e.timestamp);
+    return v ? { ...e, verdict: v.verdict, verdictReasoning: v.reasoning } : e;
+  }) : events;
+
+  json(res, 200, { stats, count: enriched.length, events: enriched });
 }
 
 function handleEventStream(req: IncomingMessage, res: ServerResponse, clients: Set<ServerResponse>) {
@@ -919,6 +929,11 @@ async function refresh() {
       html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
       html += sigTooltip(e.signatureId) + ' ';
       html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || '', 40) + '</span>';
+      // LLM grading verdict badge (included in event data from API)
+      if (e.verdict) {
+        const vc = e.verdict === 'FALSE_POSITIVE' ? '#3fb950' : e.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
+        html += ' <span style="font-size:9px;color:' + vc + ';border:1px solid ' + vc + ';padding:0 4px;border-radius:3px">' + e.verdict.replace(/_/g, ' ') + '</span>';
+      }
       html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
       html += '<div id="' + eid + '" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">';
       html += '<table style="width:100%;color:#8b949e"><tbody>';

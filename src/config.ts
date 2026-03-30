@@ -200,6 +200,26 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       return typeof raw.signaturesRefreshSec === "number" ? raw.signaturesRefreshSec : 3600;
     })(),
 
+    // --- LLM Event Grading ---
+    llmGradingEnabled: (() => {
+      const env = process.env.SHROUD_LLM_GRADING;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.llmGradingEnabled === "boolean" ? raw.llmGradingEnabled : false;
+    })(),
+    llmGradingIntervalSec: (() => {
+      const env = process.env.SHROUD_LLM_GRADING_INTERVAL;
+      if (env) return parseInt(env, 10) || 300;
+      return typeof raw.llmGradingIntervalSec === "number" ? raw.llmGradingIntervalSec : 300;
+    })(),
+    llmGradingThreshold: (() => {
+      const env = process.env.SHROUD_LLM_GRADING_THRESHOLD;
+      if (env) return parseInt(env, 10) || 5;
+      return typeof raw.llmGradingThreshold === "number" ? raw.llmGradingThreshold : 5;
+    })(),
+    llmGradingGatewayUrl: process.env.SHROUD_LLM_GRADING_GATEWAY_URL
+      || (typeof raw.llmGradingGatewayUrl === "string" ? raw.llmGradingGatewayUrl : "ws://127.0.0.1:18789"),
+
     // --- SIEM ---
     siemWebhookUrl: (() => {
       const env = process.env.SHROUD_SIEM_WEBHOOK_URL;
