@@ -95,10 +95,13 @@ export class EventGrader {
     this._threshold = opts.threshold;
     this._intervalMs = opts.intervalSec * 1000;
     this._gatewayUrl = opts.gatewayUrl;
-    // Find openclaw binary
+    // Find openclaw binary — pass full env so PATH resolves correctly
     this._openclawBin = process.env.OPENCLAW_BIN || "openclaw";
     try {
-      const which = execFileSync("which", ["openclaw"], { encoding: "utf-8" }).trim();
+      const which = execFileSync("which", ["openclaw"], {
+        encoding: "utf-8",
+        env: process.env,
+      }).trim();
       if (which) this._openclawBin = which;
     } catch {}
   }
