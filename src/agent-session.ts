@@ -67,6 +67,24 @@ export interface AgentSession {
   toolInventory: string[];
   /** SOUL.md extract — agent's core identity/instructions from early messages. */
   soulExtract: string;
+  /** Per-agent LLM cache stats. */
+  cache: AgentCacheStats;
+}
+
+/** Per-agent LLM cache tracking for anomaly detection. */
+export interface AgentCacheStats {
+  totalInputTokens: number;
+  totalOutputTokens: number;
+  totalCacheRead: number;
+  totalCacheWrite: number;
+  /** Running average cache hit ratio (0-1). */
+  avgHitRatio: number;
+  /** Baseline hit ratio (from first N calls). -1 if not established. */
+  baselineHitRatio: number;
+  /** Number of calls contributing to the baseline. */
+  baselineSamples: number;
+  /** Number of calls with cache data. */
+  callsWithCache: number;
 }
 
 /**
@@ -118,6 +136,12 @@ export class AgentSessionTracker {
         classification: classifyAgent(label, systemPrompt),
         toolInventory: [],
         soulExtract: "",
+        cache: {
+          totalInputTokens: 0, totalOutputTokens: 0,
+          totalCacheRead: 0, totalCacheWrite: 0,
+          avgHitRatio: 0, baselineHitRatio: -1,
+          baselineSamples: 0, callsWithCache: 0,
+        },
       };
       this._sessions.set(label, session);
     } else {
@@ -142,6 +166,72 @@ export class AgentSessionTracker {
     if (session && source) {
       session.channelSource = source;
     }
+  }
+
+  /**
+   * Update per-agent cache stats from an LLM response.
+   * Returns anomaly alerts if cache behaviour deviates from baseline.
+   */
+  updateCache(usage: {
+    inputTokens: number; outputTokens: number;
+    cacheReadTokens: number; cacheWriteTokens: number;
+  }): { alert: string; severity: "medium" | "high" } | null {
+    const session = this._sessions.get(this._currentLabel);
+    if (!session || usage.inputTokens === 0) return null;
+
+    const c = session.cache;
+    c.totalInputTokens += usage.inputTokens;
+    c.totalOutputTokens += usage.outputTokens;
+    c.totalCacheRead += usage.cacheReadTokens;
+    c.totalCacheWrite += usage.cacheWriteTokens;
+    c.callsWithCache++;
+
+    const hitRatio = usage.inputTokens > 0
+      ? usage.cacheReadTokens / usage.inputTokens : 0;
+
+    // Running average (exponential moving average, alpha=0.3)
+    c.avgHitRatio = c.callsWithCache === 1
+      ? hitRatio
+      : c.avgHitRatio * 0.7 + hitRatio * 0.3;
+
+    // Establish baseline from first 5 calls
+    const BASELINE_WINDOW = 5;
+    if (c.baselineSamples < BASELINE_WINDOW) {
+      c.baselineSamples++;
+      c.baselineHitRatio = c.baselineSamples === 1
+        ? hitRatio
+        : ((c.baselineHitRatio * (c.baselineSamples - 1)) + hitRatio) / c.baselineSamples;
+      return null; // Still learning baseline
+    }
+
+    // Anomaly detection: compare current ratio to baseline
+    // 1. Cache ratio drop >30% — possible prompt injection/tampering
+    if (c.baselineHitRatio > 0.3 && hitRatio < c.baselineHitRatio * 0.5) {
+      return {
+        alert: `Cache hit ratio dropped to ${Math.round(hitRatio * 100)}% (baseline: ${Math.round(c.baselineHitRatio * 100)}%) — possible system prompt change`,
+        severity: "high",
+      };
+    }
+
+    // 2. Zero cache hits when baseline expects them
+    if (c.baselineHitRatio > 0.5 && hitRatio === 0) {
+      return {
+        alert: `Zero cache hits (baseline: ${Math.round(c.baselineHitRatio * 100)}%) — system prompt may have been replaced`,
+        severity: "high",
+      };
+    }
+
+    // 3. Unusual cache write spike (>3x baseline write ratio)
+    const baselineWriteRatio = c.totalCacheWrite / Math.max(1, c.totalInputTokens - usage.inputTokens);
+    const currentWriteRatio = usage.cacheWriteTokens / Math.max(1, usage.inputTokens);
+    if (c.callsWithCache > BASELINE_WINDOW && baselineWriteRatio > 0 && currentWriteRatio > baselineWriteRatio * 3) {
+      return {
+        alert: `Cache write spike: ${Math.round(currentWriteRatio * 100)}% of input (baseline: ${Math.round(baselineWriteRatio * 100)}%) — possible prompt stuffing`,
+        severity: "medium",
+      };
+    }
+
+    return null;
   }
 
   /** Update tool inventory from body.tools array. Only sets once (first call). */

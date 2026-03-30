@@ -1578,6 +1578,31 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               agentTracker.recordSecurityEvent(alerts.length);
             }
           }
+          // Per-agent cache anomaly detection
+          if (responseCacheUsage && responseCacheUsage.inputTokens > 0) {
+            const cacheAlert = agentTracker.updateCache(responseCacheUsage);
+            if (cacheAlert && securityBus) {
+              const agentSession = agentTracker.getCurrentSession();
+              securityBus.emit({
+                timestamp: Date.now(),
+                eventType: "anomaly_detected",
+                direction: "response",
+                threatClass: "instruction_override" as any,
+                signatureId: "cache_anomaly",
+                severity: cacheAlert.severity,
+                matchedText: cacheAlert.alert,
+                matchStart: 0, matchEnd: 0,
+                textLength: 0,
+                action: "flagged",
+                description: cacheAlert.alert,
+                agentBuildId: agentSession?.agentBuildId,
+                agentLabel: agentSession?.agentLabel,
+                agentSessionId: agentSession?.sessionId,
+              });
+              agentTracker.recordSecurityEvent(1);
+            }
+          }
+
           // Incremental baseline update — flush to disk every 5 turns
           // so baselines build up without waiting for session end / SIGTERM
           const profile = profiler.getSessionProfile();

@@ -891,6 +891,17 @@ async function refresh() {
       html += '<td>Entity categories: <span style="color:#d2a8ff">' + cats + '</span></td>';
       html += '<td>Tools: ' + toolDisplay + '</td>';
       html += '</tr></table>';
+      const ac = a.cache || {};
+      if (ac.callsWithCache > 0) {
+        const hitPct = Math.round((ac.avgHitRatio || 0) * 100);
+        const cacheColour = hitPct >= 70 ? '#3fb950' : hitPct >= 30 ? '#d29922' : '#f85149';
+        const basePct = ac.baselineHitRatio >= 0 ? Math.round(ac.baselineHitRatio * 100) + '%' : 'learning';
+        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
+        html += 'Cache: <span style="color:' + cacheColour + ';font-weight:600">' + hitPct + '% hit</span>';
+        html += ' (baseline: ' + basePct + ', ' + ac.callsWithCache + ' calls, ';
+        html += (ac.totalCacheRead || 0).toLocaleString() + ' read / ' + (ac.totalCacheWrite || 0).toLocaleString() + ' write tokens)';
+        html += '</div>';
+      }
       html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
       html += '<div class="progress" style="flex:1"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%;background:' + (maturity==='mature'?'#3fb950':maturity==='reliable'?'#58a6ff':'#d29922') + '"></div></div>';
       html += '<span style="font-size:11px;color:#8b949e">' + statusText + '</span>';
