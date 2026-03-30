@@ -1326,6 +1326,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     // Accumulate all deobfuscated response text for security scanning
     let responseTextAccum = "";
+    // Cache usage from LLM response — extracted from SSE message_start or JSON response
+    let responseCacheUsage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number } | null = null;
 
     /** Scan deobfuscated response text for security events. Called per-block. */
     function scanDeobfuscatedBlock(deobbed: string): void {
@@ -1387,7 +1389,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     function finalizeResponseProfiling(): void {
       if (profiler && responseTextAccum.length > 0) {
         try {
-          const fv = profiler.extractResponseFeatures(responseTextAccum, []);
+          const fv = profiler.extractResponseFeatures(responseTextAccum, [], responseCacheUsage ?? undefined);
           if (fv) {
             const alerts = profiler.analyzeTurn(fv);
             // Emit anomaly alerts as security events
@@ -1574,6 +1576,17 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 if (buffered) continue;
               }
 
+              // Extract LLM cache usage from message_start (Anthropic) or stream events (OpenAI)
+              const usage = json.message?.usage || json.usage;
+              if (usage) {
+                responseCacheUsage = {
+                  inputTokens: usage.input_tokens || usage.prompt_tokens || 0,
+                  outputTokens: usage.output_tokens || usage.completion_tokens || 0,
+                  cacheReadTokens: usage.cache_read_input_tokens || usage.prompt_tokens_details?.cached_tokens || 0,
+                  cacheWriteTokens: usage.cache_creation_input_tokens || 0,
+                };
+              }
+
               // Deobfuscate content blocks in message events (message_start etc)
               if (Array.isArray(json.message?.content)) {
                 for (const block of json.message.content) {
@@ -1665,6 +1678,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         const text = await response.text();
         try {
           const json = JSON.parse(text);
+          // Extract cache usage from JSON response
+          const jsonUsage = json.usage;
+          if (jsonUsage) {
+            responseCacheUsage = {
+              inputTokens: jsonUsage.input_tokens || jsonUsage.prompt_tokens || 0,
+              outputTokens: jsonUsage.output_tokens || jsonUsage.completion_tokens || 0,
+              cacheReadTokens: jsonUsage.cache_read_input_tokens || jsonUsage.prompt_tokens_details?.cached_tokens || 0,
+              cacheWriteTokens: jsonUsage.cache_creation_input_tokens || 0,
+            };
+          }
           if (Array.isArray(json.content)) {
             for (const block of json.content) {
               if (block?.type === "text" && typeof block.text === "string") {

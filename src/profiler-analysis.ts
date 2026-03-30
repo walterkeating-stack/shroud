@@ -130,6 +130,26 @@ const NUMERIC_FEATURES: Array<{
     extract: (fv) => fv.imagePayloadBytes,
     anomalyType: AnomalyType.ENTITY_CATEGORY_SHIFT,
   },
+  {
+    name: "inputTokens",
+    extract: (fv) => fv.inputTokens,
+    anomalyType: AnomalyType.ENTITY_DENSITY_SPIKE,
+  },
+  {
+    name: "outputTokens",
+    extract: (fv) => fv.outputTokens,
+    anomalyType: AnomalyType.EXFILTRATION_PATTERN,
+  },
+  {
+    name: "cacheHitRatio",
+    extract: (fv) => fv.cacheHitRatio,
+    anomalyType: AnomalyType.TOPIC_DISCONTINUITY,
+  },
+  {
+    name: "cacheWriteTokens",
+    extract: (fv) => fv.cacheWriteTokens,
+    anomalyType: AnomalyType.ENTITY_CATEGORY_SHIFT,
+  },
 ];
 
 /**

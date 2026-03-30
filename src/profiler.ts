@@ -140,6 +140,12 @@ export class BehaviouralProfiler {
       nonLatinRatio,
       imagePayloadCount: imagePayloads?.count ?? 0,
       imagePayloadBytes: imagePayloads?.totalBytes ?? 0,
+      // Cache metrics filled in from response (extractResponseFeatures)
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      cacheHitRatio: 0,
     };
   }
 
@@ -150,6 +156,7 @@ export class BehaviouralProfiler {
   extractResponseFeatures(
     responseText: string,
     requestEntities: string[],
+    cacheUsage?: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number },
   ): FeatureVector | null {
     if (!this._pendingRequest) return null;
 
@@ -184,6 +191,13 @@ export class BehaviouralProfiler {
       nonLatinRatio: this._pendingRequest.nonLatinRatio ?? 0,
       imagePayloadCount: this._pendingRequest.imagePayloadCount ?? 0,
       imagePayloadBytes: this._pendingRequest.imagePayloadBytes ?? 0,
+      inputTokens: cacheUsage?.inputTokens ?? 0,
+      outputTokens: cacheUsage?.outputTokens ?? 0,
+      cacheReadTokens: cacheUsage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: cacheUsage?.cacheWriteTokens ?? 0,
+      cacheHitRatio: cacheUsage && cacheUsage.inputTokens > 0
+        ? cacheUsage.cacheReadTokens / cacheUsage.inputTokens
+        : 0,
     };
 
     this._turns.push(features);

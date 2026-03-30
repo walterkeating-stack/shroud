@@ -98,7 +98,12 @@ function openaiNonStreaming(content, model) {
       message: { role: "assistant", content },
       finish_reason: "stop",
     }],
-    usage: { prompt_tokens: content.length, completion_tokens: content.length, total_tokens: content.length * 2 },
+    usage: {
+      prompt_tokens: content.length,
+      completion_tokens: content.length,
+      total_tokens: content.length * 2,
+      prompt_tokens_details: { cached_tokens: Math.ceil(content.length * 0.7) },
+    },
   };
 }
 
@@ -221,7 +226,12 @@ function anthropicNonStreaming(content, model) {
     stop_reason: "end_turn",
     stop_sequence: null,
     content: [{ type: "text", text: content }],
-    usage: { input_tokens: Math.ceil(content.length / 4), output_tokens: Math.ceil(content.length / 4) },
+    usage: {
+      input_tokens: Math.ceil(content.length / 4),
+      output_tokens: Math.ceil(content.length / 4),
+      cache_creation_input_tokens: Math.ceil(content.length / 8),
+      cache_read_input_tokens: Math.ceil(content.length / 4 * 0.7),
+    },
   };
 }
 
@@ -263,7 +273,12 @@ function anthropicStreamText(res, content, model) {
     message: {
       id: msgId, type: "message", role: "assistant", model: m,
       stop_reason: null, stop_sequence: null,
-      usage: { input_tokens: inputTokens, output_tokens: 1 },
+      usage: {
+        input_tokens: inputTokens,
+        output_tokens: 1,
+        cache_creation_input_tokens: Math.ceil(inputTokens * 0.15),
+        cache_read_input_tokens: Math.ceil(inputTokens * 0.7),
+      },
       content: [],
     },
   });
