@@ -925,6 +925,10 @@ async function showAgent(buildId) {
     if (dcls.signals?.length) html += '<div style="font-size:11px;color:#8b949e;margin-top:2px">Signals: ' + dcls.signals.join(', ') + '</div>';
     html += '</td></tr>';
     html += '<tr class="row"><td class="label">Started</td><td class="value">' + new Date(a.startedAt).toLocaleString() + '</td></tr>';
+    const toolInv = a.toolInventory || [];
+    html += '<tr class="row"><td class="label">Tool Inventory</td><td class="value">' + (toolInv.length > 0 ? '<span style="color:#d2a8ff">' + toolInv.length + ' tools</span> — ' + toolInv.slice(0, 15).join(', ') + (toolInv.length > 15 ? '... (+' + (toolInv.length - 15) + ')' : '') : '<span style="color:#484f58">none captured yet</span>') + '</td></tr>';
+    const soul = a.soulExtract || '';
+    html += '<tr class="row"><td class="label">SOUL Extract</td><td class="value">' + (soul ? '<div style="font-family:monospace;font-size:11px;color:#8b949e;max-height:80px;overflow-y:auto;white-space:pre-wrap">' + soul.replace(/</g, '&lt;').slice(0, 300) + (soul.length > 300 ? '...' : '') + '</div>' : '<span style="color:#484f58">not captured yet</span>') + '</td></tr>';
     html += '</tbody></table>';
     html += '</div>';
 

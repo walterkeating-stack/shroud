@@ -63,6 +63,10 @@ export interface AgentSession {
   channelSource: string;
   /** Inferred role classification. */
   classification: AgentClassification;
+  /** Tool names available to the agent (from body.tools). */
+  toolInventory: string[];
+  /** SOUL.md extract — agent's core identity/instructions from early messages. */
+  soulExtract: string;
 }
 
 /**
@@ -112,6 +116,8 @@ export class AgentSessionTracker {
         detectedModel: modelId,
         channelSource: "",
         classification: classifyAgent(label, systemPrompt),
+        toolInventory: [],
+        soulExtract: "",
       };
       this._sessions.set(label, session);
     } else {
@@ -135,6 +141,30 @@ export class AgentSessionTracker {
     const session = this._sessions.get(this._currentLabel);
     if (session && source) {
       session.channelSource = source;
+    }
+  }
+
+  /** Update tool inventory from body.tools array. Only sets once (first call). */
+  updateTools(tools: string[]): void {
+    const session = this._sessions.get(this._currentLabel);
+    if (session && tools.length > 0 && session.toolInventory.length === 0) {
+      session.toolInventory = tools;
+      // Re-classify with tool data for better accuracy
+      session.classification = classifyAgentWithTools(
+        session.agentLabel, "", session.toolInventory,
+      );
+    }
+  }
+
+  /** Update SOUL extract from early messages. Only sets once. */
+  updateSoul(soul: string): void {
+    const session = this._sessions.get(this._currentLabel);
+    if (session && soul && !session.soulExtract) {
+      session.soulExtract = soul.slice(0, 500);
+      // Re-classify with SOUL data
+      session.classification = classifyAgentWithTools(
+        session.agentLabel, session.soulExtract, session.toolInventory,
+      );
     }
   }
 
@@ -492,4 +522,63 @@ export function classifyAgent(label: string, systemPrompt: string): AgentClassif
   }
 
   return makeClassification("General Agent", 10, []);
+}
+
+/** Tool name patterns that indicate specific roles. */
+const TOOL_ROLE_SIGNALS: { role: string; tools: RegExp }[] = [
+  { role: "DevOps / SRE",        tools: /deploy|kubernetes|docker|terraform|ansible|helm|kubectl|aws|gcloud|azure/i },
+  { role: "Software Engineering", tools: /code|compile|build|test|lint|git|npm|pip|cargo|debug|exec|write_file|read_file/i },
+  { role: "System Admin",        tools: /ssh|systemctl|service|cron|mount|useradd|passwd|iptables/i },
+  { role: "Network Engineering",  tools: /ping|traceroute|nslookup|dig|netstat|snmp|bgp|route/i },
+  { role: "Data / Analytics",     tools: /query|sql|bigquery|spark|pandas|jupyter|notebook|dataset/i },
+  { role: "Customer Support",     tools: /ticket|zendesk|intercom|crm|freshdesk|jira.*service/i },
+  { role: "Sales / Outreach",     tools: /salesforce|hubspot|outreach|email.*send|linkedin|prospect/i },
+  { role: "Research",             tools: /search|web_fetch|browser|scrape|crawl|arxiv|scholar/i },
+  { role: "Writing / Content",    tools: /publish|wordpress|medium|draft|edit.*doc|notion/i },
+  { role: "Personal Assistant",   tools: /calendar|schedule|remind|todo|weather|timer/i },
+];
+
+/**
+ * Enhanced classifier that uses tools + SOUL.md + label.
+ * Called when new data (tools or SOUL) becomes available.
+ */
+export function classifyAgentWithTools(
+  label: string, soulExtract: string, tools: string[],
+): AgentClassification {
+  // Start with base classification
+  const base = classifyAgent(label, soulExtract);
+
+  // If already high confidence, keep it
+  if (base.confidencePct >= 80) return base;
+
+  // Try to upgrade using tool inventory
+  if (tools.length > 0) {
+    const toolStr = tools.join(" ").toLowerCase();
+    for (const { role, tools: pattern } of TOOL_ROLE_SIGNALS) {
+      const matches = [...toolStr.matchAll(new RegExp(pattern.source, "gi"))];
+      if (matches.length > 0) {
+        const toolPct = Math.min(85, 60 + matches.length * 5);
+        const signals = [...base.signals, ...matches.map(m => "tool:" + m[0])];
+        // If tool signal is stronger, use it; otherwise merge
+        if (toolPct > base.confidencePct) {
+          return makeClassification(role, toolPct, signals);
+        }
+        // Same role from different sources — boost confidence
+        if (role === base.role) {
+          const boosted = Math.min(95, base.confidencePct + 10);
+          return makeClassification(role, boosted, signals);
+        }
+      }
+    }
+  }
+
+  // Try SOUL.md if we have it and base is still weak
+  if (soulExtract && base.confidencePct < 50) {
+    const soulResult = classifyAgent(label, soulExtract);
+    if (soulResult.confidencePct > base.confidencePct) {
+      return soulResult;
+    }
+  }
+
+  return base;
 }

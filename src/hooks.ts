@@ -1040,6 +1040,27 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (profiler) profiler.setAgentBuildId(session.agentBuildId);
         }
 
+        // Extract tool inventory from body.tools
+        if (Array.isArray(body.tools) && body.tools.length > 0) {
+          const toolNames = body.tools
+            .map((t: any) => t?.name || t?.function?.name || "")
+            .filter((n: string) => n.length > 0);
+          if (toolNames.length > 0) {
+            agentTracker.updateTools(toolNames);
+          }
+        }
+
+        // Extract SOUL.md from early assistant messages in body.messages
+        // The SOUL is typically in the first assistant message (OpenClaw injects it)
+        if (Array.isArray(body.messages) && body.messages.length > 0) {
+          const firstAssistant = body.messages.find(
+            (m: any) => m?.role === "assistant" && typeof m.content === "string" && m.content.length > 50,
+          );
+          if (firstAssistant) {
+            agentTracker.updateSoul(firstAssistant.content);
+          }
+        }
+
         let modified = false;
 
         // Obfuscate system prompt (Anthropic format)
