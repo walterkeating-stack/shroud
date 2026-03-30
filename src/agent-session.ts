@@ -551,21 +551,28 @@ export function classifyAgentWithTools(
   // If already high confidence, keep it
   if (base.confidencePct >= 80) return base;
 
-  // Try to upgrade using tool inventory
-  if (tools.length > 0) {
+  // Try to upgrade using tool inventory — but ONLY if base is General Agent
+  // or if tools confirm the same role. All OpenClaw agents share base tools
+  // (Read, Write, exec, etc.) so generic tools shouldn't override a label match.
+  if (tools.length > 0 && (base.role === "General Agent" || base.confidencePct < 50)) {
     const toolStr = tools.join(" ").toLowerCase();
     for (const { role, tools: pattern } of TOOL_ROLE_SIGNALS) {
       const matches = [...toolStr.matchAll(new RegExp(pattern.source, "gi"))];
-      if (matches.length > 0) {
-        const toolPct = Math.min(85, 60 + matches.length * 5);
+      if (matches.length >= 2) { // Require 2+ tool matches to classify from tools alone
+        const toolPct = Math.min(75, 50 + matches.length * 5);
         const signals = [...base.signals, ...matches.map(m => "tool:" + m[0])];
-        // If tool signal is stronger, use it; otherwise merge
-        if (toolPct > base.confidencePct) {
-          return makeClassification(role, toolPct, signals);
-        }
-        // Same role from different sources — boost confidence
-        if (role === base.role) {
+        return makeClassification(role, toolPct, signals);
+      }
+    }
+  } else if (tools.length > 0 && base.confidencePct >= 50) {
+    // Tools confirm existing classification — boost confidence
+    const toolStr = tools.join(" ").toLowerCase();
+    for (const { role, tools: pattern } of TOOL_ROLE_SIGNALS) {
+      if (role === base.role) {
+        const matches = [...toolStr.matchAll(new RegExp(pattern.source, "gi"))];
+        if (matches.length > 0) {
           const boosted = Math.min(95, base.confidencePct + 10);
+          const signals = [...base.signals, ...matches.map(m => "tool:" + m[0])];
           return makeClassification(role, boosted, signals);
         }
       }

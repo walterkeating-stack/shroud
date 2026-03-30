@@ -1050,14 +1050,23 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
         }
 
-        // Extract SOUL.md from early assistant messages in body.messages
-        // The SOUL is typically in the first assistant message (OpenClaw injects it)
+        // Extract SOUL.md from early messages in body.messages
+        // OpenClaw may inject it as assistant or user content, in string or block format.
+        // Scan the first 5 messages for identity-bearing content (- Name:, You are, SOUL, etc.)
         if (Array.isArray(body.messages) && body.messages.length > 0) {
-          const firstAssistant = body.messages.find(
-            (m: any) => m?.role === "assistant" && typeof m.content === "string" && m.content.length > 50,
-          );
-          if (firstAssistant) {
-            agentTracker.updateSoul(firstAssistant.content);
+          const soulPatterns = /(?:-\s*Name:|[Yy]ou\s+are|SOUL|IDENTITY|personality|role:|purpose:)/;
+          for (let mi = 0; mi < Math.min(5, body.messages.length); mi++) {
+            const m = body.messages[mi];
+            let text = "";
+            if (typeof m?.content === "string") {
+              text = m.content;
+            } else if (Array.isArray(m?.content)) {
+              text = m.content.map((b: any) => b?.text || "").join("\n");
+            }
+            if (text.length > 30 && soulPatterns.test(text)) {
+              agentTracker.updateSoul(text);
+              break;
+            }
           }
         }
 

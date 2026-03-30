@@ -850,9 +850,13 @@ async function refresh() {
       html += '<td>Sessions: <span style="color:#c9d1d9">' + (p.sessionCount||0) + '</span></td>';
       html += '<td>Model: <span style="color:#c9d1d9">' + (a.detectedModel || 'unknown') + '</span></td>';
       html += '</tr></table>';
+      const inv = (a.toolInventory || []);
+      const toolDisplay = inv.length > 0
+        ? '<span style="color:#d2a8ff">' + inv.length + ' tools</span> — ' + inv.slice(0, 8).join(', ') + (inv.length > 8 ? '...' : '')
+        : '<span style="color:#484f58">' + tools + '</span>';
       html += '<table style="width:100%;margin-top:4px;font-size:12px;color:#8b949e"><tr>';
       html += '<td>Entity categories: <span style="color:#d2a8ff">' + cats + '</span></td>';
-      html += '<td>Tools: <span style="color:#d2a8ff">' + tools + '</span></td>';
+      html += '<td>Tools: ' + toolDisplay + '</td>';
       html += '</tr></table>';
       html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
       html += '<div class="progress" style="flex:1"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%;background:' + (maturity==='mature'?'#3fb950':maturity==='reliable'?'#58a6ff':'#d29922') + '"></div></div>';
