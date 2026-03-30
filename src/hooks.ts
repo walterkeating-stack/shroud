@@ -34,6 +34,7 @@ import type { SecurityEvent } from "./security-event.js";
 import { AgentSessionTracker } from "./agent-session.js";
 import { BehaviouralProfiler } from "./profiler.js";
 import { BaselineStore } from "./profiler-store.js";
+import { scanToolCall } from "./detectors/tool-guard.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -636,6 +637,39 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       api.logger?.info(
         `[shroud][depth] Nested tool call at depth ${depth}: ${event.toolName ?? "?"}`,
       );
+    }
+
+    // --- Tool call guard: scan for dangerous commands ---
+    if (config.injectionDetection !== "off") {
+      const toolResult = scanToolCall(event.toolName ?? "unknown", event.params);
+      if (toolResult.events.length > 0 && securityBus) {
+        const agentSession = agentTracker.getCurrentSession();
+        for (const evt of toolResult.events) {
+          evt.agentBuildId = agentSession?.agentBuildId;
+          evt.agentLabel = agentSession?.agentLabel;
+          evt.agentSessionId = agentSession?.sessionId;
+          securityBus.emit(evt);
+        }
+        agentTracker.recordSecurityEvent(toolResult.events.length);
+
+        // Block the tool call if dangerous and action=block
+        if (toolResult.shouldBlock && config.injectionDetection === "block") {
+          api.logger?.warn(
+            `[shroud] BLOCKED dangerous tool call: ${event.toolName} — ${toolResult.events[0].description}`,
+          );
+          return {
+            block: true,
+            blockReason: `Shroud security: blocked dangerous ${event.toolName} call �� ${toolResult.events[0].description}`,
+          };
+        }
+
+        // Flag mode: log but don't block
+        if (toolResult.events.some(e => e.severity === "high")) {
+          api.logger?.warn(
+            `[shroud] DANGEROUS tool call detected (flagged): ${event.toolName} — ${toolResult.events[0].description}`,
+          );
+        }
+      }
     }
 
     const serialized = JSON.stringify(event.params);
