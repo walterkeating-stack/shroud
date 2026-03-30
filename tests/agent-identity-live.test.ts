@@ -49,7 +49,7 @@ describe("Agent identity — real OpenClaw live format", () => {
   // The critical tests: identify agent from channel label in session metadata
   test("PJ identified from #pj-main channel", () => {
     const session = tracker.registerAgent(makeFullSystem("pj-main"));
-    expect(session.agentLabel).toBe("Pj");
+    expect(session.agentLabel).toBe("PJ");
   });
 
   test("Coach Alessandra identified from #coach-alessandra channel", () => {
@@ -65,7 +65,7 @@ describe("Agent identity — real OpenClaw live format", () => {
   // event.prompt (without framework preamble) should also work
   test("event.prompt: PJ from channel label", () => {
     const session = tracker.registerAgent(makePrompt("pj-main", ""));
-    expect(session.agentLabel).toBe("Pj");
+    expect(session.agentLabel).toBe("PJ");
   });
 
   test("event.prompt: Coach Alessandra from channel label", () => {

@@ -206,6 +206,13 @@ export class InjectionDetector {
 
       let match: RegExpExecArray | null;
       while ((match = sig.pattern.exec(text)) !== null) {
+        // Skip OpenClaw system context: "System: [2026-03-30 10:11:29 GMT+2]"
+        // This is structural metadata, not a conversation mockup injection.
+        if (sig.id === "cm_role_markers") {
+          const after = text.slice(match.index + match[0].length - 1, match.index + match[0].length + 30);
+          if (/^\[\d{4}-\d{2}-\d{2}/.test(after)) continue;
+        }
+
         // Context-aware severity reduction: if the match is inside
         // quotation marks or backticks, it's likely being discussed/quoted
         // rather than used as an attack. Reduce severity to "low".

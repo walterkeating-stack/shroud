@@ -260,8 +260,10 @@ function extractLabel(systemPrompt: string): string {
     let name = channelMatch[1].trim();
     // Strip suffixes like "-main" that are channel routing, not agent name
     name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
-    // Convert kebab-case to Title Case
-    name = name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    // Convert kebab-case to Title Case (short names like "pj" → "PJ")
+    name = name.split(/[-_]/).map(w =>
+      w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
+    ).join(" ");
     if (name.length > 1 && name.length < 50) return name;
   }
 
@@ -270,7 +272,9 @@ function extractLabel(systemPrompt: string): string {
   if (slackChannelMatch) {
     let name = slackChannelMatch[1].trim();
     name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
-    name = name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    name = name.split(/[-_]/).map(w =>
+      w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
+    ).join(" ");
     if (name.length > 1 && name.length < 50) return name;
   }
 
