@@ -654,7 +654,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
-  <div class="tab" onclick="switchTab('calls')">LLM Calls</div>
+  <div class="tab" onclick="switchTab('calls')">Detection</div>
 </div>
 <div class="grid" id="content">
   <div class="card"><h2>Loading...</h2></div>
@@ -1523,105 +1523,105 @@ function renderSignatures() {
 
 async function renderCalls() {
   try {
-    const [callsData, gradingData] = await Promise.all([
-      fetchJson('/api/calls'),
-      fetchJson('/api/grading'),
-    ]);
+    const gradingData = await fetchJson('/api/grading');
     let html = '<div class="policy-section">';
+    html += '<h2 style="color:#c9d1d9;font-size:18px;margin-bottom:4px">LLM Detection</h2>';
+    html += '<p style="color:#484f58;font-size:12px;margin-bottom:16px">Shroud batches flagged security events and sends them to an LLM for grading. Each batch shows the question asked, the LLM response, and the verdicts applied.</p>';
 
-    // Grading section (if enabled)
-    if (gradingData.enabled) {
-      const gs = gradingData.stats || {};
-      html += '<div class="card" style="margin-bottom:16px"><h2>LLM Event Grading</h2>';
-      html += '<div style="display:flex;gap:24px;margin-bottom:12px">';
-      html += '<div><span style="color:#f85149;font-size:24px;font-weight:bold">' + (gs.truePositive||0) + '</span><div style="font-size:11px;color:#8b949e">True Positive</div></div>';
-      html += '<div><span style="color:#3fb950;font-size:24px;font-weight:bold">' + (gs.falsePositive||0) + '</span><div style="font-size:11px;color:#8b949e">False Positive</div></div>';
-      html += '<div><span style="color:#d29922;font-size:24px;font-weight:bold">' + (gs.needsReview||0) + '</span><div style="font-size:11px;color:#8b949e">Needs Review</div></div>';
-      html += '<div><span style="color:#8b949e;font-size:24px;font-weight:bold">' + (gs.pending||0) + '</span><div style="font-size:11px;color:#8b949e">Pending</div></div>';
+    if (!gradingData.enabled) {
+      html += '<div class="card">';
+      html += '<h2 style="color:#d29922">Not Enabled</h2>';
+      html += '<p style="color:#8b949e;margin-bottom:12px">LLM event grading is disabled. To enable:</p>';
+      html += '<pre style="background:#0d1117;padding:12px;border-radius:6px;color:#c9d1d9;font-size:12px">';
+      html += 'SHROUD_LLM_GRADING=true\\n';
+      html += 'SHROUD_LLM_GRADING_INTERVAL=300  # seconds between batches\\n';
+      html += 'SHROUD_LLM_GRADING_THRESHOLD=5   # min events before grading\\n';
+      html += '</pre>';
+      html += '<p style="color:#8b949e;margin-top:12px;font-size:12px">Add to systemd drop-in and restart the gateway.</p>';
       html += '</div>';
+    } else {
+      // Verdict summary
+      const gs = gradingData.stats || {};
+      html += '<div class="card" style="margin-bottom:16px">';
+      html += '<div style="display:flex;gap:32px;margin-bottom:16px">';
+      html += '<div><span style="color:#f85149;font-size:32px;font-weight:bold">' + (gs.truePositive||0) + '</span><div style="font-size:12px;color:#8b949e">True Positive</div></div>';
+      html += '<div><span style="color:#3fb950;font-size:32px;font-weight:bold">' + (gs.falsePositive||0) + '</span><div style="font-size:12px;color:#8b949e">False Positive</div></div>';
+      html += '<div><span style="color:#d29922;font-size:32px;font-weight:bold">' + (gs.needsReview||0) + '</span><div style="font-size:12px;color:#8b949e">Needs Review</div></div>';
+      html += '<div><span style="color:#8b949e;font-size:32px;font-weight:bold">' + (gs.pending||0) + '</span><div style="font-size:12px;color:#8b949e">Pending</div></div>';
+      html += '<div><span style="color:#58a6ff;font-size:32px;font-weight:bold">' + (gs.graded||0) + '</span><div style="font-size:12px;color:#8b949e">Total Graded</div></div>';
+      html += '</div>';
+
+      // Verdicts table
       if (gradingData.graded && gradingData.graded.length > 0) {
+        html += '<h3 style="color:#8b949e;font-size:13px;margin-bottom:8px">Recent Verdicts</h3>';
         html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid #30363d">';
         html += '<th style="padding:6px;text-align:left;color:#484f58">Agent</th>';
         html += '<th style="padding:6px;text-align:left;color:#484f58">Signature</th>';
+        html += '<th style="padding:6px;text-align:left;color:#484f58">Matched Text</th>';
         html += '<th style="padding:6px;text-align:left;color:#484f58">Verdict</th>';
-        html += '<th style="padding:6px;text-align:left;color:#484f58">Reasoning</th>';
+        html += '<th style="padding:6px;text-align:left;color:#484f58">LLM Reasoning</th>';
         html += '</tr></thead><tbody>';
-        for (const g of gradingData.graded.slice(-20).reverse()) {
+        for (const g of gradingData.graded.slice(-30).reverse()) {
           const vc = g.verdict === 'FALSE_POSITIVE' ? '#3fb950' : g.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
           html += '<tr style="border-bottom:1px solid #21262d">';
           html += '<td style="padding:6px;color:#c9d1d9">' + g.agentLabel + '</td>';
           html += '<td style="padding:6px"><code style="color:#58a6ff;font-size:11px">' + g.signatureId + '</code></td>';
+          html += '<td style="padding:6px;color:#8b949e;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (g.matchedText || '').replace(/</g, '&lt;') + '</td>';
           html += '<td style="padding:6px;color:' + vc + ';font-weight:600">' + g.verdict.replace(/_/g,' ') + '</td>';
           html += '<td style="padding:6px;color:#8b949e;font-size:11px">' + (g.reasoning || '') + '</td>';
           html += '</tr>';
         }
         html += '</tbody></table>';
       }
-      // Grading batch log — full audit trail
+      html += '</div>';
+
+      // Batch log — click to see full prompt/response/decisions
       const batches = gradingData.batchLog || [];
+      html += '<div class="card"><h2>Detection Call Log</h2>';
       if (batches.length > 0) {
-        html += '<h3 style="color:#8b949e;font-size:13px;margin-top:16px;margin-bottom:8px">Grading Batch Log</h3>';
-        for (const b of [...batches].reverse().slice(0, 10)) {
+        html += '<p style="color:#484f58;font-size:12px;margin-bottom:12px">Click a batch to see the prompt sent to the LLM, its response, and the decisions made.</p>';
+        for (const b of [...batches].reverse().slice(0, 20)) {
           const statusColor = b.success ? '#3fb950' : '#f85149';
           const bid = 'gbatch-' + b.timestamp;
           html += '<div class="event ' + (b.success ? 'low' : 'high') + '" style="cursor:pointer;margin-bottom:4px" onclick="var d=document.getElementById(\\'' + bid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
           html += '<span class="time">' + timeAgo(b.timestamp) + '</span>';
           html += '<span style="color:' + statusColor + ';font-weight:600;margin-left:8px">' + (b.success ? 'OK' : 'FAILED') + '</span>';
-          html += ' <span style="color:#8b949e">' + b.eventCount + ' events, ' + b.trigger + ', ' + (b.responseTimeMs/1000).toFixed(1) + 's</span>';
-          if (b.verdicts.length > 0) {
+          html += ' <span style="color:#c9d1d9">' + b.eventCount + ' events graded</span>';
+          html += ' <span style="color:#8b949e">(' + b.trigger + ', ' + (b.responseTimeMs/1000).toFixed(1) + 's)</span>';
+          if (b.verdicts && b.verdicts.length > 0) {
             const tp = b.verdicts.filter(v => v.verdict === 'TRUE_POSITIVE').length;
             const fp = b.verdicts.filter(v => v.verdict === 'FALSE_POSITIVE').length;
             const nr = b.verdicts.filter(v => v.verdict === 'NEEDS_REVIEW').length;
             html += ' <span style="color:#f85149">' + tp + ' TP</span> <span style="color:#3fb950">' + fp + ' FP</span> <span style="color:#d29922">' + nr + ' REV</span>';
           }
           html += '<div id="' + bid + '" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">';
-          html += '<div style="margin-bottom:8px"><strong style="color:#8b949e">Prompt sent:</strong><pre style="background:#0d1117;padding:8px;border-radius:4px;color:#c9d1d9;max-height:200px;overflow:auto;white-space:pre-wrap;font-size:10px">' + (b.prompt || '').replace(/</g, '&lt;') + '</pre></div>';
-          html += '<div style="margin-bottom:8px"><strong style="color:#8b949e">LLM Response:</strong><pre style="background:#0d1117;padding:8px;border-radius:4px;color:#c9d1d9;max-height:200px;overflow:auto;white-space:pre-wrap;font-size:10px">' + (b.rawResponse || b.error || '').replace(/</g, '&lt;') + '</pre></div>';
-          if (b.verdicts.length > 0) {
-            html += '<div><strong style="color:#8b949e">Decisions:</strong><table style="width:100%;margin-top:4px;border-collapse:collapse">';
+          html += '<div style="margin-bottom:12px"><strong style="color:#58a6ff">Question sent to LLM:</strong><pre style="background:#0d1117;padding:10px;border-radius:4px;color:#c9d1d9;max-height:250px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;border:1px solid #30363d">' + (b.prompt || '').replace(/</g, '&lt;') + '</pre></div>';
+          html += '<div style="margin-bottom:12px"><strong style="color:#58a6ff">LLM Response:</strong><pre style="background:#0d1117;padding:10px;border-radius:4px;color:#c9d1d9;max-height:250px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;border:1px solid #30363d">' + (b.rawResponse || b.error || 'No response').replace(/</g, '&lt;') + '</pre></div>';
+          if (b.verdicts && b.verdicts.length > 0) {
+            html += '<div><strong style="color:#58a6ff">Decisions / Actions:</strong>';
+            html += '<table style="width:100%;margin-top:6px;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid #30363d">';
+            html += '<th style="padding:4px;text-align:left;color:#484f58">Agent</th>';
+            html += '<th style="padding:4px;text-align:left;color:#484f58">Signature</th>';
+            html += '<th style="padding:4px;text-align:left;color:#484f58">Verdict</th>';
+            html += '<th style="padding:4px;text-align:left;color:#484f58">Reasoning</th>';
+            html += '</tr></thead><tbody>';
             for (const v of b.verdicts) {
               const vc = v.verdict === 'FALSE_POSITIVE' ? '#3fb950' : v.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
-              html += '<tr style="border-bottom:1px solid #21262d"><td style="padding:3px;color:#8b949e">' + v.agentLabel + '</td><td style="padding:3px"><code style="color:#58a6ff">' + v.signatureId + '</code></td><td style="padding:3px;color:' + vc + ';font-weight:600">' + v.verdict.replace(/_/g,' ') + '</td><td style="padding:3px;color:#8b949e">' + v.reasoning + '</td></tr>';
+              html += '<tr style="border-bottom:1px solid #21262d">';
+              html += '<td style="padding:4px;color:#c9d1d9">' + v.agentLabel + '</td>';
+              html += '<td style="padding:4px"><code style="color:#58a6ff">' + v.signatureId + '</code></td>';
+              html += '<td style="padding:4px;color:' + vc + ';font-weight:600">' + v.verdict.replace(/_/g,' ') + '</td>';
+              html += '<td style="padding:4px;color:#8b949e">' + v.reasoning + '</td>';
+              html += '</tr>';
             }
-            html += '</table></div>';
+            html += '</tbody></table></div>';
           }
           html += '</div></div>';
         }
+      } else {
+        html += '<p style="color:#484f58">No detection calls yet. Calls will appear when events are batched and sent to the LLM for grading.</p>';
       }
       html += '</div>';
-    }
-
-    // LLM Calls table
-    html += '<h2 style="color:#c9d1d9;font-size:16px;margin-bottom:12px">LLM API Calls (' + callsData.count + ' logged)</h2>';
-    if (callsData.calls && callsData.calls.length > 0) {
-      html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid #30363d">';
-      html += '<th style="padding:6px;text-align:left;color:#484f58">Time</th>';
-      html += '<th style="padding:6px;text-align:left;color:#484f58">Agent</th>';
-      html += '<th style="padding:6px;text-align:left;color:#484f58">Model</th>';
-      html += '<th style="padding:6px;text-align:right;color:#484f58">Input</th>';
-      html += '<th style="padding:6px;text-align:right;color:#484f58">Output</th>';
-      html += '<th style="padding:6px;text-align:right;color:#484f58">Cache Hit</th>';
-      html += '<th style="padding:6px;text-align:right;color:#484f58">Time</th>';
-      html += '<th style="padding:6px;text-align:left;color:#484f58">Reason</th>';
-      html += '<th style="padding:6px;text-align:right;color:#484f58">Events</th>';
-      html += '</tr></thead><tbody>';
-      for (const c of callsData.calls) {
-        const hitColor = c.cacheHitPct >= 70 ? '#3fb950' : c.cacheHitPct >= 30 ? '#d29922' : c.cacheHitPct > 0 ? '#f85149' : '#484f58';
-        html += '<tr style="border-bottom:1px solid #21262d">';
-        html += '<td style="padding:6px;color:#8b949e">' + timeAgo(c.timestamp) + '</td>';
-        html += '<td style="padding:6px;color:#c9d1d9;font-weight:500">' + c.agentLabel + '</td>';
-        html += '<td style="padding:6px;color:#58a6ff;font-size:11px">' + c.model + '</td>';
-        html += '<td style="padding:6px;text-align:right;color:#c9d1d9">' + (c.inputTokens||0).toLocaleString() + '</td>';
-        html += '<td style="padding:6px;text-align:right;color:#c9d1d9">' + (c.outputTokens||0).toLocaleString() + '</td>';
-        html += '<td style="padding:6px;text-align:right;color:' + hitColor + ';font-weight:600">' + c.cacheHitPct + '%</td>';
-        html += '<td style="padding:6px;text-align:right;color:#8b949e">' + (c.responseTimeMs > 0 ? (c.responseTimeMs/1000).toFixed(1) + 's' : '-') + '</td>';
-        html += '<td style="padding:6px;color:#c9d1d9;font-size:11px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (c.reason || c.channel || '-') + '</td>';
-        html += '<td style="padding:6px;text-align:right;color:' + (c.securityEvents > 0 ? '#f85149' : '#484f58') + '">' + c.securityEvents + '</td>';
-        html += '</tr>';
-      }
-      html += '</tbody></table>';
-    } else {
-      html += '<p style="color:#484f58">No LLM calls logged yet. Calls will appear as agents interact.</p>';
     }
 
     html += '</div>';
