@@ -95,15 +95,19 @@ export class EventGrader {
     this._threshold = opts.threshold;
     this._intervalMs = opts.intervalSec * 1000;
     this._gatewayUrl = opts.gatewayUrl;
-    // Find openclaw binary — pass full env so PATH resolves correctly
-    this._openclawBin = process.env.OPENCLAW_BIN || "openclaw";
-    try {
-      const which = execFileSync("which", ["openclaw"], {
-        encoding: "utf-8",
-        env: process.env,
-      }).trim();
-      if (which) this._openclawBin = which;
-    } catch {}
+    // Use OPENCLAW_BIN env var if set (systemd drop-in), otherwise resolve from PATH
+    if (process.env.OPENCLAW_BIN) {
+      this._openclawBin = process.env.OPENCLAW_BIN;
+    } else {
+      this._openclawBin = "openclaw";
+      try {
+        const which = execFileSync("which", ["openclaw"], {
+          encoding: "utf-8",
+          env: process.env,
+        }).trim();
+        if (which) this._openclawBin = which;
+      } catch {}
+    }
   }
 
   /** Start the grading timer. */
