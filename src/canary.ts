@@ -168,9 +168,10 @@ export class CanaryInjector {
     this._tokens.push(canary);
     this._injectionCanaries.push(canary);
 
-    // Encode as zero-width characters — invisible to LLM
-    const encoded = encodeZeroWidth(token);
-    return `${systemPrompt}${encoded}`;
+    // Plant as a natural-looking session reference that blends with
+    // OpenClaw's metadata format. If this text appears in any response,
+    // it proves the system prompt was leaked or injected.
+    return `${systemPrompt}\nSession ref: ${token}`;
   }
 
   /**

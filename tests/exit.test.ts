@@ -675,12 +675,11 @@ describe("EXIT 14: Canary tokens", () => {
   test("canary via obfuscator config", () => {
     const ob = resolvedObfuscator({ canaryEnabled: true, canaryPrefix: "EXIT-CANARY" });
     const result = ob.obfuscate("admin@corp.com");
-    // Canary is zero-width encoded, not visible as plaintext
-    expect(result.obfuscated).not.toContain("EXIT-CANARY-");
-    // But the obfuscated text should be longer than without canary
-    const ob2 = resolvedObfuscator({ canaryEnabled: false });
-    const result2 = ob2.obfuscate("admin@corp.com");
-    expect(result.obfuscated.length).toBeGreaterThan(result2.obfuscated.length);
+    // Canaries are no longer injected into message text (only system prompt).
+    // The obfuscator still creates the canary injector for system prompt use.
+    expect(result.obfuscated).not.toContain("EXIT-CANARY");
+    // Canary injector should be initialized
+    expect((ob as any)._canary).not.toBeNull();
   });
 
   test("canary reset clears tokens", () => {

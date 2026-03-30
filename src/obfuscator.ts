@@ -483,10 +483,10 @@ export class Obfuscator {
       resultText = segments.join("");
     }
 
-    // 7. Inject canary token if enabled
-    if (this._canary) {
-      resultText = this._canary.inject(resultText);
-    }
+    // 7. Canary tokens — NO LONGER injected into message text.
+    // Canaries are only planted in the system prompt (via injectSystem in
+    // the fetch intercept). Injecting into user messages caused agents to
+    // detect the zero-width characters and refuse legitimate requests.
 
     // Audit log (no real values stored)
     if (this._audit && filtered.length > 0) {
