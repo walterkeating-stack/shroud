@@ -194,7 +194,7 @@ describe("Memory: AgentSessionTracker bounds", () => {
   test("100 different agents tracked correctly", () => {
     const tracker = new AgentSessionTracker();
     for (let i = 0; i < 100; i++) {
-      tracker.registerAgent(`Agent ${i} system prompt with unique identity.`);
+      tracker.registerAgent(`- Name: Agent-${i}\nSystem prompt with unique identity.`);
       tracker.recordLlmCall();
     }
     expect(tracker.getAllSessions().length).toBe(100);
