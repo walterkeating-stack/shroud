@@ -288,7 +288,7 @@ Shroud includes a `ContextDetector` that wraps the regex engine with post-detect
 
 - **Context-aware boosting**: Text blocks containing config keywords (`interface`, `router ospf`, `hostname`) get +10% confidence for detected entities.
 - **Proximity clustering**: When a name, email, and phone appear within 200 characters, each gets a confidence boost.
-- **Hostname propagation**: `hostname FCNETR1` in one place → bare `FCNETR1` detected everywhere in the text.
+- **Hostname propagation**: `hostname CORE-RTR-01` in one place → bare `CORE-RTR-01` detected everywhere in the text.
 - **Learned entities**: Hostnames and infra identifiers seen in previous messages are remembered and detected in future messages without requiring config-line context.
 - **Documentation filtering**: RFC 3849 IPv6 doc prefix (`2001:db8::/32`), IPv6 loopback (`::1`), `example.com` emails, and well-known placeholders are automatically skipped.
 - **DNS-based URL classification**: External URLs pass through to the LLM; internal URLs are obfuscated. See [URL handling](#url-handling).
