@@ -13,7 +13,7 @@
  * `openclaw gateway call sessions.create`.
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import type { SecurityEvent } from "./security-event.js";
 
 /** Verdict from LLM grading. */
@@ -98,7 +98,8 @@ export class EventGrader {
     // Find openclaw binary
     this._openclawBin = process.env.OPENCLAW_BIN || "openclaw";
     try {
-      const which = execFileSync("which", ["openclaw"], { encoding: "utf-8" }).trim();
+      const { execFileSync: efs } = require("node:child_process");
+      const which = efs("which", ["openclaw"], { encoding: "utf-8" }).trim();
       if (which) this._openclawBin = which;
     } catch {}
   }
@@ -159,7 +160,7 @@ export class EventGrader {
   }
 
   /** Attempt a grading batch. */
-  private _tryGrade(trigger: "threshold" | "timer" = "timer"): void {
+  private async _tryGrade(trigger: "threshold" | "timer" = "timer"): Promise<void> {
     if (this._running || this._pending.length === 0) return;
     this._running = true;
 
@@ -178,7 +179,7 @@ export class EventGrader {
     };
 
     try {
-      const { verdicts, prompt, rawResponse } = this._callGateway(batch);
+      const { verdicts, prompt, rawResponse } = await this._callGateway(batch);
       log.prompt = prompt;
       log.rawResponse = rawResponse;
       log.responseTimeMs = Date.now() - startTime;
@@ -217,12 +218,12 @@ export class EventGrader {
     this._running = false;
   }
 
-  /** Call the OpenClaw gateway to grade a batch of events. */
-  private _callGateway(batch: SecurityEvent[]): {
+  /** Call the OpenClaw gateway to grade a batch of events (async — non-blocking). */
+  private _callGateway(batch: SecurityEvent[]): Promise<{
     verdicts: Array<{ index: number; verdict: GradingVerdict; reasoning: string }>;
     prompt: string;
     rawResponse: string;
-  } {
+  }> {
     const eventsText = batch.map((e, i) =>
       `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${e.agentLabel || "?"}" ` +
       `class=${e.threatClass} match="${(e.matchedText || "").slice(0, 150)}" ` +
@@ -233,11 +234,11 @@ export class EventGrader {
     const fullPrompt = `${GRADING_PROMPT}\n\n${message}`;
     const sessionKey = `${GRADING_SESSION_PREFIX}${Date.now()}`;
 
-    try {
-      const result = execFileSync(this._openclawBin, [
+    return new Promise((resolve, reject) => {
+      const child = execFile(this._openclawBin, [
         "gateway", "call", "sessions.create",
         "--expect-final",
-        "--timeout", "30000",
+        "--timeout", "60000",
         "--json",
         "--params", JSON.stringify({
           key: sessionKey,
@@ -245,31 +246,45 @@ export class EventGrader {
           systemPrompt: GRADING_PROMPT,
         }),
       ], {
-        timeout: 35_000,
+        timeout: 65_000,
         encoding: "utf-8",
         env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
+      }, (err, stdout, stderr) => {
+        if (err) {
+          reject(new Error(`Command failed: ${err.message?.slice(0, 200)}`));
+          return;
+        }
+
+        const result = stdout || "";
+        const jsonMatch = result.match(/\[[\s\S]*?\]/);
+        if (!jsonMatch) {
+          resolve({ verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
+          return;
+        }
+
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          if (!Array.isArray(parsed)) {
+            resolve({ verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
+            return;
+          }
+
+          const verdicts = parsed
+            .filter((v: any) =>
+              typeof v.index === "number" &&
+              ["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"].includes(v.verdict),
+            )
+            .map((v: any) => ({
+              index: v.index,
+              verdict: v.verdict as GradingVerdict,
+              reasoning: typeof v.reasoning === "string" ? v.reasoning.slice(0, 200) : "",
+            }));
+
+          resolve({ verdicts, prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
+        } catch {
+          resolve({ verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) });
+        }
       });
-
-      const jsonMatch = result.match(/\[[\s\S]*?\]/);
-      if (!jsonMatch) return { verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) };
-
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (!Array.isArray(parsed)) return { verdicts: [], prompt: fullPrompt, rawResponse: result.slice(0, 2000) };
-
-      const verdicts = parsed
-        .filter((v: any) =>
-          typeof v.index === "number" &&
-          ["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"].includes(v.verdict),
-        )
-        .map((v: any) => ({
-          index: v.index,
-          verdict: v.verdict as GradingVerdict,
-          reasoning: typeof v.reasoning === "string" ? v.reasoning.slice(0, 200) : "",
-        }));
-
-      return { verdicts, prompt: fullPrompt, rawResponse: result.slice(0, 2000) };
-    } catch (err: any) {
-      throw new Error(err?.message?.slice(0, 200) || "Gateway call failed");
-    }
+    });
   }
 }
