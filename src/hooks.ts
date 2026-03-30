@@ -28,6 +28,12 @@ import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 import { STATS_FILE, IS_TEST } from "./config.js";
 import { DnsCache } from "./dns-cache.js";
+import { InjectionDetector } from "./detectors/injection.js";
+import { SecurityEventBus } from "./security-event.js";
+import type { SecurityEvent } from "./security-event.js";
+import { AgentSessionTracker } from "./agent-session.js";
+import { BehaviouralProfiler } from "./profiler.js";
+import { BaselineStore } from "./profiler-store.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -277,6 +283,56 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const config = ob().config;
   const auditActive = config.auditEnabled || config.verboseLogging;
 
+  // --- Security extension: injection detection (Track 1) ---
+  // Runs parallel to the obfuscation pipeline — never touches entity replacement.
+  let injectionDetector: InjectionDetector | null = null;
+  let securityBus: SecurityEventBus | null = null;
+
+  if (config.injectionDetection !== "off") {
+    securityBus = new SecurityEventBus();
+    injectionDetector = new InjectionDetector({
+      action: config.injectionDetection,
+      disabledSignatures: new Set(config.injectionDisabledSignatures),
+      minSeverity: config.injectionMinSeverity,
+      scanResponses: config.injectionScanResponses,
+    });
+    // Share via globalThis for shroud_security tool access
+    (globalThis as any).__shroudSecurityBus = securityBus;
+  }
+
+  // --- Agent session tracking ---
+  // Maps LLM calls to local agent identities. Enables per-agent WAF rules,
+  // per-agent behavioural baselines, and enriched security logging.
+  const agentTracker = (() => {
+    const g = globalThis as any;
+    if (!g.__shroudAgentTracker) {
+      g.__shroudAgentTracker = new AgentSessionTracker();
+    }
+    return g.__shroudAgentTracker as AgentSessionTracker;
+  })();
+
+  // --- Behavioural profiler (Track 3) ---
+  // Per-turn feature extraction, cross-session baseline accumulation,
+  // anomaly detection. Fire-and-forget on the hot path.
+  let profiler: BehaviouralProfiler | null = null;
+  if (config.profilingEnabled) {
+    const g = globalThis as any;
+    if (!g.__shroudProfiler) {
+      const profileDir = config.profilingProfileDir.replace("~", process.env.HOME || "/root");
+      const store = new BaselineStore(profileDir);
+      g.__shroudProfiler = new BehaviouralProfiler(
+        {
+          mode: config.profilingMode,
+          sigma: config.profilingSigma,
+          minBaseline: config.profilingMinBaseline,
+          profileDir,
+        },
+        store,
+      );
+    }
+    profiler = g.__shroudProfiler as BehaviouralProfiler;
+  }
+
 
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
@@ -287,6 +343,17 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // previous turn are complete, so the counter should not carry over.
     if (ob().toolDepth > 0) {
       ob().resetToolDepth();
+    }
+
+    // --- Agent session tracking ---
+    // Register the agent identity from system prompt. This maps every subsequent
+    // LLM call to this agent, enabling per-agent WAF rules and security logging.
+    if (typeof event?.prompt === "string" && event.prompt.length > 0) {
+      const session = agentTracker.registerAgent(event.prompt);
+      // Link profiler to current agent build
+      if (profiler) {
+        profiler.setAgentBuildId(session.agentBuildId);
+      }
     }
 
     // ── DNS cache warming ──
@@ -842,6 +909,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         return originalFetch.call(globalThis, input, init);
       }
 
+      // Track this LLM call against the current agent session
+      agentTracker.recordLlmCall();
+
       // Parse the body and obfuscate user message content
       try {
         const bodyStr = typeof init.body === "string" ? init.body
@@ -999,6 +1069,84 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
         }
 
+        // --- Security: request-side injection scanning (Track 1) ---
+        // Runs AFTER obfuscation, scans the ORIGINAL text (pre-obfuscation)
+        // for injection patterns. Does NOT modify the request body.
+        if (injectionDetector && securityBus) {
+          try {
+            // Collect all text from the request for scanning
+            const textsToScan: string[] = [];
+            if (typeof body.system === "string") textsToScan.push(body.system);
+            if (typeof body.instructions === "string") textsToScan.push(body.instructions);
+            const scanArray = Array.isArray(body.messages) ? body.messages
+              : Array.isArray(body.contents) ? body.contents
+              : Array.isArray(body.input) ? body.input : null;
+            if (scanArray) {
+              for (const msg of scanArray) {
+                if (typeof msg.content === "string") textsToScan.push(msg.content);
+                else if (Array.isArray(msg.content)) {
+                  for (const b of msg.content) {
+                    if (b?.type === "text" && typeof b.text === "string") textsToScan.push(b.text);
+                  }
+                }
+                if (Array.isArray(msg.parts)) {
+                  for (const p of msg.parts) {
+                    if (typeof p.text === "string") textsToScan.push(p.text);
+                  }
+                }
+              }
+            }
+
+            const allText = textsToScan.join("\n");
+            const events = injectionDetector.scanRequest(allText);
+
+            // Enrich events with agent identity
+            const agentSession = agentTracker.getCurrentSession();
+            for (const evt of events) {
+              if (agentSession) {
+                evt.agentBuildId = agentSession.agentBuildId;
+                evt.agentLabel = agentSession.agentLabel;
+                evt.agentSessionId = agentSession.sessionId;
+              }
+              securityBus.emit(evt);
+            }
+            if (events.length > 0) {
+              agentTracker.recordSecurityEvent(events.length);
+            }
+
+            // --- Profiler: extract request-side features ---
+            if (profiler) {
+              try {
+                // Collect entity category counts from the last obfuscation result
+                const catCounts: Record<string, number> = {};
+                const lastStats = ob().getStats() as Record<string, unknown>;
+                if (lastStats.detectionsByCategory && typeof lastStats.detectionsByCategory === "object") {
+                  Object.assign(catCounts, lastStats.detectionsByCategory);
+                }
+                profiler.extractRequestFeatures(allText, catCounts);
+              } catch {
+                // Profiling must never break the request pipeline
+              }
+            }
+
+            // Block if configured and high-severity events detected
+            if (config.injectionDetection === "block" && events.some(e => e.severity === "high")) {
+              return new Response(
+                JSON.stringify({
+                  error: {
+                    type: "security_block",
+                    message: "Request blocked by Shroud injection detector",
+                    events: events.length,
+                  },
+                }),
+                { status: 403, headers: { "content-type": "application/json" } },
+              );
+            }
+          } catch {
+            // Security scanning must never break the request pipeline
+          }
+        }
+
         if (modified) {
           const newBody = JSON.stringify(body);
           const newInit = { ...init, body: newBody };
@@ -1026,6 +1174,68 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // For streaming (SSE): buffers the response body, deobfuscates
     // all text content, returns a new Response with clean data.
     // For JSON: wraps response.json() to deobfuscate.
+
+    // Accumulate all deobfuscated response text for security scanning
+    let responseTextAccum = "";
+
+    /** Scan deobfuscated response text for security events. Called per-block. */
+    function scanDeobfuscatedBlock(deobbed: string): void {
+      responseTextAccum += deobbed;
+
+      // Response-side injection scanning (Track 1)
+      if (injectionDetector && securityBus) {
+        try {
+          const events = injectionDetector.scanResponse(deobbed);
+          const agentSession = agentTracker.getCurrentSession();
+          for (const evt of events) {
+            if (agentSession) {
+              evt.agentBuildId = agentSession.agentBuildId;
+              evt.agentLabel = agentSession.agentLabel;
+              evt.agentSessionId = agentSession.sessionId;
+            }
+            securityBus.emit(evt);
+          }
+          if (events.length > 0) agentTracker.recordSecurityEvent(events.length);
+        } catch { /* never break response pipeline */ }
+      }
+    }
+
+    /** Complete profiler turn with accumulated response text. Called at stream end. */
+    function finalizeResponseProfiling(): void {
+      if (profiler && responseTextAccum.length > 0) {
+        try {
+          const fv = profiler.extractResponseFeatures(responseTextAccum, []);
+          if (fv) {
+            const alerts = profiler.analyzeTurn(fv);
+            // Emit anomaly alerts as security events
+            if (alerts.length > 0 && securityBus) {
+              const agentSession = agentTracker.getCurrentSession();
+              for (const alert of alerts) {
+                securityBus.emit({
+                  timestamp: alert.timestamp,
+                  eventType: "anomaly_detected",
+                  direction: "response",
+                  threatClass: "instruction_override" as any, // closest match
+                  signatureId: alert.type,
+                  severity: alert.severity === "critical" ? "high" : alert.severity === "warning" ? "medium" : "low",
+                  matchedText: alert.description,
+                  matchStart: 0,
+                  matchEnd: 0,
+                  textLength: responseTextAccum.length,
+                  action: config.profilingMode === "strict" ? "blocked" : "flagged",
+                  description: alert.description,
+                  agentBuildId: agentSession?.agentBuildId,
+                  agentLabel: agentSession?.agentLabel,
+                  agentSessionId: agentSession?.sessionId,
+                });
+              }
+              agentTracker.recordSecurityEvent(alerts.length);
+            }
+          }
+        } catch { /* never break response pipeline */ }
+      }
+      responseTextAccum = "";
+    }
 
     async function deobfuscateResponse(fetchPromise: Promise<Response>): Promise<Response> {
       const response = await fetchPromise;
@@ -1092,7 +1302,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 const accumulated = blockAccum.get(idx);
                 const buffered = blockBuffer.get(idx);
                 if (accumulated && buffered && buffered.length > 0) {
-                  const deobbed = ob().deobfuscate(accumulated);
+                  let deobbed = ob().deobfuscate(accumulated);
+                  scanDeobfuscatedBlock(deobbed);
+                  // Response-side block: replace content with warning if exfiltration detected
+                  if (config.injectionDetection === "block" && securityBus) {
+                    const recent = securityBus.getEvents();
+                    const blocked = recent.find(e => e.direction === "response" && e.severity === "high" && e.timestamp > Date.now() - 500);
+                    if (blocked) deobbed = "[Content blocked by Shroud security: exfiltration pattern detected]";
+                  }
                   // First buffered delta gets the full deobbed text
                   let first = true;
                   for (const eventStr of buffered) {
@@ -1136,7 +1353,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                     const accumulated = choiceAccum.get(idx);
                     const buf = choiceBuffer.get(idx);
                     if (accumulated && buf && buf.length > 0) {
-                      const deobbed = ob().deobfuscate(accumulated);
+                      let deobbed = ob().deobfuscate(accumulated);
+                      scanDeobfuscatedBlock(deobbed);
+                      if (config.injectionDetection === "block" && securityBus) {
+                        const recent = securityBus.getEvents();
+                        const blocked = recent.find(e => e.direction === "response" && e.severity === "high" && e.timestamp > Date.now() - 500);
+                        if (blocked) deobbed = "[Content blocked by Shroud security: exfiltration pattern detected]";
+                      }
                       let first = true;
                       for (const eventStr of buf) {
                         const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
@@ -1191,6 +1414,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             for (const [idx, buffered] of blockBuffer) {
               const accumulated = blockAccum.get(idx) || "";
               const deobbed = ob().deobfuscate(accumulated);
+              scanDeobfuscatedBlock(deobbed);
               let first = true;
               for (const eventStr of buffered) {
                 const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
@@ -1213,6 +1437,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             for (const [idx, buffered] of choiceBuffer) {
               const accumulated = choiceAccum.get(idx) || "";
               const deobbed = ob().deobfuscate(accumulated);
+              scanDeobfuscatedBlock(deobbed);
               let first = true;
               for (const eventStr of buffered) {
                 const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
@@ -1239,6 +1464,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             if (sseRemainder.trim()) {
               controller.enqueue(new TextEncoder().encode(sseRemainder));
             }
+            // Finalize profiling with accumulated response text
+            finalizeResponseProfiling();
           },
         });
 
@@ -1259,6 +1486,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             for (const block of json.content) {
               if (block?.type === "text" && typeof block.text === "string") {
                 block.text = ob().deobfuscate(block.text);
+                scanDeobfuscatedBlock(block.text);
               }
             }
           }
@@ -1266,9 +1494,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             for (const choice of json.choices) {
               if (typeof choice.message?.content === "string") {
                 choice.message.content = ob().deobfuscate(choice.message.content);
+                scanDeobfuscatedBlock(choice.message.content);
               }
             }
           }
+          finalizeResponseProfiling();
           return new Response(JSON.stringify(json), {
             status: response.status,
             statusText: response.statusText,

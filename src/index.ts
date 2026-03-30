@@ -142,6 +142,41 @@ export default {
       }),
     });
 
+    // Register shroud_security tool — security extension stats
+    api.registerTool({
+      name: "shroud_security",
+      description:
+        "Show injection detection events, agent sessions, and security statistics",
+      inputSchema: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+      handler: async () => {
+        const bus = (globalThis as any).__shroudSecurityBus;
+        const tracker = (globalThis as any).__shroudAgentTracker;
+        const result: Record<string, unknown> = {
+          injectionDetection: config.injectionDetection,
+        };
+
+        if (bus) {
+          result.securityStats = bus.getStats();
+          result.recentEvents = bus.getEvents().slice(-10);
+        }
+
+        if (tracker) {
+          result.agentSessions = tracker.getAllSessions();
+        }
+
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify(result, null, 2),
+          }],
+        };
+      },
+    });
+
     // Register shroud_reset tool
     api.registerTool({
       name: "shroud_reset",

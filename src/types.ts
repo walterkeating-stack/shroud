@@ -34,6 +34,7 @@ export enum Category {
   GPS_COORDINATE = "gps_coordinate",
   CERTIFICATE = "certificate",
   CUSTOM = "custom",
+  INJECTION_SIGNATURE = "injection_signature",
 }
 
 /** A detected sensitive entity in text. */
@@ -104,4 +105,37 @@ export interface ShroudConfig {
 
   /** Max mapping store size; oldest entries evicted when exceeded. 0 = unlimited. */
   maxStoreMappings: number;
+
+  // --- Injection detection (security extension) ---
+
+  /** Injection detection mode: 'flag' (log only), 'block' (reject request), 'off'. */
+  injectionDetection: "flag" | "block" | "off";
+  /** Signature IDs to disable (e.g. ["io_ignore_previous", "rs_jailbreak"]). */
+  injectionDisabledSignatures: string[];
+  /** Minimum severity to act on: 'low', 'medium', 'high'. */
+  injectionMinSeverity: "low" | "medium" | "high";
+  /** Scan LLM responses for exfiltration patterns. */
+  injectionScanResponses: boolean;
+
+  // --- Behavioural profiling (security extension Track 3) ---
+
+  /** Enable behavioural profiling. */
+  profilingEnabled: boolean;
+  /** Profiling mode: 'learning' (log only), 'active' (flag), 'strict' (block). */
+  profilingMode: "learning" | "active" | "strict";
+  /** Z-score threshold for anomaly detection (default: 3.0). */
+  profilingSigma: number;
+  /** Minimum sessions before anomaly detection activates. */
+  profilingMinBaseline: number;
+  /** Directory for profile storage. */
+  profilingProfileDir: string;
+
+  // --- Canary security extensions (Track 2) ---
+
+  /** Plant canary in system prompt context. */
+  canarySystemInjection: boolean;
+  /** Enable behavioural canaries (false instruction tripwire). */
+  canaryBehavioural: boolean;
+  /** Max Levenshtein distance for near-match scanning. */
+  canaryNearMatchDistance: number;
 }

@@ -117,6 +117,65 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     // LRU store eviction (0 = unlimited)
     maxStoreMappings:
       typeof raw.maxStoreMappings === "number" ? raw.maxStoreMappings : 0,
+
+    // --- Injection detection ---
+    injectionDetection: (() => {
+      const env = process.env.SHROUD_INJECTION_DETECTION;
+      if (env === "flag" || env === "block" || env === "off") return env;
+      const val = raw.injectionDetection;
+      if (val === "flag" || val === "block" || val === "off") return val as "flag" | "block" | "off";
+      return "off";
+    })(),
+    injectionDisabledSignatures: Array.isArray(raw.injectionDisabledSignatures)
+      ? (raw.injectionDisabledSignatures as string[])
+      : [],
+    injectionMinSeverity: (() => {
+      const env = process.env.SHROUD_INJECTION_MIN_SEVERITY;
+      if (env === "low" || env === "medium" || env === "high") return env;
+      const val = raw.injectionMinSeverity;
+      if (val === "low" || val === "medium" || val === "high") return val as "low" | "medium" | "high";
+      return "low";
+    })(),
+    injectionScanResponses: (() => {
+      const env = process.env.SHROUD_INJECTION_SCAN_RESPONSES;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.injectionScanResponses === "boolean" ? raw.injectionScanResponses : true;
+    })(),
+
+    // --- Behavioural profiling ---
+    profilingEnabled: (() => {
+      const env = process.env.SHROUD_PROFILING_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.profilingEnabled === "boolean" ? raw.profilingEnabled : false;
+    })(),
+    profilingMode: (() => {
+      const env = process.env.SHROUD_PROFILING_MODE;
+      if (env === "learning" || env === "active" || env === "strict") return env;
+      const val = raw.profilingMode;
+      if (val === "learning" || val === "active" || val === "strict") return val as "learning" | "active" | "strict";
+      return "learning";
+    })(),
+    profilingSigma:
+      typeof raw.profilingSigma === "number" ? raw.profilingSigma : 3.0,
+    profilingMinBaseline:
+      typeof raw.profilingMinBaseline === "number" ? raw.profilingMinBaseline : 5,
+    profilingProfileDir: (() => {
+      const env = process.env.SHROUD_PROFILING_DIR;
+      if (env) return env;
+      return typeof raw.profilingProfileDir === "string"
+        ? raw.profilingProfileDir
+        : "~/.shroud/profiles";
+    })(),
+
+    // --- Canary security extensions ---
+    canarySystemInjection:
+      typeof raw.canarySystemInjection === "boolean" ? raw.canarySystemInjection : false,
+    canaryBehavioural:
+      typeof raw.canaryBehavioural === "boolean" ? raw.canaryBehavioural : false,
+    canaryNearMatchDistance:
+      typeof raw.canaryNearMatchDistance === "number" ? raw.canaryNearMatchDistance : 2,
   };
 
   return config;
@@ -174,6 +233,14 @@ export function validateConfig(config: ShroudConfig): ConfigIssue[] {
   // Detector overrides referencing unknown rules (info-level since we can't check at config time)
   if (Object.keys(config.detectorOverrides).length > 0) {
     issues.push({ severity: "info", field: "detectorOverrides", message: `${Object.keys(config.detectorOverrides).length} detector override(s) configured.` });
+  }
+
+  // Injection detection
+  if (config.injectionDetection !== "flag" && config.injectionDetection !== "block" && config.injectionDetection !== "off") {
+    issues.push({ severity: "error", field: "injectionDetection", message: `injectionDetection="${config.injectionDetection}" is invalid. Must be "flag", "block", or "off".` });
+  }
+  if (config.injectionDetection !== "off") {
+    issues.push({ severity: "info", field: "injectionDetection", message: `Injection detection is active in "${config.injectionDetection}" mode.` });
   }
 
   return issues;
