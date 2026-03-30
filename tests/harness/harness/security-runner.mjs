@@ -30,8 +30,21 @@ export class SecurityTestRunner {
     this.gatewayStdout = "";
     this.gatewayStderr = "";
     this.mockLlmPort = null;
+    this.workspaceDir = join(this.stateDir, "workspace");
 
     this.results = { total: 0, passed: 0, failed: 0, skipped: 0 };
+  }
+
+  /**
+   * Write a SOUL.md to the workspace for the given agent.
+   * The gateway picks this up on next session creation.
+   */
+  _setAgentSoul(agentSoul) {
+    try {
+      writeFileSync(join(this.workspaceDir, "SOUL.md"), agentSoul, "utf-8");
+    } catch {
+      // workspace may not exist outside Docker
+    }
   }
 
   async run() {
@@ -87,10 +100,10 @@ export class SecurityTestRunner {
 
       // Create session with agent's SOUL as system prompt
       const sessionKey = `sec-${scenario.agent}-${Date.now()}`;
+      this._setAgentSoul(agent.soul);
       const response = await this._gatewayCall("sessions.create", {
-        sessionKey,
+        key: sessionKey,
         message: scenario.input,
-        systemPrompt: agent.soul,
       });
 
       // Check security events
@@ -181,14 +194,14 @@ export class SecurityTestRunner {
         const turnStart = Date.now();
 
         if (i === 0) {
+          this._setAgentSoul(agent.soul);
           await this._gatewayCall("sessions.create", {
-            sessionKey,
+            key: sessionKey,
             message: turn.input,
-            systemPrompt: agent.soul,
           });
         } else {
           await this._gatewayCall("sessions.send", {
-            sessionKey,
+            key: sessionKey,
             message: turn.input,
           });
         }
@@ -245,10 +258,10 @@ export class SecurityTestRunner {
       if (!agent1) throw new Error(`Unknown agent: ${scenario.agent}`);
 
       const session1Key = `sec-fu1-${Date.now()}`;
+      this._setAgentSoul(agent1.soul);
       await this._gatewayCall("sessions.create", {
-        sessionKey: session1Key,
+        key: session1Key,
         message: scenario.input,
-        systemPrompt: agent1.soul,
       });
 
       // Check first agent assertions
@@ -269,10 +282,10 @@ export class SecurityTestRunner {
 
       const followupStart = Date.now();
       const session2Key = `sec-fu2-${Date.now()}`;
+      this._setAgentSoul(agent2.soul);
       await this._gatewayCall("sessions.create", {
-        sessionKey: session2Key,
+        key: session2Key,
         message: followup.input,
-        systemPrompt: agent2.soul,
       });
 
       // Check followup assertions
@@ -311,10 +324,10 @@ export class SecurityTestRunner {
         if (!agent) throw new Error(`Unknown agent: ${sub.agent}`);
 
         const sessionKey = `sec-par-${sub.agent}-${idx}-${Date.now()}`;
+        this._setAgentSoul(agent.soul);
         await this._gatewayCall("sessions.create", {
-          sessionKey,
+          key: sessionKey,
           message: sub.input,
-          systemPrompt: agent.soul,
         });
 
         return { sub, agent, sessionKey };
