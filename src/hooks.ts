@@ -502,6 +502,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (typeof event?.prompt === "string" && event.prompt.length > 10) {
       const session = agentTracker.registerAgent(event.prompt);
       if (profiler) profiler.setAgentBuildId(session.agentBuildId);
+      // Detect and record channel type
+      agentTracker.updateChannelFromPrompt(event.prompt);
     }
 
     // ── DNS cache warming ──
@@ -794,6 +796,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         for (const evt of toolResult.events) {
           evt.agentBuildId = agentSession?.agentBuildId;
           evt.agentLabel = agentSession?.agentLabel;
+          evt.channel = agentSession?.channels?.[agentSession.channels.length - 1];
           evt.agentSessionId = agentSession?.sessionId;
           securityBus.emit(evt);
         }
@@ -1393,6 +1396,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               if (agentSession) {
                 evt.agentBuildId = agentSession.agentBuildId;
                 evt.agentLabel = agentSession.agentLabel;
+              evt.channel = agentSession.channels?.[agentSession.channels.length - 1];
                 evt.agentSessionId = agentSession.sessionId;
               }
               securityBus.emit(evt);
@@ -1527,6 +1531,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             if (agentSession) {
               evt.agentBuildId = agentSession.agentBuildId;
               evt.agentLabel = agentSession.agentLabel;
+              evt.channel = agentSession.channels?.[agentSession.channels.length - 1];
               evt.agentSessionId = agentSession.sessionId;
             }
             securityBus.emit(evt);

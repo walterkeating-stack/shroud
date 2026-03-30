@@ -69,6 +69,8 @@ export interface AgentSession {
   soulExtract: string;
   /** Per-agent LLM cache stats. */
   cache: AgentCacheStats;
+  /** Active channels this agent has been seen on. */
+  channels: string[];
 }
 
 /** Per-agent LLM cache tracking for anomaly detection. */
@@ -142,6 +144,7 @@ export class AgentSessionTracker {
           avgHitRatio: 0, baselineHitRatio: -1,
           baselineSamples: 0, callsWithCache: 0,
         },
+        channels: [],
       };
       this._sessions.set(label, session);
     } else {
@@ -232,6 +235,17 @@ export class AgentSessionTracker {
     }
 
     return null;
+  }
+
+  /** Detect and record the channel from prompt metadata. */
+  updateChannelFromPrompt(prompt: string): string | null {
+    const session = this._sessions.get(this._currentLabel);
+    if (!session) return null;
+    const ch = detectChannel(prompt);
+    if (ch && !session.channels.includes(ch)) {
+      session.channels.push(ch);
+    }
+    return ch;
   }
 
   /** Update tool inventory from body.tools array. Only sets once (first call). */
@@ -698,4 +712,21 @@ export function classifyAgentWithTools(
   }
 
   return base;
+}
+
+// ===================================================================
+// Channel detection — extract channel type from prompt metadata
+// ===================================================================
+
+/** Detect the channel type from OpenClaw prompt metadata. */
+export function detectChannel(prompt: string): string | null {
+  if (/Slack\s+message/i.test(prompt)) return "slack";
+  if (/WhatsApp\s+message/i.test(prompt)) return "whatsapp";
+  if (/TUI\s+(?:session|message)/i.test(prompt) || /openclaw-tui/i.test(prompt)) return "tui";
+  if (/Email\s+(?:message|from)/i.test(prompt) || /Gmail\s+/i.test(prompt)) return "email";
+  if (/Cron\s+(?:job|task|trigger)/i.test(prompt) || /scheduled\s+task/i.test(prompt)) return "cron";
+  if (/Discord\s+message/i.test(prompt)) return "discord";
+  if (/Telegram\s+message/i.test(prompt)) return "telegram";
+  if (/Teams\s+message/i.test(prompt)) return "teams";
+  return null;
 }

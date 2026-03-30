@@ -919,6 +919,15 @@ async function refresh() {
       html += '<td>Entity categories: <span style="color:#d2a8ff">' + cats + '</span></td>';
       html += '<td>Tools: ' + toolDisplay + '</td>';
       html += '</tr></table>';
+      const channels = a.channels || [];
+      if (channels.length > 0) {
+        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">Channels: ';
+        for (const ch of channels) {
+          const chColor = ch === 'slack' ? '#4A154B' : ch === 'whatsapp' ? '#25D366' : ch === 'tui' ? '#58a6ff' : ch === 'email' ? '#d29922' : '#8b949e';
+          html += '<span style="color:' + chColor + ';border:1px solid ' + chColor + ';padding:0 4px;border-radius:3px;margin-right:4px">' + ch + '</span>';
+        }
+        html += '</div>';
+      }
       const ac = a.cache || {};
       if (ac.callsWithCache > 0) {
         const hitPct = Math.round((ac.avgHitRatio || 0) * 100);

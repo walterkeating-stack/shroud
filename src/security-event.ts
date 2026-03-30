@@ -44,6 +44,8 @@ export interface SecurityEvent {
   agentLabel?: string;
   /** Agent session ID. */
   agentSessionId?: string;
+  /** Channel the event originated from (slack, whatsapp, tui, etc.). */
+  channel?: string;
 }
 
 /** Aggregate statistics for security events. */
