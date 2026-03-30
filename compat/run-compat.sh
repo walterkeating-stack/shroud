@@ -38,13 +38,18 @@ NETWORK="shroud-compat-net"
 
 cd "${REPO_ROOT}"
 
-# ── Step 1: Resolve Shroud version ──
-SHROUD_VERSION="${SHROUD_VERSION:-latest}"
-if [ "${SHROUD_VERSION}" = "latest" ]; then
-  SHROUD_VERSION=$(npm view shroud-privacy version 2>/dev/null)
-  echo "Resolved Shroud 'latest' to ${SHROUD_VERSION}"
+# ── Step 1: Pack local Shroud build ──
+echo "Packing local Shroud build..."
+npm run build --silent
+rm -f shroud-privacy-*.tgz
+npm pack --silent
+SHROUD_TGZ=$(ls shroud-privacy-*.tgz 2>/dev/null | head -1)
+if [ -z "${SHROUD_TGZ}" ]; then
+  echo "ERROR: npm pack failed — no tarball found"
+  exit 1
 fi
-echo "Shroud version: ${SHROUD_VERSION} (from npm)"
+SHROUD_VERSION=$(node -e "console.log(require('./package.json').version)")
+echo "Shroud version: ${SHROUD_VERSION} (local build)"
 [ -n "${SANDBOX}" ] && echo "Mode: SANDBOX (rootless Docker)"
 
 # ── Step 2: Build/reuse base image ──
@@ -63,7 +68,6 @@ fi
 echo "Building test image..."
 docker build \
   --build-arg "OC_VERSION=${OC_VERSION}" \
-  --build-arg "SHROUD_VERSION=${SHROUD_VERSION}" \
   -t "${TEST_TAG}" \
   -f compat/Dockerfile.test .
 

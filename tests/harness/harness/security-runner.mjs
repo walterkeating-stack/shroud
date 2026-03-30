@@ -426,6 +426,13 @@ export class SecurityTestRunner {
   // ── Helpers ──────────────────────────────────────────────
 
   async _getSecurityEvents() {
+    // Primary: use dashboard API (works in all OpenClaw versions)
+    try {
+      const res = await this._httpGet("http://127.0.0.1:9380/api/events");
+      const parsed = JSON.parse(res);
+      return parsed.events || [];
+    } catch {}
+    // Fallback: try tools.call (older approach)
     try {
       const result = this._gatewayToolCall("shroud_security", {});
       const parsed = JSON.parse(result);
@@ -436,6 +443,13 @@ export class SecurityTestRunner {
   }
 
   async _getAgentSessions() {
+    // Primary: use dashboard API
+    try {
+      const res = await this._httpGet("http://127.0.0.1:9380/api/agents");
+      const parsed = JSON.parse(res);
+      return parsed.agents || [];
+    } catch {}
+    // Fallback: try tools.call
     try {
       const result = this._gatewayToolCall("shroud_security", {});
       const parsed = JSON.parse(result);
