@@ -35,6 +35,7 @@ import { AgentSessionTracker } from "./agent-session.js";
 import { BehaviouralProfiler } from "./profiler.js";
 import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
+import { PolicyEngine } from "./policy.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -299,6 +300,51 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     });
     // Share via globalThis for shroud_security tool access
     (globalThis as any).__shroudSecurityBus = securityBus;
+  }
+
+  // Per-agent detector cache — avoids recreating for the same agent
+  const _agentDetectorCache = new Map<string, InjectionDetector>();
+
+  /** Get the injection detector for the current agent, applying policy overrides. */
+  function getDetectorForAgent(): InjectionDetector | null {
+    if (!injectionDetector) return null;
+
+    const policyEngine = (globalThis as any).__shroudPolicyEngine as PolicyEngine | undefined;
+    if (!policyEngine) return injectionDetector; // no policy engine = use default
+
+    const buildId = agentTracker.getCurrentBuildId();
+    if (!buildId) return injectionDetector;
+
+    const agentPolicy = policyEngine.getPolicy(buildId);
+    if (!agentPolicy.injectionDetection && !agentPolicy.injectionMinSeverity && !agentPolicy.injectionDisabledSignatures?.length) {
+      return injectionDetector; // no overrides = use default
+    }
+
+    // Check cache
+    const cached = _agentDetectorCache.get(buildId);
+    if (cached) return cached;
+
+    // Create agent-specific detector with policy overrides
+    const det = new InjectionDetector({
+      action: (agentPolicy.injectionDetection as "flag" | "block" | "off") || config.injectionDetection,
+      disabledSignatures: new Set([
+        ...config.injectionDisabledSignatures,
+        ...(agentPolicy.injectionDisabledSignatures || []),
+      ]),
+      minSeverity: (agentPolicy.injectionMinSeverity as "low" | "medium" | "high") || config.injectionMinSeverity,
+      scanResponses: config.injectionScanResponses,
+    });
+
+    _agentDetectorCache.set(buildId, det);
+
+    // Listen for policy reloads to clear cache
+    const pe = (globalThis as any).__shroudPolicyEngine as PolicyEngine | undefined;
+    if (pe && !(globalThis as any).__shroudPolicyCacheWired) {
+      (globalThis as any).__shroudPolicyCacheWired = true;
+      pe.onReload(() => _agentDetectorCache.clear());
+    }
+
+    return det;
   }
 
   // --- Agent session tracking ---
@@ -1128,7 +1174,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // --- Security: request-side injection scanning (Track 1) ---
         // Runs AFTER obfuscation, scans the ORIGINAL text (pre-obfuscation)
         // for injection patterns. Does NOT modify the request body.
-        if (injectionDetector && securityBus) {
+        const activeDetector = getDetectorForAgent();
+        if (activeDetector && securityBus) {
           try {
             // Collect all text from the request for scanning
             const textsToScan: string[] = [];
@@ -1154,7 +1201,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             }
 
             const allText = textsToScan.join("\n");
-            const events = injectionDetector.scanRequest(allText);
+            const events = activeDetector.scanRequest(allText);
 
             // Enrich events with agent identity
             const agentSession = agentTracker.getCurrentSession();
@@ -1230,7 +1277,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             }
 
             // Block if configured and high-severity events detected
-            if (config.injectionDetection === "block" && events.some(e => e.severity === "high")) {
+            // Block if agent's effective policy says block (per-agent or global)
+            const effectiveAction = events.length > 0 ? events[0].action : "flagged";
+            if (effectiveAction === "blocked" && events.some(e => e.severity === "high")) {
               return new Response(
                 JSON.stringify({
                   error: {
@@ -1283,9 +1332,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       responseTextAccum += deobbed;
 
       // Response-side injection scanning (Track 1)
-      if (injectionDetector && securityBus) {
+      const respDetector = getDetectorForAgent();
+      if (respDetector && securityBus) {
         try {
-          const events = injectionDetector.scanResponse(deobbed);
+          const events = respDetector.scanResponse(deobbed);
           const agentSession = agentTracker.getCurrentSession();
           for (const evt of events) {
             if (agentSession) {
