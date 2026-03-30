@@ -740,15 +740,14 @@ async function refresh() {
         : 'Active - ' + maturity + ' baseline';
 
       const cls = a.classification || {};
-      const roleLabel = cls.role && cls.role !== 'General Agent' ? cls.role : '';
-      const roleConf = cls.confidence === 'high' ? '#3fb950' : '#d29922';
+      const roleLabel = cls.role || 'Unclassified';
+      const roleColour = cls.colour || '#8b949e';
+      const rolePct = cls.confidencePct ?? 0;
 
       html += '<div class="agent-card ' + maturity + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)" style="cursor:pointer">';
       html += '<div style="display:flex;justify-content:space-between;align-items:center">';
       html += '<div class="agent-name" style="font-size:15px">' + (a.agentLabel || a.agentBuildId);
-      if (roleLabel) {
-        html += ' <span style="font-size:11px;color:' + roleConf + ';font-weight:400;margin-left:8px;padding:1px 6px;border:1px solid ' + roleConf + ';border-radius:10px">' + roleLabel + '</span>';
-      }
+      html += ' <span style="font-size:11px;color:' + roleColour + ';font-weight:400;margin-left:8px;padding:1px 6px;border:1px solid ' + roleColour + ';border-radius:10px">' + roleLabel + ' <span style="opacity:0.7">' + rolePct + '%</span></span>';
       html += '</div>';
       html += '<span class="badge' + (a.securityEventCount > 5 ? ' danger' : a.securityEventCount > 0 ? ' warn' : '') + '">' + a.securityEventCount + ' events</span>';
       html += '</div>';
@@ -810,7 +809,12 @@ async function showAgent(buildId) {
     html += '<tr class="row"><td class="label">Model</td><td class="value">' + (a.detectedModel || 'unknown') + '</td></tr>';
     html += '<tr class="row"><td class="label">Channel</td><td class="value">' + (a.channelSource || 'none') + '</td></tr>';
     const dcls = a.classification || {};
-    html += '<tr class="row"><td class="label">Classification</td><td class="value">' + (dcls.role || 'Unknown') + ' <span style="color:#8b949e;font-size:11px">(' + (dcls.confidence || '?') + (dcls.signals?.length ? ', signals: ' + dcls.signals.join(', ') : '') + ')</span></td></tr>';
+    const dColour = dcls.colour || '#8b949e';
+    const dPct = dcls.confidencePct ?? 0;
+    html += '<tr class="row"><td class="label">Classification</td><td class="value"><span style="color:' + dColour + ';font-weight:600">' + (dcls.role || 'Unknown') + '</span> <span style="color:' + dColour + '">' + dPct + '%</span>';
+    html += '<div style="height:4px;background:#21262d;border-radius:2px;margin-top:4px;width:120px"><div style="height:100%;border-radius:2px;background:' + dColour + ';width:' + dPct + '%"></div></div>';
+    if (dcls.signals?.length) html += '<div style="font-size:11px;color:#8b949e;margin-top:2px">Signals: ' + dcls.signals.join(', ') + '</div>';
+    html += '</td></tr>';
     html += '<tr class="row"><td class="label">Started</td><td class="value">' + new Date(a.startedAt).toLocaleString() + '</td></tr>';
     html += '</tbody></table>';
     html += '</div>';

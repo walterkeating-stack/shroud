@@ -15,8 +15,12 @@ import { createHash } from "node:crypto";
 export interface AgentClassification {
   /** Primary role category. */
   role: string;
-  /** Confidence: "high" from explicit signals, "inferred" from heuristics. */
-  confidence: "high" | "inferred";
+  /** Confidence percentage (0-100). */
+  confidencePct: number;
+  /** Confidence tier for display. */
+  confidence: "high" | "medium" | "low";
+  /** Colour code for dashboard rendering. */
+  colour: string;
   /** Keywords that triggered the classification. */
   signals: string[];
 }
@@ -406,18 +410,40 @@ const ROLE_TAXONOMY: { role: string; keywords: RegExp }[] = [
  * the system prompt (inferred). This prevents noisy metadata in the
  * prompt from overriding the agent's actual identity.
  */
+/** Build a classification result with colour and confidence percentage. */
+function makeClassification(
+  role: string, pct: number, signals: string[],
+): AgentClassification {
+  const confidence = pct >= 80 ? "high" : pct >= 50 ? "medium" : "low";
+  // Colour: green for high, blue for medium, grey for low
+  const colour = pct >= 80 ? "#3fb950" : pct >= 50 ? "#58a6ff" : "#8b949e";
+  return { role, confidencePct: pct, confidence, colour, signals };
+}
+
+/**
+ * Classify an agent's role from its label and system prompt content.
+ * Uses keyword matching against a role taxonomy — no LLM call needed.
+ *
+ * Confidence scoring:
+ *   90% — role keyword in agent label (explicit naming)
+ *   70% — role keyword in SOUL.md "You are a [role]" declaration
+ *   40% — role keyword found in general prompt metadata
+ *   10% — no match, "General Agent"
+ *
+ * Multiple signal matches boost confidence by 5% each (capped at 95%).
+ */
 export function classifyAgent(label: string, systemPrompt: string): AgentClassification {
   // 1. Match against label first — highest confidence signal
   const labelLower = label.toLowerCase();
   for (const { role, keywords } of ROLE_TAXONOMY) {
-    const match = labelLower.match(keywords);
-    if (match) {
-      return { role, confidence: "high", signals: [match[0]] };
+    const matches = [...labelLower.matchAll(new RegExp(keywords.source, "gi"))];
+    if (matches.length > 0) {
+      const pct = Math.min(95, 90 + (matches.length - 1) * 5);
+      return makeClassification(role, pct, matches.map(m => m[0]));
     }
   }
 
   // 2. Extract SOUL.md content — look for "You are a [role]" patterns
-  //    Skip framework preamble and metadata
   const soulMatch = systemPrompt.match(
     /[Yy]ou\s+are\s+(?:a\s+|an\s+|the\s+)?(.{10,200})(?:\.|$)/m,
   );
@@ -425,21 +451,23 @@ export function classifyAgent(label: string, systemPrompt: string): AgentClassif
 
   if (soulText) {
     for (const { role, keywords } of ROLE_TAXONOMY) {
-      const match = soulText.match(keywords);
-      if (match) {
-        return { role, confidence: "inferred", signals: [match[0]] };
+      const matches = [...soulText.matchAll(new RegExp(keywords.source, "gi"))];
+      if (matches.length > 0) {
+        const pct = Math.min(85, 70 + (matches.length - 1) * 5);
+        return makeClassification(role, pct, matches.map(m => m[0]));
       }
     }
   }
 
-  // 3. Last resort: scan the full prompt but with lower confidence
+  // 3. Last resort: scan the full prompt
   const fullLower = systemPrompt.toLowerCase();
   for (const { role, keywords } of ROLE_TAXONOMY) {
-    const match = fullLower.match(keywords);
-    if (match) {
-      return { role, confidence: "inferred", signals: [match[0]] };
+    const matches = [...fullLower.matchAll(new RegExp(keywords.source, "gi"))];
+    if (matches.length > 0) {
+      const pct = Math.min(60, 40 + (matches.length - 1) * 5);
+      return makeClassification(role, pct, matches.map(m => m[0]));
     }
   }
 
-  return { role: "General Agent", confidence: "inferred", signals: [] };
+  return makeClassification("General Agent", 10, []);
 }
