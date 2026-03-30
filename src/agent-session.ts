@@ -159,8 +159,8 @@ export class AgentSessionTracker {
     const label = extractLabel(systemPrompt);
     const buildId = computeBuildId(systemPrompt, pluginList, modelId);
 
-    // Don't create sessions for unidentifiable prompts
-    if (label === "Unknown Agent") {
+    // Don't create sessions for unidentifiable prompts or framework preamble
+    if (label === "Unknown Agent" || label === "Claude Code") {
       // Still set current label so calls get tracked somewhere
       this._currentLabel = label;
       // Return a transient session that won't be persisted
