@@ -1570,7 +1570,7 @@ async function renderCalls() {
       html += '<th style="padding:6px;text-align:right;color:#484f58">Output</th>';
       html += '<th style="padding:6px;text-align:right;color:#484f58">Cache Hit</th>';
       html += '<th style="padding:6px;text-align:right;color:#484f58">Time</th>';
-      html += '<th style="padding:6px;text-align:left;color:#484f58">Channel</th>';
+      html += '<th style="padding:6px;text-align:left;color:#484f58">Reason</th>';
       html += '<th style="padding:6px;text-align:right;color:#484f58">Events</th>';
       html += '</tr></thead><tbody>';
       for (const c of callsData.calls) {
@@ -1583,7 +1583,7 @@ async function renderCalls() {
         html += '<td style="padding:6px;text-align:right;color:#c9d1d9">' + (c.outputTokens||0).toLocaleString() + '</td>';
         html += '<td style="padding:6px;text-align:right;color:' + hitColor + ';font-weight:600">' + c.cacheHitPct + '%</td>';
         html += '<td style="padding:6px;text-align:right;color:#8b949e">' + (c.responseTimeMs > 0 ? (c.responseTimeMs/1000).toFixed(1) + 's' : '-') + '</td>';
-        html += '<td style="padding:6px;color:#8b949e">' + (c.channel || '-') + '</td>';
+        html += '<td style="padding:6px;color:#c9d1d9;font-size:11px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (c.reason || c.channel || '-') + '</td>';
         html += '<td style="padding:6px;text-align:right;color:' + (c.securityEvents > 0 ? '#f85149' : '#484f58') + '">' + c.securityEvents + '</td>';
         html += '</tr>';
       }

@@ -508,6 +508,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     return result;
   };
 
+  // Shared call reason — set in before_prompt_build, read in deobfuscateResponse
+  let _callReason = "";
+
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
   // -----------------------------------------------------------------------
@@ -526,11 +529,19 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (typeof event?.prompt === "string" && event.prompt.length > 10) {
       const session = agentTracker.registerAgent(event.prompt);
       if (profiler) profiler.setAgentBuildId(session.agentBuildId);
-      // Detect and record channel type
-      agentTracker.updateChannelFromPrompt(event.prompt);
-      // Tag heartbeat calls
+      // Detect and record channel type + derive call reason
+      const detectedCh = agentTracker.updateChannelFromPrompt(event.prompt);
       if (isHeartbeatPrompt(event.prompt)) {
         (globalThis as any).__shroudCurrentHeartbeat = true;
+        _callReason = "heartbeat check";
+      } else if (detectedCh === "cron") {
+        _callReason = "cron job";
+      } else if (detectedCh) {
+        // Extract a snippet of the user message for context
+        const msgSnippet = event.prompt.match(/(?:from\s+\w+\s*(?:Keating)?:\s*)(.{1,60})/i);
+        _callReason = detectedCh + " message" + (msgSnippet ? ": " + msgSnippet[1].trim() : "");
+      } else {
+        _callReason = "LLM call";
       }
     }
 
@@ -1709,7 +1720,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           cacheReadTokens: responseCacheUsage.cacheReadTokens,
           cacheWriteTokens: responseCacheUsage.cacheWriteTokens,
           channel: currentAgent?.channels?.[currentAgent.channels.length - 1] || "",
-          securityEvents: 0, // filled by caller if needed
+          securityEvents: 0,
+          reason: _callReason || "LLM call",
         });
       }
 

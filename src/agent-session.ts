@@ -25,6 +25,8 @@ export interface LlmCallRecord {
   responseTimeMs: number;
   channel: string;
   securityEvents: number;
+  /** Why the call was made (slack message, heartbeat, cron, tool call, etc.) */
+  reason: string;
 }
 
 /** Agent role classification derived from name, channel, and behaviour. */
@@ -440,6 +442,7 @@ export class AgentSessionTracker {
     inputTokens: number; outputTokens: number;
     cacheReadTokens: number; cacheWriteTokens: number;
     channel: string; securityEvents: number;
+    reason: string;
   }): void {
     const hitPct = details.inputTokens > 0
       ? Math.round((details.cacheReadTokens / details.inputTokens) * 100) : 0;
@@ -456,6 +459,7 @@ export class AgentSessionTracker {
       responseTimeMs: this._callStartTime > 0 ? Date.now() - this._callStartTime : 0,
       channel: details.channel,
       securityEvents: details.securityEvents,
+      reason: details.reason,
     });
     // Ring buffer — keep last 200
     if (this._callLog.length > 200) this._callLog.shift();
