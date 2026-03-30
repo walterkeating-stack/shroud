@@ -141,6 +141,19 @@ export interface ShroudConfig {
 
   // --- Dashboard ---
 
+  // --- SIEM ---
+
+  /** Webhook URL for shipping security events (null = disabled). */
+  siemWebhookUrl: string | null;
+  /** Auth header for webhook (e.g. "Bearer xxx", "Splunk xxx"). */
+  siemWebhookAuth: string | null;
+  /** JSONL file path for security event log (null = disabled). */
+  siemJsonlPath: string | null;
+  /** Batch size for SIEM shipping (1 = immediate). */
+  siemBatchSize: number;
+
+  // --- Dashboard ---
+
   /** Enable the real-time security dashboard HTTP endpoint. */
   dashboardEnabled: boolean;
   /** Dashboard port (default: 9380). Binds to 127.0.0.1 only. */

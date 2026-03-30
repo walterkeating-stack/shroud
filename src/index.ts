@@ -16,6 +16,7 @@ import type { BehaviouralProfiler } from "./profiler.js";
 import { startDashboard } from "./dashboard.js";
 import type { AgentSessionTracker } from "./agent-session.js";
 import { PolicyEngine } from "./policy.js";
+import { SiemShipper } from "./siem.js";
 
 // ---------------------------------------------------------------------------
 // Runtime prototype patch: wrap EventStream.prototype.push() with the
@@ -265,6 +266,25 @@ export default {
         };
       },
     });
+
+    // --- SIEM startup ---
+    if ((config.siemWebhookUrl || config.siemJsonlPath) && !(globalThis as any).__shroudSiemStarted) {
+      (globalThis as any).__shroudSiemStarted = true;
+      const siemShipper = new SiemShipper({
+        webhookUrl: config.siemWebhookUrl,
+        webhookAuth: config.siemWebhookAuth,
+        jsonlPath: config.siemJsonlPath,
+        batchSize: config.siemBatchSize,
+        flushIntervalMs: 5000,
+      });
+      // Subscribe to security events
+      const secBus = (globalThis as any).__shroudSecurityBus;
+      if (secBus) {
+        secBus.onEvent((event: any) => siemShipper.onEvent(event));
+      }
+      (globalThis as any).__shroudSiemShipper = siemShipper;
+      api.logger?.info(`[shroud] SIEM shipper started${config.siemWebhookUrl ? ` (webhook: ${config.siemWebhookUrl})` : ""}${config.siemJsonlPath ? ` (jsonl: ${config.siemJsonlPath})` : ""}`);
+    }
 
     // --- Dashboard startup ---
     if (config.dashboardEnabled && !(globalThis as any).__shroudDashboardStarted) {

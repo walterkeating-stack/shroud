@@ -1,0 +1,93 @@
+{
+  "description": "Realistic agent traffic for profiling baseline accumulation. 50 turns per agent covering their typical daily workload.",
+
+  "security-researcher": {
+    "traffic": [
+      "Analyze the ACL on fw-border-01.dublin.example.com at 10.1.0.1. Check for any rules allowing SSH from 0.0.0.0/0.",
+      "Pull the Nessus scan results for subnet 172.16.10.0/24. Last scan was Tuesday, 47 hosts scanned.",
+      "Review the BGP route table on rtr-core-01 (AS 65100). We're receiving 850K routes from upstream at 203.0.113.1.",
+      "Incident IR-2024-0892: host 10.50.33.102 is beaconing to C2 at 198.51.100.44 every 60 seconds on port 8443.",
+      "Write a risk assessment for the unpatched Apache Struts on web-dmz-01.prod.internal (CVE-2024-1234).",
+      "Compare the OSPF neighbor tables on rtr-edge-{01,02,03}.dublin.net. Area 0 should show 5 adjacencies each.",
+      "The SOC flagged DNS queries to *.evil-domain.xyz from host 10.200.5.88. Check if it's a false positive from the marketing team's browser extension.",
+      "Document the VPN tunnel config between site Dublin (10.0.0.0/8) and Frankfurt (172.16.0.0/12). PSK rotation due next month.",
+      "Check the SNMP polling config for the campus switches. Community string should be 'n3tw0rk-r0' on VLAN 999 management.",
+      "Analyze the packet capture from tap-01.soc.internal. Filter for TLS 1.0 connections — we should have none after last month's deprecation.",
+      "Map the attack surface for the new microservices deployment. API gateway at api.prod.internal:8443, 12 backend services on 10.100.0.0/24.",
+      "Review the Cisco ISE posture policy. Endpoints failing health check from 10.50.0.0/16 should be redirected to quarantine VLAN 666.",
+      "Investigate the IPS alert: SQL injection attempt from 203.0.113.200 against web-app-01.dmz.internal on port 443.",
+      "Prepare the monthly executive security report. Key metrics: 12 incidents, 3 critical patches, 2 policy violations.",
+      "Audit the RADIUS shared secrets on all wireless controllers. WLC-01 at 10.100.1.1, WLC-02 at 10.100.1.2, WLC-03 at 10.100.1.3.",
+      "Check if the new WAF rules on f5-waf-01.prod.internal are blocking legitimate traffic. Review the learning mode logs from last 48 hours.",
+      "The penetration test report mentions a misconfigured CORS policy on api.staging.internal. Verify the Access-Control-Allow-Origin header.",
+      "Review the firewall change request: allow TCP 1433 from app-server-01 (10.20.5.10) to sql-cluster.db.internal (10.20.10.100).",
+      "Check the certificate expiry dates for *.prod.example.com and *.staging.example.com. Renewal threshold is 30 days.",
+      "Analyze the NetFlow data from collector.noc.internal for the last 24 hours. Flag any hosts with >1GB outbound to external IPs.",
+      "Map the lateral movement path from compromised host 10.50.33.102 to domain controller dc-01.corp.internal.",
+      "Review the Palo Alto URL filtering logs. Category 'malware' should be blocked; 'questionable' should be monitored.",
+      "The SIEM correlation rule fired: 5 failed SSH logins to bastion.admin.internal from IP 10.50.0.88 in 2 minutes.",
+      "Prepare a table of all expired SSL certificates across the infrastructure. Check hosts in 10.0.0.0/8 on ports 443, 8443, 9443.",
+      "Verify the network segmentation between PCI zone (VLAN 100, 10.10.100.0/24) and corporate LAN (VLAN 200, 10.10.200.0/24)."
+    ]
+  },
+
+  "customer-outreach": {
+    "traffic": [
+      "Research the new VP of Engineering at Quantum Dynamics. LinkedIn says she's Elena Rodriguez, previously at AWS. Find her work email.",
+      "Draft a personalized email for Thomas Mueller at Siemens Digital Industries. Reference their recent cloud migration announcement.",
+      "Pull all contacts at Acme Healthcare from the CRM. We have a meeting Thursday with their procurement team.",
+      "Update the deal value for OpportunityOpp-2024-1892 from $120K to $180K. They added 30 more seats in the last call.",
+      "Send the Q4 pricing sheet to jenny.park@stratosbio.com. CC the account exec at m.reeves@oursales.com.",
+      "Research Helios Financial Group. CEO is Marcus Webb, CFO is Diana Chen. HQ in Singapore. $2.1B revenue.",
+      "Prepare a competitive analysis: our platform vs Datadog for observability. Focus on their APM pricing for 200+ hosts.",
+      "Draft a case study request email to r.patel@globalmanufacturing.com. They reduced MTTR by 72% in 6 months.",
+      "Schedule a QBR for next Tuesday with NovaTech Solutions. Primary: Alex Ivanov (a.ivanov@novatech.io, +44-20-7946-0100).",
+      "Create a territory plan for EMEA healthcare accounts. Top targets: PharmaCorp, MediGroup, HealthTech Systems.",
+      "Research the buying committee at Apex Telecom. CTO: James Wilson, VP Ops: Sarah Kim, Procurement: David Okoye.",
+      "Update the Salesforce opportunity stage to 'Negotiation' for Brightpath Education. Contract value: $350K/year.",
+      "Draft a meeting agenda for the product demo with FintechPro. Focus on API monitoring and compliance dashboards.",
+      "Send a contract renewal reminder to finance@cloudworks.io. Current contract expires April 30, $890K ARR.",
+      "Prepare talking points for the CEO meeting with Robert Tanaka at Nippon Systems. They're evaluating 3 vendors.",
+      "Research recent M&A activity at DataVault Corp. They acquired SecureStore last quarter — potential upsell opportunity.",
+      "Draft an introductory email for the new Channel Partner program to partners@techalliance.com.",
+      "Pull the email open rates for the Q1 nurture campaign. Segment by industry: healthcare, fintech, manufacturing.",
+      "Create a ROI calculator for Meridian Logistics. Inputs: 500 servers, 50 microservices, current MTTR of 45 minutes.",
+      "Send the signed NDA to legal@bigenterprisegroup.com. Our signer is VP Sales at vp.sales@ourcompany.com.",
+      "Research the tech stack at GreenEnergy Solutions. Their job postings mention Kubernetes, Terraform, and Prometheus.",
+      "Draft a winback email for accounts that churned in Q3. Personalize with their original use case and new features since then.",
+      "Update the CRM notes: call with Chris Anderson at DataFlow Labs went well. Next step: technical deep-dive with their SRE team.",
+      "Prepare a multi-threading strategy for the Pinnacle Insurance deal. We have one champion; need to reach the CIO and VP Eng.",
+      "Generate a pipeline forecast for March. Include: weighted value, expected close dates, and risk factors for top 10 deals."
+    ]
+  },
+
+  "support-bot": {
+    "traffic": [
+      "Ticket #SUP-29401: User reports their VM at 10.100.50.23 is unreachable after the maintenance window. Account: dev@startupxyz.io.",
+      "DNS resolution failing for api.customer-app.io. It should resolve to 203.0.113.42. Their monitoring shows 100% failure since 14:00 UTC.",
+      "Billing dispute from finance@bigenterprise.com: charged $4,200 for March but they downgraded to 10 seats on March 5th.",
+      "SSL certificate renewal request for *.production.clientco.com. Current cert expires in 3 days. Ticket #SUP-29455.",
+      "User john.martinez@corp.com can't SSH to bastion-01.cloudstack.io. His IP 203.0.113.100 might not be whitelisted.",
+      "Load balancer lb-prod-02 at 10.100.1.50 is returning 503 errors. Backend health checks are failing on 3 of 5 nodes.",
+      "Account lockout for admin@techstartup.io. 5 failed password attempts. Ticket #SUP-29470. Phone: +1-415-555-0199.",
+      "Customer wants to add a CNAME record: docs.theirapp.com → docs-cdn.cloudstack.io. Zone: theirapp.com.",
+      "Storage quota exceeded for account CST-88721 (storage@mediacompany.com). Current usage: 4.8TB of 5TB.",
+      "API rate limiting issue: customer reports 429 errors. Account ID CST-90124, endpoint: POST /api/v2/deployments.",
+      "Scheduled maintenance notification needed for customers in US-EAST region. Window: Saturday 02:00-06:00 UTC.",
+      "VPN tunnel between customer's on-prem (public IP 198.51.100.50) and our VPC gateway is flapping. IPSec SA lifetime mismatch.",
+      "User reports email notifications not being delivered. Verified their address: ops-team@manufacturing.co.uk. Check SMTP logs.",
+      "Database backup job for PostgreSQL instance pg-prod-01 (10.100.5.20) failed at 03:00 UTC. Error: disk space on backup volume.",
+      "Customer migration from legacy plan to new tier. Account: enterprise@globalcorp.com. Current: 100 seats Legacy Pro. Target: Enterprise.",
+      "Container orchestration issue: pods in namespace 'production' on cluster k8s-east-01 crashing with OOM. Customer: devops@saas.io.",
+      "Two-factor authentication not working for sarah.jones@clientco.com. TOTP codes being rejected. Time sync issue?",
+      "Customer wants to configure a custom domain for their status page: status.theircompany.com → status.cloudstack.io.",
+      "Monitoring alert: disk usage on host web-server-05.us-west.cloudstack.io at 92%. Customer: ops@webagency.com.",
+      "Feature request from enterprise@bigclient.com: webhook notifications for deployment events. Ticket #FEAT-1201.",
+      "Outage postmortem requested by CTO@premium-customer.io for the 15-minute API outage on March 28th.",
+      "User reports slow query performance on PostgreSQL instance pg-analytics-01. Query: SELECT with JOIN across 3 tables, >30 seconds.",
+      "Password reset for service account svc-deploy@customer.io. They lost access to the automation pipeline.",
+      "Customer on-boarding: new account for Meridian Corp. Admin: it-admin@meridiancorp.com. Region: EU-WEST. Plan: Business 50 seats.",
+      "Connectivity test requested between customer VPC (10.200.0.0/16) and our managed services subnet (10.100.0.0/16)."
+    ]
+  }
+}

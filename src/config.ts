@@ -177,6 +177,25 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     canaryNearMatchDistance:
       typeof raw.canaryNearMatchDistance === "number" ? raw.canaryNearMatchDistance : 2,
 
+    // --- SIEM ---
+    siemWebhookUrl: (() => {
+      const env = process.env.SHROUD_SIEM_WEBHOOK_URL;
+      if (env) return env;
+      return typeof raw.siemWebhookUrl === "string" ? raw.siemWebhookUrl : null;
+    })(),
+    siemWebhookAuth: (() => {
+      const env = process.env.SHROUD_SIEM_WEBHOOK_AUTH;
+      if (env) return env;
+      return typeof raw.siemWebhookAuth === "string" ? raw.siemWebhookAuth : null;
+    })(),
+    siemJsonlPath: (() => {
+      const env = process.env.SHROUD_SIEM_JSONL_PATH;
+      if (env) return env;
+      return typeof raw.siemJsonlPath === "string" ? raw.siemJsonlPath : null;
+    })(),
+    siemBatchSize:
+      typeof raw.siemBatchSize === "number" ? raw.siemBatchSize : 10,
+
     // --- Dashboard ---
     dashboardEnabled: (() => {
       const env = process.env.SHROUD_DASHBOARD;
