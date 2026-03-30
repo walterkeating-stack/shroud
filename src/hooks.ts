@@ -1137,22 +1137,36 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
         }
 
-        // Extract SOUL.md from early messages in body.messages
-        // OpenClaw may inject it as assistant or user content, in string or block format.
-        // Scan the first 5 messages for identity-bearing content (- Name:, You are, SOUL, etc.)
-        if (Array.isArray(body.messages) && body.messages.length > 0) {
-          const soulPatterns = /(?:-\s*Name:|[Yy]ou\s+are|SOUL|IDENTITY|personality|role:|purpose:)/;
-          for (let mi = 0; mi < Math.min(5, body.messages.length); mi++) {
-            const m = body.messages[mi];
-            let text = "";
-            if (typeof m?.content === "string") {
-              text = m.content;
-            } else if (Array.isArray(m?.content)) {
-              text = m.content.map((b: any) => b?.text || "").join("\n");
+        // Extract SOUL.md / agent identity from messages and system blocks.
+        // OpenClaw buries it in the conversation history — scan broadly.
+        if (!agentTracker.getCurrentSession()?.soulExtract) {
+          const soulPatterns = /(?:-\s*Name:|[Yy]ou\s+are\s+(?:a\s+|an\s+)?[A-Z]|SOUL|IDENTITY|personality|role:|purpose:|[Yy]our\s+(?:name|role|job|purpose)\s+is)/;
+
+          // 1. Check system blocks (Anthropic array format)
+          if (Array.isArray(body.system)) {
+            for (const block of body.system) {
+              const t = block?.text || "";
+              if (t.length > 30 && soulPatterns.test(t) && !t.startsWith("You are Claude Code")) {
+                agentTracker.updateSoul(t);
+                break;
+              }
             }
-            if (text.length > 30 && soulPatterns.test(text)) {
-              agentTracker.updateSoul(text);
-              break;
+          }
+
+          // 2. Scan messages — check first 20, prefer assistant role
+          if (!agentTracker.getCurrentSession()?.soulExtract && Array.isArray(body.messages)) {
+            for (let mi = 0; mi < Math.min(20, body.messages.length); mi++) {
+              const m = body.messages[mi];
+              let text = "";
+              if (typeof m?.content === "string") {
+                text = m.content;
+              } else if (Array.isArray(m?.content)) {
+                text = m.content.map((b: any) => b?.text || "").join("\n");
+              }
+              if (text.length > 30 && soulPatterns.test(text) && !text.startsWith("You are Claude Code")) {
+                agentTracker.updateSoul(text);
+                break;
+              }
             }
           }
         }
@@ -1563,6 +1577,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               }
               agentTracker.recordSecurityEvent(alerts.length);
             }
+          }
+          // Incremental baseline update — flush to disk every 5 turns
+          // so baselines build up without waiting for session end / SIGTERM
+          const profile = profiler.getSessionProfile();
+          if (profile.turns.length > 0 && profile.turns.length % 5 === 0) {
+            _flushToDisk();
           }
         } catch { /* never break response pipeline */ }
       }

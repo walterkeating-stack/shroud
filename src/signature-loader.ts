@@ -26,6 +26,8 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import * as nodeHttps from "node:https";
+import * as nodeHttp from "node:http";
 import type { SecuritySeverity, ThreatClass } from "./security-event.js";
 
 /** External signature definition (JSON-friendly — pattern is a string, not RegExp). */
@@ -278,7 +280,7 @@ export class SignatureLoader {
   private _fetchUrl(url: string): Promise<string | null> {
     return new Promise((resolve) => {
       try {
-        const mod = url.startsWith("https") ? require("node:https") : require("node:http");
+        const mod = url.startsWith("https") ? nodeHttps : nodeHttp;
         const req = mod.get(url, { timeout: 10_000 }, (res: any) => {
           // Follow redirects (1 level)
           if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {

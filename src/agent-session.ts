@@ -321,16 +321,14 @@ function extractLabel(systemPrompt: string): string {
   const channelMatch = systemPrompt.match(/"conversation_label"\s*:\s*"#?([^"]+)"/);
   if (channelMatch) {
     let name = channelMatch[1].trim();
-    // Strip suffixes like "-main" that are channel routing, not agent name
     name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
-    // Convert kebab-case to Title Case (short names like "pj" → "PJ")
     name = name.split(/[-_]/).map(w =>
       w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
     ).join(" ");
     if (name.length > 1 && name.length < 50) return name;
   }
 
-  // 2. OpenClaw channel in system context header: "Slack message in #channel-name"
+  // 2a. Slack channel header: "Slack message in #channel-name"
   const slackChannelMatch = systemPrompt.match(/Slack\s+message\s+in\s+#([^\s]+)/i);
   if (slackChannelMatch) {
     let name = slackChannelMatch[1].trim();
@@ -339,6 +337,28 @@ function extractLabel(systemPrompt: string): string {
       w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
     ).join(" ");
     if (name.length > 1 && name.length < 50) return name;
+  }
+
+  // 2b. WhatsApp header: "WhatsApp message from [Name]" or "WhatsApp group [Name]"
+  const waMatch = systemPrompt.match(/WhatsApp\s+(?:message|group)\s+(?:from\s+|in\s+)?["']?([^"'\n]+)/i);
+  if (waMatch) {
+    const name = waMatch[1].trim().replace(/\s*\(.*?\)\s*$/, ""); // strip phone in parens
+    if (name.length > 1 && name.length < 50) return name;
+  }
+
+  // 2c. TUI / terminal: "TUI session" or "terminal session" — use agent name from session key
+  //     Session keys: "agent:main:tui:..." → extract "main"
+  const tuiMatch = systemPrompt.match(/(?:TUI|terminal)\s+(?:session|message)/i);
+  if (tuiMatch) {
+    // Try to find agent name from session key pattern in metadata
+    const agentKeyMatch = systemPrompt.match(/agent:([^:]+):/);
+    if (agentKeyMatch) {
+      let name = agentKeyMatch[1].trim();
+      name = name.split(/[-_]/).map(w =>
+        w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
+      ).join(" ");
+      if (name.length > 1 && name.length < 50) return name;
+    }
   }
 
   // 3. Try section-based extraction (framework preamble + agent SOUL.md)

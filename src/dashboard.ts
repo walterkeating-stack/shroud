@@ -188,6 +188,14 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
       totalDeobfuscated: (deps.obfuscator.getStats() as any).totalReplacementsDeobfuscated,
     },
     anomalyAlerts: profiler ? profiler.getAlerts().length : 0,
+    cache: profiler ? profiler.getCacheStats() : null,
+    externalSignatures: (globalThis as any).__shroudExternalSigs ? {
+      version: (globalThis as any).__shroudExternalSigs.feedVersion,
+      updated: (globalThis as any).__shroudExternalSigs.feedUpdated,
+      count: (globalThis as any).__shroudExternalSigs.injection.length +
+             (globalThis as any).__shroudExternalSigs.toolGuard.length,
+      loadedAt: new Date((globalThis as any).__shroudExternalSigs.loadedAt).toISOString(),
+    } : null,
   });
 }
 
@@ -791,6 +799,31 @@ async function refresh() {
     html += '<div class="stat-label">Entities obfuscated</div>';
     html += '<div class="row"><span class="label">Store Mappings</span><span class="value">' + obf.storeMappings + '</span></div>';
     html += '<div class="row"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
+    html += '</div>';
+
+    // LLM Cache + External Signatures
+    const cache = overview.cache;
+    const extSigs = overview.externalSignatures;
+    html += '<div class="card"><h2>LLM Cache</h2>';
+    if (cache && cache.turns > 0) {
+      const hitPct = Math.round(cache.hitRatio * 100);
+      const hitColor = hitPct >= 70 ? '#3fb950' : hitPct >= 30 ? '#d29922' : '#f85149';
+      html += '<div class="stat" style="color:' + hitColor + '">' + hitPct + '%</div>';
+      html += '<div class="stat-label">Cache hit ratio (' + cache.turns + ' turns)</div>';
+      html += '<div class="row"><span class="label">Input tokens</span><span class="value">' + cache.totalInput.toLocaleString() + '</span></div>';
+      html += '<div class="row"><span class="label">Cache read</span><span class="value" style="color:#3fb950">' + cache.totalCacheRead.toLocaleString() + '</span></div>';
+      html += '<div class="row"><span class="label">Cache write</span><span class="value">' + cache.totalCacheWrite.toLocaleString() + '</span></div>';
+      html += '<div class="row"><span class="label">Output tokens</span><span class="value">' + cache.totalOutput.toLocaleString() + '</span></div>';
+    } else {
+      html += '<div class="stat" style="color:#484f58">—</div>';
+      html += '<div class="stat-label">No LLM calls profiled yet</div>';
+    }
+    if (extSigs) {
+      html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid #30363d">';
+      html += '<div class="row"><span class="label">External Sigs</span><span class="value" style="color:#58a6ff">' + extSigs.count + ' (v' + extSigs.version + ')</span></div>';
+      html += '<div class="row"><span class="label">Last refresh</span><span class="value">' + timeAgo(new Date(extSigs.loadedAt).getTime()) + '</span></div>';
+      html += '</div>';
+    }
     html += '</div>';
 
     // Threat breakdown

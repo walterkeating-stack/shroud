@@ -260,6 +260,22 @@ export class BehaviouralProfiler {
     return this._alerts;
   }
 
+  /** Get LLM cache usage summary for the current session. */
+  getCacheStats(): { totalInput: number; totalOutput: number; totalCacheRead: number; totalCacheWrite: number; hitRatio: number; turns: number } {
+    let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheWrite = 0;
+    for (const t of this._turns) {
+      totalInput += t.inputTokens;
+      totalOutput += t.outputTokens;
+      totalCacheRead += t.cacheReadTokens;
+      totalCacheWrite += t.cacheWriteTokens;
+    }
+    return {
+      totalInput, totalOutput, totalCacheRead, totalCacheWrite,
+      hitRatio: totalInput > 0 ? totalCacheRead / totalInput : 0,
+      turns: this._turns.length,
+    };
+  }
+
   /** Get current session profile (without finalizing). */
   getSessionProfile(): SessionProfile {
     return {
