@@ -392,16 +392,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ob().resetToolDepth();
     }
 
-    // --- Agent session tracking ---
-    // Register the agent identity from system prompt. This maps every subsequent
-    // LLM call to this agent, enabling per-agent WAF rules and security logging.
-    if (typeof event?.prompt === "string" && event.prompt.length > 0) {
-      const session = agentTracker.registerAgent(event.prompt);
-      // Link profiler to current agent build
-      if (profiler) {
-        profiler.setAgentBuildId(session.agentBuildId);
-      }
-    }
+    // Agent identity is extracted from the LLM API body.system in the fetch
+    // intercept, NOT from event.prompt here. event.prompt contains OpenClaw's
+    // assembled context with per-message metadata that changes every call.
 
     // ── DNS cache warming ──
     // Extract all URLs from the prompt and messages, resolve their FQDNs
@@ -1008,6 +1001,19 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // Extract model ID for agent tracking
         if (typeof body.model === "string") {
           agentTracker.updateModel(body.model);
+        }
+
+        // --- Agent identity from the STABLE system prompt ---
+        // body.system is the SOUL.md / IDENTITY.md content — stable across sessions.
+        // event.prompt in before_prompt_build contains per-message metadata that
+        // changes every call, producing different build IDs for the same agent.
+        const systemForIdentity = typeof body.system === "string" ? body.system
+          : Array.isArray(body.system) ? body.system.map((b: any) => b?.text || "").join("\n")
+          : typeof body.instructions === "string" ? body.instructions
+          : null;
+        if (systemForIdentity && systemForIdentity.length > 10) {
+          const session = agentTracker.registerAgent(systemForIdentity);
+          if (profiler) profiler.setAgentBuildId(session.agentBuildId);
         }
 
         let modified = false;

@@ -185,6 +185,15 @@ export function extractPromptSkeleton(prompt: string): string {
   // should not affect the identity.
   s = s.slice(0, 2000);
 
+  // Strip OpenClaw system context prefix entirely — it's per-session metadata,
+  // not part of the agent's identity. Starts with "System: [timestamp]" and
+  // contains session IDs, routing info, channel context.
+  s = s.replace(/^System:\s*\[.*?\].*?\n/gm, "");
+  s = s.replace(/^Sender\s*\(.*?\):.*?\n/gm, "");
+  s = s.replace(/^Session\s+\w+:.*?\n/gm, "");
+  s = s.replace(/^Channel:.*?\n/gm, "");
+  s = s.replace(/^\[.*?\]\s*$/gm, ""); // bracketed metadata lines
+
   // Normalize dynamic content to stable placeholders
   s = s.replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "<UUID>"); // UUIDs
   s = s.replace(/\b\d{4}[-/]\d{2}[-/]\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)?\b/g, "<DATE>"); // ISO dates
@@ -194,6 +203,8 @@ export function extractPromptSkeleton(prompt: string): string {
   s = s.replace(/\b[0-9a-f]{12,}\b/gi, "<HEX>"); // long hex strings
   s = s.replace(/\b\d{5,}\b/g, "<NUM>"); // numbers > 4 digits
   s = s.replace(/https?:\/\/[^\s<>"']+/g, "<URL>"); // URLs
+  // Normalize timezone offsets: GMT+2, UTC+01:00, etc.
+  s = s.replace(/(?:GMT|UTC)[+-]\d{1,2}(?::\d{2})?/g, "<TZ>");
 
   // Collapse whitespace
   s = s.replace(/\s+/g, " ").trim();
@@ -204,28 +215,54 @@ export function extractPromptSkeleton(prompt: string): string {
 /**
  * Extract a short, snappy agent name from system prompt.
  *
- * Looks for "You are a/an [ROLE]" pattern, then distills to the core role.
- * "network security researcher at a managed security services provider" → "Security Researcher"
+ * Handles multiple formats:
+ * 1. OpenClaw IDENTITY.md: "- Name: PJ" or "- Name: Coach Alessandra"
+ * 2. "You are a/an [ROLE]" pattern (common in SOUL.md)
+ * 3. Fallback: first meaningful non-system line
+ *
+ * Skips OpenClaw system context prefixes (timestamps, session metadata).
  */
 function extractLabel(systemPrompt: string): string {
-  // Try to extract role from "You are a/an [role]" pattern
+  // 1. OpenClaw IDENTITY.md format: "- Name: X"
+  const nameMatch = systemPrompt.match(/-\s*Name:\s*(.+)/i);
+  if (nameMatch) {
+    const name = nameMatch[1].trim();
+    if (name.length > 1 && name.length < 60) return name;
+  }
+
+  // 2. "You are a/an [role]" pattern
   const roleMatch = systemPrompt.match(
     /[Yy]ou\s+are\s+(?:a|an)\s+(.+?)(?:\.|,|\n|$)/,
   );
   if (roleMatch) {
     let role = roleMatch[1].trim();
-    // Shorten: strip "at/for/who/that..." clauses
     role = role.replace(/\s+(?:at|for|who|that|which|specializing|working|based)\s+.*/i, "");
-    // Title case
     role = role.replace(/\b\w/g, (c) => c.toUpperCase());
     if (role.length > 3 && role.length < 50) return role;
   }
 
-  // Fallback: first meaningful line, shortened
+  // 3. "- Creature: X" (OpenClaw IDENTITY.md secondary)
+  const creatureMatch = systemPrompt.match(/-\s*Creature:\s*(.+)/i);
+  if (creatureMatch) {
+    const creature = creatureMatch[1].trim();
+    if (creature.length > 3 && creature.length < 60) {
+      return creature.replace(/\b\w/g, (c) => c.toUpperCase());
+    }
+  }
+
+  // 4. Fallback: first meaningful line (skip system context, timestamps, headers)
   const firstLine = systemPrompt
     .split("\n")
     .map((l) => l.trim())
-    .find((l) => l.length > 5 && !l.startsWith("#") && !l.startsWith("<!--"));
+    .find((l) =>
+      l.length > 5 &&
+      !l.startsWith("#") &&
+      !l.startsWith("<!--") &&
+      !l.startsWith("System:") &&
+      !l.startsWith("- ") &&
+      !/^\d{4}-\d{2}-\d{2}/.test(l) &&
+      !/^\[.*\]$/.test(l),
+    );
   if (!firstLine) return "Unknown Agent";
   const short = firstLine.replace(/\s+(?:at|for|who|that|which)\s+.*/i, "");
   return short.length > 40 ? short.slice(0, 37) + "..." : short;
