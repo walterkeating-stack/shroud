@@ -135,8 +135,9 @@ describe("CanaryInjector — System canary planting", () => {
   test("injectSystem appends canary to system prompt", () => {
     const result = canary.injectSystem("You are a helpful assistant.");
     expect(result).toContain("You are a helpful assistant.");
-    expect(result).toContain("<!-- SHROUD-CANARY-");
-    expect(result).toContain(" -->");
+    // Canary is now zero-width encoded, not visible as plaintext
+    expect(result).not.toContain("<!-- SHROUD-CANARY-");
+    expect(result.length).toBeGreaterThan("You are a helpful assistant.".length);
   });
 
   test("system canary is tracked in injectionCanaries", () => {
@@ -203,7 +204,7 @@ describe("CanaryInjector — Behavioural canaries", () => {
   test("injectBehavioural adds instruction to system prompt", () => {
     const { prompt, canary: bc } = canary.injectBehavioural("You are helpful.");
     expect(prompt).toContain("You are helpful.");
-    expect(prompt).toContain("[Internal diagnostic:");
+    expect(prompt).toContain("[Formatting note:");
     expect(prompt).toContain(bc.signatureCode);
     expect(bc.signatureCode).toMatch(/^SHROUD-DIAG-[a-f0-9]{8}$/);
   });
@@ -267,7 +268,9 @@ describe("CanaryInjector — Original functionality preserved", () => {
     const canary = new CanaryInjector("SHROUD-CANARY", "test-secret");
     const result = canary.inject("Some text.");
     expect(result).toContain("Some text.");
-    expect(result).toContain("<!-- SHROUD-CANARY-");
+    // Canary is now zero-width encoded
+    expect(result).not.toContain("<!-- SHROUD-CANARY-");
+    expect(result.length).toBeGreaterThan("Some text.".length);
   });
 
   test("checkLeak still works as before", () => {

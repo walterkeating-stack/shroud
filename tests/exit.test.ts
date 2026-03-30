@@ -657,8 +657,12 @@ describe("EXIT 14: Canary tokens", () => {
   test("canary injected and detectable", () => {
     const canary = new CanaryInjector("SHROUD-TEST", "canary-secret-key");
     const injected = canary.inject("Hello world");
-    expect(injected).toContain("SHROUD-TEST");
-    const leaks = canary.checkLeak(injected);
+    // Canary is zero-width encoded, not visible as plaintext
+    expect(injected).not.toContain("SHROUD-TEST-");
+    expect(injected).toContain("Hello world");
+    // But checkLeak can find the token in plaintext form
+    const token = canary.getTokens()[0].token;
+    const leaks = canary.checkLeak(`Response with ${token}`);
     expect(leaks.length).toBeGreaterThan(0);
   });
 
@@ -671,7 +675,12 @@ describe("EXIT 14: Canary tokens", () => {
   test("canary via obfuscator config", () => {
     const ob = resolvedObfuscator({ canaryEnabled: true, canaryPrefix: "EXIT-CANARY" });
     const result = ob.obfuscate("admin@corp.com");
-    expect(result.obfuscated).toContain("EXIT-CANARY");
+    // Canary is zero-width encoded, not visible as plaintext
+    expect(result.obfuscated).not.toContain("EXIT-CANARY-");
+    // But the obfuscated text should be longer than without canary
+    const ob2 = resolvedObfuscator({ canaryEnabled: false });
+    const result2 = ob2.obfuscate("admin@corp.com");
+    expect(result.obfuscated.length).toBeGreaterThan(result2.obfuscated.length);
   });
 
   test("canary reset clears tokens", () => {

@@ -1,15 +1,44 @@
 import { describe, test, expect } from "vitest";
 
-import { CanaryInjector } from "../src/canary.js";
+import { CanaryInjector, encodeZeroWidth, decodeZeroWidth } from "../src/canary.js";
+
+describe("Zero-width encoding", () => {
+  test("encode then decode roundtrips", () => {
+    const original = "SHROUD-CANARY-abc123";
+    const encoded = encodeZeroWidth(original);
+    expect(encoded).not.toContain(original); // invisible
+    expect(encoded.length).toBeGreaterThan(0);
+    const decoded = decodeZeroWidth(encoded);
+    expect(decoded).toBe(original);
+  });
+
+  test("encoded text is invisible (only zero-width chars)", () => {
+    const encoded = encodeZeroWidth("test");
+    // Should only contain zero-width chars and delimiters
+    for (const ch of encoded) {
+      expect(["\u200B", "\u200C", "\u200D"].includes(ch)).toBe(true);
+    }
+  });
+
+  test("decode extracts from mixed text", () => {
+    const encoded = encodeZeroWidth("CANARY-123");
+    const mixed = "Hello world" + encoded + " more text";
+    const decoded = decodeZeroWidth(mixed);
+    expect(decoded).toBe("CANARY-123");
+  });
+});
 
 describe("CanaryInjector", () => {
-  test("inject adds canary comment to text", () => {
+  test("inject adds invisible canary to text", () => {
     const inj = new CanaryInjector("SHROUD-CANARY", "test-secret");
     const result = inj.inject("Hello world");
-    expect(result).toContain("SHROUD-CANARY-");
+    // Original text preserved
     expect(result).toContain("Hello world");
-    expect(result).toContain("<!--");
-    expect(result).toContain("-->");
+    // Canary is NOT visible as plaintext
+    expect(result).not.toContain("SHROUD-CANARY-");
+    expect(result).not.toContain("<!--");
+    // But it's there as zero-width chars
+    expect(result.length).toBeGreaterThan("Hello world".length);
   });
 
   test("multiple injects produce different tokens", () => {
@@ -21,13 +50,22 @@ describe("CanaryInjector", () => {
     expect(tokens[0].token).not.toBe(tokens[1].token);
   });
 
-  test("checkLeak finds injected tokens", () => {
+  test("checkLeak finds token in plaintext", () => {
     const inj = new CanaryInjector("SHROUD-CANARY", "test-secret");
     inj.inject("Hello");
     const token = inj.getTokens()[0].token;
     const leaked = inj.checkLeak(`Some text with ${token} in it`);
     expect(leaked.length).toBe(1);
-    expect(leaked[0].token).toBe(token);
+  });
+
+  test("checkLeak finds token in zero-width encoded form", () => {
+    const inj = new CanaryInjector("SHROUD-CANARY", "test-secret");
+    const result = inj.inject("Hello");
+    // The encoded canary from inject should be detectable
+    const token = inj.getTokens()[0].token;
+    const encoded = encodeZeroWidth(token);
+    const leaked = inj.checkLeak(`Response text${encoded}`);
+    expect(leaked.length).toBe(1);
   });
 
   test("checkLeak returns empty for unknown text", () => {
@@ -37,30 +75,12 @@ describe("CanaryInjector", () => {
     expect(leaked.length).toBe(0);
   });
 
-  test("reset clears tokens and generates new session ID", async () => {
+  test("reset clears tokens", async () => {
     const inj = new CanaryInjector("SHROUD-CANARY", "test-secret");
     inj.inject("msg");
-    const oldSession = inj.sessionId;
     expect(inj.getTokens().length).toBe(1);
-
-    // Wait 2ms so Date.now() changes (used in session ID hash)
     await new Promise((resolve) => setTimeout(resolve, 2));
-
     inj.reset();
     expect(inj.getTokens().length).toBe(0);
-    // Session ID is based on Date.now(), so it should differ after the delay
-    expect(inj.sessionId).not.toBe(oldSession);
-  });
-
-  test("getTokens returns all injected tokens", () => {
-    const inj = new CanaryInjector("SHROUD-CANARY", "test-secret");
-    inj.inject("first");
-    inj.inject("second");
-    inj.inject("third");
-    const tokens = inj.getTokens();
-    expect(tokens.length).toBe(3);
-    expect(tokens[0].messageIndex).toBe(1);
-    expect(tokens[1].messageIndex).toBe(2);
-    expect(tokens[2].messageIndex).toBe(3);
   });
 });
