@@ -265,10 +265,24 @@ async function simulate() {
   console.log(`  Press Ctrl+C to stop.`);
   console.log(`${"=".repeat(60)}\n`);
 
-  // Keep running with periodic injection attempts
+  // Keep running: continuous agent turns + periodic injection attempts
+  let turnCounter = 0;
   setInterval(async () => {
-    await runInjectionAttempt();
-  }, 30000);
+    turnCounter++;
+    // Regular agent activity
+    const agent = AGENTS[turnCounter % AGENTS.length];
+    const msg = agent.messages[turnCounter % agent.messages.length];
+    agentTracker.registerAgent(agent.soul);
+    const result = obfuscator.obfuscate(msg);
+    agentTracker.recordLlmCall();
+    detector.scanRequest(msg); // scan but don't emit for normal traffic
+    if (turnCounter % 5 === 0) obfuscator.reset(); // periodic reset to show fresh mappings
+
+    // Injection attempt every 6th turn
+    if (turnCounter % 6 === 0) {
+      await runInjectionAttempt();
+    }
+  }, 3000);
 }
 
 simulate().catch(console.error);
