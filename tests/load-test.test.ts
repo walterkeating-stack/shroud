@@ -276,6 +276,8 @@ describe("Load: BehaviouralProfiler throughput", () => {
           tokenEstimate: 200,
           detectedScript: "latin",
           nonLatinRatio: 0,
+          imagePayloadCount: 0,
+          imagePayloadBytes: 0,
         })),
         aggregates: {
           dominantCategories: ["email"],

@@ -120,6 +120,16 @@ const NUMERIC_FEATURES: Array<{
     extract: (fv) => fv.nonLatinRatio,
     anomalyType: AnomalyType.TOPIC_DISCONTINUITY,
   },
+  {
+    name: "imagePayloadCount",
+    extract: (fv) => fv.imagePayloadCount,
+    anomalyType: AnomalyType.ENTITY_CATEGORY_SHIFT,
+  },
+  {
+    name: "imagePayloadBytes",
+    extract: (fv) => fv.imagePayloadBytes,
+    anomalyType: AnomalyType.ENTITY_CATEGORY_SHIFT,
+  },
 ];
 
 /**

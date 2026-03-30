@@ -47,6 +47,11 @@ export interface FeatureVector {
   detectedScript: string;
   /** Fraction of non-Latin characters in the input (0-1). */
   nonLatinRatio: number;
+
+  /** Number of image payloads in this turn's API request. */
+  imagePayloadCount: number;
+  /** Total size of image payloads in bytes (base64 decoded). */
+  imagePayloadBytes: number;
 }
 
 /** Aggregate statistics for a session. */

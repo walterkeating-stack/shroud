@@ -1145,7 +1145,51 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 if (lastStats.detectionsByCategory && typeof lastStats.detectionsByCategory === "object") {
                   Object.assign(catCounts, lastStats.detectionsByCategory);
                 }
-                profiler.extractRequestFeatures(allText, catCounts);
+
+                // Count image payloads in the request body
+                let imgCount = 0;
+                let imgBytes = 0;
+                try {
+                  const scanArr = Array.isArray(body.messages) ? body.messages
+                    : Array.isArray(body.contents) ? body.contents : null;
+                  if (scanArr) {
+                    for (const msg of scanArr) {
+                      if (Array.isArray(msg.content)) {
+                        for (const block of msg.content) {
+                          // Anthropic: { type: "image", source: { data: "base64..." } }
+                          if (block?.type === "image" && block?.source?.data) {
+                            imgCount++;
+                            imgBytes += Math.ceil(block.source.data.length * 0.75);
+                          }
+                          // OpenAI: { type: "image_url", image_url: { url: "data:..." } }
+                          if (block?.type === "image_url" && block?.image_url?.url?.startsWith("data:")) {
+                            imgCount++;
+                            const commaIdx = block.image_url.url.indexOf(",");
+                            if (commaIdx > 0) {
+                              imgBytes += Math.ceil((block.image_url.url.length - commaIdx) * 0.75);
+                            }
+                          }
+                        }
+                      }
+                      // Google: { parts: [{ inlineData: { data: "base64..." } }] }
+                      if (Array.isArray(msg.parts)) {
+                        for (const part of msg.parts) {
+                          if (part?.inlineData?.data) {
+                            imgCount++;
+                            imgBytes += Math.ceil(part.inlineData.data.length * 0.75);
+                          }
+                        }
+                      }
+                    }
+                  }
+                } catch { /* best effort */ }
+
+                profiler.extractRequestFeatures(
+                  allText,
+                  catCounts,
+                  undefined,
+                  imgCount > 0 ? { count: imgCount, totalBytes: imgBytes } : undefined,
+                );
               } catch {
                 // Profiling must never break the request pipeline
               }

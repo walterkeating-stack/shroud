@@ -75,6 +75,7 @@ export class BehaviouralProfiler {
     text: string,
     entityCategoryCounts: Record<string, number>,
     toolCalls?: ToolCallInfo[],
+    imagePayloads?: { count: number; totalBytes: number },
   ): void {
     const tokenEstimate = Math.ceil(text.length / 4);
     const totalEntities = Object.values(entityCategoryCounts).reduce((a, b) => a + b, 0);
@@ -137,6 +138,8 @@ export class BehaviouralProfiler {
       tokenEstimate,
       detectedScript: script,
       nonLatinRatio,
+      imagePayloadCount: imagePayloads?.count ?? 0,
+      imagePayloadBytes: imagePayloads?.totalBytes ?? 0,
     };
   }
 
@@ -179,6 +182,8 @@ export class BehaviouralProfiler {
       tokenEstimate: this._pendingRequest.tokenEstimate ?? 0,
       detectedScript: this._pendingRequest.detectedScript ?? "latin",
       nonLatinRatio: this._pendingRequest.nonLatinRatio ?? 0,
+      imagePayloadCount: this._pendingRequest.imagePayloadCount ?? 0,
+      imagePayloadBytes: this._pendingRequest.imagePayloadBytes ?? 0,
     };
 
     this._turns.push(features);

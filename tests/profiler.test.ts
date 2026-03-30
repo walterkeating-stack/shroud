@@ -144,6 +144,8 @@ describe("Anomaly Detection", () => {
       tokenEstimate: 200,
       detectedScript: "latin",
       nonLatinRatio: 0,
+      imagePayloadCount: 0,
+      imagePayloadBytes: 0,
       ...overrides,
     };
   }
@@ -283,6 +285,8 @@ describe("BaselineStore — File Persistence", () => {
           tokenEstimate: 200,
           detectedScript: "latin",
           nonLatinRatio: 0,
+          imagePayloadCount: 0,
+          imagePayloadBytes: 0,
         }],
         aggregates: {
           dominantCategories: ["email"],
