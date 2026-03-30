@@ -1456,10 +1456,7 @@ function renderSignatures() {
 
   let html = '<div class="policy-section">';
   html += '<h2 style="color:#c9d1d9;font-size:16px;margin-bottom:4px">Signature Catalog</h2>';
-  const extSigCount = (globalThis as any).__shroudExternalSigs
-    ? (globalThis as any).__shroudExternalSigs.injection.length + (globalThis as any).__shroudExternalSigs.toolGuard.length
-    : 0;
-  html += '<p style="color:#484f58;font-size:12px;margin-bottom:24px">' + totalSigs + ' built-in signatures across ' + groups.length + ' groups' + (extSigCount > 0 ? ' + <span style="color:#58a6ff">' + extSigCount + ' external</span> (v' + (globalThis as any).__shroudExternalSigs.feedVersion + ')' : '') + '. Use signature IDs in Firewall Rules exceptions to disable specific patterns per agent.</p>';
+  html += '<p style="color:#484f58;font-size:12px;margin-bottom:24px">' + totalSigs + ' built-in signatures across ' + groups.length + ' groups. Use signature IDs in Firewall Rules exceptions to disable specific patterns per agent.</p>';
 
   let totalSigs = 0;
   for (const g of groups) totalSigs += g.sigs.length;
