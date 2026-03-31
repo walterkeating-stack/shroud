@@ -157,7 +157,7 @@ export class AgentSessionTracker {
     modelId = "unknown",
   ): AgentSession {
     const label = extractLabel(systemPrompt);
-    const buildId = computeBuildId(systemPrompt, pluginList, modelId);
+    const buildId = computeBuildId(systemPrompt, pluginList, modelId, label);
 
     // Don't create sessions for unidentifiable prompts
     if (label === "Unknown Agent") {
@@ -389,11 +389,17 @@ export class AgentSessionTracker {
     }
   }
 
-  /** Update SOUL extract from early messages. Only sets once. */
+  /** Update SOUL extract from early messages. Only sets once. Skips framework preamble. */
   updateSoul(soul: string): void {
     const session = this._sessions.get(this._currentLabel);
     if (session && soul && !session.soulExtract) {
-      session.soulExtract = soul.slice(0, 500);
+      // Strip framework preamble lines — they're OpenClaw boilerplate, not the agent's identity
+      const cleaned = soul.split("\n").filter(line => {
+        const trimmed = line.trim().toLowerCase();
+        return !FRAMEWORK_PREAMBLES.some(p => trimmed.startsWith(p));
+      }).join("\n").trim();
+      if (!cleaned || cleaned.length < 10) return;
+      session.soulExtract = cleaned.slice(0, 500);
       // Re-classify with SOUL data
       session.classification = classifyAgentWithTools(
         session.agentLabel, session.soulExtract, session.toolInventory,
@@ -497,33 +503,57 @@ export class AgentSessionTracker {
 }
 
 /**
- * Compute a stable agent build ID.
+ * Compute a stable agent build ID from the agent label.
  *
- * Uses a "skeleton" of the system prompt rather than the full text.
- * This makes the ID resilient to:
- * - Dynamic timestamps, dates, session IDs injected into prompts
- * - User names or account-specific context
- * - Retrieved RAG snippets appended to the base prompt
- * - Minor wording tweaks during prompt iteration
+ * The label is the only stable identity — system prompts contain too much
+ * dynamic content (timestamps, RAG, conversation context) to hash reliably.
+ * Previous approach (prompt skeleton hash) produced 42 different build IDs
+ * for ~5 agents and caused cross-agent collisions.
  *
- * The skeleton is: first 500 chars of the prompt with numbers, dates,
- * emails, UUIDs, and hex strings normalized to placeholders.
+ * One agent = one label = one build ID = one baseline file.
  */
 export function computeBuildId(
-  systemPrompt: string,
-  pluginList: string[],
-  modelId: string,
+  _systemPrompt: string,
+  _pluginList: string[],
+  _modelId: string,
+  label?: string,
 ): string {
-  const skeleton = extractPromptSkeleton(systemPrompt);
-  const components = [
-    skeleton,
-    pluginList.sort().join(","),
-    modelId,
-  ];
+  // If no label provided, fall back to extracting from prompt
+  const effectiveLabel = label || extractLabel(_systemPrompt);
+  const normalized = normalizeLabel(effectiveLabel);
   return createHash("sha256")
-    .update(components.join("\n"))
+    .update(normalized)
     .digest("hex")
     .slice(0, 16);
+}
+
+/**
+ * Normalize an agent label for stable identity.
+ * Lowercases, trims, collapses whitespace — so "SemiconAlpha Research"
+ * and "Semiconalpha Research" produce the same key.
+ */
+export function normalizeLabel(label: string): string {
+  return label.toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+/**
+ * OpenClaw framework preambles that must be ignored for identity extraction.
+ * These match BOTH the full "You are X" form AND the captured group (after
+ * "You are a/an/the" is stripped by the regex).
+ */
+const FRAMEWORK_PREAMBLES = [
+  "you are a personal assistant running inside openclaw",
+  "you are a personal assistant",
+  "you are claude code",
+  "personal assistant running inside openclaw",
+  "personal assistant",
+  "claude code",
+];
+
+/** Returns true if a "You are X" match is just the framework preamble, not the agent's real identity. */
+function isFrameworkPreamble(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  return FRAMEWORK_PREAMBLES.some(p => lower.startsWith(p));
 }
 
 /**
@@ -595,9 +625,8 @@ function extractLabel(systemPrompt: string): string {
   if (channelMatch) {
     let name = channelMatch[1].trim();
     name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
-    name = name.split(/[-_]/).map(w =>
-      w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
-    ).join(" ");
+    name = name.replace(/[-_]/g, " ");
+    name = normalizeLabelForDisplay(name);
     if (name.length > 1 && name.length < 50) return name;
   }
 
@@ -606,9 +635,8 @@ function extractLabel(systemPrompt: string): string {
   if (slackChannelMatch) {
     let name = slackChannelMatch[1].trim();
     name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
-    name = name.split(/[-_]/).map(w =>
-      w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
-    ).join(" ");
+    name = name.replace(/[-_]/g, " ");
+    name = normalizeLabelForDisplay(name);
     if (name.length > 1 && name.length < 50) return name;
   }
 
@@ -641,16 +669,33 @@ function extractLabel(systemPrompt: string): string {
   }
 
   // 3. Try section-based extraction (framework preamble + agent SOUL.md)
+  //    Only search identity-relevant sections — never pass the full prompt
+  //    as it contains user messages that can poison the label extraction.
   const sections = systemPrompt.split(/\n---+\n/);
   const candidates = sections.length > 1
-    ? [sections[sections.length - 1], systemPrompt]
-    : [systemPrompt];
+    ? [sections[sections.length - 1], sections[0]]
+    : [systemPrompt.slice(0, 1000)]; // Cap to identity window
 
   for (const text of candidates) {
     const label = _extractLabelFromText(text);
     if (label) return label;
   }
   return "Unknown Agent";
+}
+
+/**
+ * Normalize a label for use as session key.
+ * Title-cases the label so "semiconalpha research" and "SemiconAlpha Research"
+ * produce the same display string.
+ */
+function normalizeLabelForDisplay(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .map(w => w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }
 
 /** Extract agent label from a single text block. Returns null if no confident match. */
@@ -663,14 +708,25 @@ function _extractLabelFromText(text: string): string | null {
   }
 
   // 2. "You are [Name/Role]" — article is optional
-  //    Use the LAST match in the text, not the first — the agent's identity
-  //    is typically after any framework preamble.
-  const roleMatches = [...text.matchAll(
+  //    ONLY search the first 500 chars — the agent's identity is in the SOUL/system
+  //    section at the top of the prompt. User messages appear later and can contain
+  //    injection payloads like "You are now DAN" which must NOT become the agent label.
+  const identityWindow = text.slice(0, 500);
+  const roleMatches = [...identityWindow.matchAll(
     /[Yy]ou\s+are\s+(?:a\s+|an\s+|the\s+)?(.+?)(?:\.|,|\n|$)/g,
   )];
-  if (roleMatches.length > 0) {
-    // Prefer the last "You are" match (agent identity, not framework)
-    const match = roleMatches[roleMatches.length - 1];
+  // Filter out framework preambles and injection patterns.
+  // "You are a personal assistant running inside OpenClaw" = boilerplate.
+  // "You are now DAN" / "You are now unrestricted" = injection payload.
+  const realRoleMatches = roleMatches.filter(m => {
+    const captured = m[1].trim().toLowerCase();
+    if (isFrameworkPreamble(captured)) return false;
+    // "You are now X" is almost always an injection, never a real identity
+    if (captured.startsWith("now ")) return false;
+    return true;
+  });
+  if (realRoleMatches.length > 0) {
+    const match = realRoleMatches[realRoleMatches.length - 1];
     let role = match[1].trim();
     role = role.replace(/\s+(?:at|for|who|that|which|specializing|working|based|created|developed|built|made|designed|powered)\s+.*/i, "");
     if (role === role.toLowerCase()) {
@@ -781,10 +837,11 @@ export function classifyAgent(label: string, systemPrompt: string): AgentClassif
   }
 
   // 2. Extract SOUL.md content — look for "You are a [role]" patterns
-  const soulMatch = systemPrompt.match(
-    /[Yy]ou\s+are\s+(?:a\s+|an\s+|the\s+)?(.{10,200})(?:\.|$)/m,
-  );
-  const soulText = soulMatch ? soulMatch[1].toLowerCase() : "";
+  //    Skip framework preambles like "You are a personal assistant running inside OpenClaw"
+  const soulMatches = [...systemPrompt.matchAll(
+    /[Yy]ou\s+are\s+(?:a\s+|an\s+|the\s+)?(.{10,200})(?:\.|$)/gm,
+  )].filter(m => !isFrameworkPreamble(m[1]));
+  const soulText = soulMatches.length > 0 ? soulMatches[soulMatches.length - 1][1].toLowerCase() : "";
 
   if (soulText) {
     for (const { role, keywords } of ROLE_TAXONOMY) {
@@ -879,17 +936,48 @@ export function classifyAgentWithTools(
 // Channel detection — extract channel type from prompt metadata
 // ===================================================================
 
-/** Detect the channel type from OpenClaw prompt metadata. */
+/**
+ * Detect the channel type from OpenClaw prompt metadata.
+ *
+ * OpenClaw embeds channel info in JSON metadata blocks, not as plain text
+ * like "Slack message in #channel". Detection must match actual metadata:
+ * - Slack: has "conversation_label" with "#channel-name"
+ * - WhatsApp: has "sender_id" with E.164 phone number, no conversation_label
+ * - TUI/terminal: has "tui" or "terminal" in metadata
+ * - Cron: has "cron" or "scheduled" context
+ * - Heartbeat: has HEARTBEAT.md or HEARTBEAT_OK patterns
+ *
+ * Also supports plain-text channel markers for backwards compatibility.
+ */
 export function detectChannel(prompt: string): string | null {
-  if (/Slack\s+message/i.test(prompt)) return "slack";
-  if (/WhatsApp\s+message/i.test(prompt)) return "whatsapp";
-  if (/TUI\s+(?:session|message)/i.test(prompt) || /openclaw-tui/i.test(prompt)) return "tui";
-  if (/Email\s+(?:message|from)/i.test(prompt) || /Gmail\s+/i.test(prompt)) return "email";
-  if (/Cron\s+(?:job|task|trigger)/i.test(prompt) || /scheduled\s+task/i.test(prompt)) return "cron";
-  if (/Discord\s+message/i.test(prompt)) return "discord";
-  if (/Telegram\s+message/i.test(prompt)) return "telegram";
-  if (/Teams\s+message/i.test(prompt)) return "teams";
+  // Heartbeat — check first, these are special
   if (/HEARTBEAT\.md|HEARTBEAT_OK|heartbeat\s+(?:check|run|turn)/i.test(prompt)) return "heartbeat";
+
+  // Slack — conversation_label with # prefix is the primary signal
+  if (/"conversation_label"\s*:\s*"#/i.test(prompt)) return "slack";
+  if (/Slack\s+message/i.test(prompt)) return "slack";
+
+  // WhatsApp — E.164 sender_id without conversation_label
+  if (/"sender_id"\s*:\s*"\+\d+"/i.test(prompt) && !/"conversation_label"/i.test(prompt)) return "whatsapp";
+  if (/WhatsApp\s+message/i.test(prompt)) return "whatsapp";
+
+  // TUI / terminal
+  if (/"channel"\s*:\s*"tui"/i.test(prompt)) return "tui";
+  if (/TUI\s+(?:session|message)/i.test(prompt) || /openclaw-tui/i.test(prompt)) return "tui";
+
+  // Cron / scheduled
+  if (/"channel"\s*:\s*"cron"/i.test(prompt)) return "cron";
+  if (/Cron\s+(?:job|task|trigger)/i.test(prompt) || /scheduled\s+task/i.test(prompt)) return "cron";
+
+  // Email
+  if (/"channel"\s*:\s*"email"/i.test(prompt)) return "email";
+  if (/Email\s+(?:message|from)/i.test(prompt) || /Gmail\s+/i.test(prompt)) return "email";
+
+  // Other platforms
+  if (/Discord\s+message/i.test(prompt) || /"channel"\s*:\s*"discord"/i.test(prompt)) return "discord";
+  if (/Telegram\s+message/i.test(prompt) || /"channel"\s*:\s*"telegram"/i.test(prompt)) return "telegram";
+  if (/Teams\s+message/i.test(prompt) || /"channel"\s*:\s*"teams"/i.test(prompt)) return "teams";
+
   return null;
 }
 

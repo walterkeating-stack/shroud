@@ -2,9 +2,9 @@
  * Event grader integration test.
  * Tests: SecurityEventBus → EventGrader pipeline.
  */
-import { describe, test, expect, vi } from "vitest";
+import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
 import { SecurityEventBus } from "../src/security-event.js";
-import { EventGrader, GRADING_AGENT_LABEL } from "../src/event-grader.js";
+import { EventGrader, GRADING_AGENT_LABEL, captureModel } from "../src/event-grader.js";
 import type { SecurityEvent } from "../src/security-event.js";
 
 function makeEvent(overrides: Partial<SecurityEvent> = {}): SecurityEvent {
@@ -30,15 +30,12 @@ describe("EventGrader — bus wiring", () => {
   test("grader receives events from security bus", () => {
     const bus = new SecurityEventBus();
     const grader = new EventGrader({
-      threshold: 100, // high threshold so it doesn't auto-grade
+      threshold: 100,
       intervalSec: 9999,
-      gatewayUrl: "ws://localhost:0",
     });
 
-    // Wire bus → grader (same as hooks.ts does)
     bus.onEvent((event) => grader.addEvent(event));
 
-    // Emit events
     bus.emit(makeEvent({ timestamp: 1 }));
     bus.emit(makeEvent({ timestamp: 2 }));
     bus.emit(makeEvent({ timestamp: 3 }));
@@ -55,22 +52,17 @@ describe("EventGrader — bus wiring", () => {
     const grader = new EventGrader({
       threshold: 100,
       intervalSec: 9999,
-      gatewayUrl: "ws://localhost:0",
     });
 
     bus.onEvent((event) => grader.addEvent(event));
 
-    // Normal event — should be queued
     bus.emit(makeEvent({ timestamp: 1 }));
-
-    // Grading session event — should be ignored
     bus.emit(makeEvent({
       timestamp: 2,
       agentSessionId: "shroud-grading-12345",
     }));
 
-    expect(grader.getStats().pending).toBe(1); // only the normal one
-
+    expect(grader.getStats().pending).toBe(1);
     grader.stop();
   });
 
@@ -78,38 +70,54 @@ describe("EventGrader — bus wiring", () => {
     const grader = new EventGrader({
       threshold: 100,
       intervalSec: 9999,
-      gatewayUrl: "ws://localhost:0",
     });
 
     const event = makeEvent({ timestamp: 999 });
     grader.addEvent(event);
-    grader.addEvent(event); // duplicate
+    grader.addEvent(event);
 
-    // First goes to pending, but after grading it won't re-queue
-    expect(grader.getStats().pending).toBe(2); // both queued (not yet graded)
-
+    expect(grader.getStats().pending).toBe(2);
     grader.stop();
   });
 
-  test("batch log records failed attempts", async () => {
+  test("events queue up and threshold triggers grading", () => {
     const grader = new EventGrader({
-      threshold: 1,
+      threshold: 3,
       intervalSec: 9999,
-      gatewayUrl: "ws://localhost:0",
     });
 
-    grader.addEvent(makeEvent({ timestamp: Date.now() }));
+    // Add events below threshold — no grading triggered
+    grader.addEvent(makeEvent({ timestamp: 1 }));
+    grader.addEvent(makeEvent({ timestamp: 2 }));
+    expect(grader.getStats().pending).toBe(2);
 
-    // Wait for the async grading to attempt and fail (no gateway)
-    await new Promise(r => setTimeout(r, 5000));
-
-    const log = grader.getBatchLog();
-    expect(log.length).toBeGreaterThanOrEqual(1);
-    expect(log[0].success).toBe(false);
-    expect(log[0].error.length).toBeGreaterThan(0);
-    expect(log[0].eventCount).toBe(1);
+    // Third event hits threshold — grading fires (async, won't complete in test)
+    grader.addEvent(makeEvent({ timestamp: 3 }));
+    // Events were spliced into a batch (pending drops to 0)
+    expect(grader.getStats().pending).toBe(0);
 
     grader.stop();
+  });
+});
+
+describe("EventGrader — model capture", () => {
+  beforeEach(() => {
+    delete (globalThis as any).__shroudGradingModel;
+  });
+
+  test("captureModel stores first model", () => {
+    captureModel("claude-sonnet-4-6");
+    expect((globalThis as any).__shroudGradingModel).toBe("claude-sonnet-4-6");
+  });
+
+  test("captureModel doesn't overwrite", () => {
+    captureModel("claude-sonnet-4-6");
+    captureModel("gpt-4o");
+    expect((globalThis as any).__shroudGradingModel).toBe("claude-sonnet-4-6");
+  });
+
+  afterEach(() => {
+    delete (globalThis as any).__shroudGradingModel;
   });
 });
 

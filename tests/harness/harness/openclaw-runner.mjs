@@ -36,6 +36,7 @@ export class OpenClawRunner {
     this.openclawVersion = opts.openclawVersion || "latest";
     this.verbose = opts.verbose || false;
     this.scenario = opts.scenario || null;
+    this.lifecycle = opts.lifecycle || false;
 
     this.stateDir = process.env.OPENCLAW_STATE_DIR || "/shroud/state";
     this.mockLlmPort = null;
@@ -99,6 +100,11 @@ export class OpenClawRunner {
 
     // 5. Run multi-agent security scenarios (if injection detection available)
     await this._runSecurityScenarios();
+
+    // 6. Run lifecycle tests (--lifecycle flag, long-running)
+    if (this.lifecycle) {
+      await this._runLifecycleTests();
+    }
   }
 
   async _runSecurityScenarios() {
@@ -120,6 +126,62 @@ export class OpenClawRunner {
       this.results.skipped += secResults.skipped;
     } catch (err) {
       this._log(`Security scenarios skipped: ${err.message}`);
+    }
+  }
+
+  async _runLifecycleTests() {
+    try {
+      const secRunner = new SecurityTestRunner({
+        stateDir: this.stateDir,
+        verbose: this.verbose,
+      });
+      secRunner.gatewayPort = this.gatewayPort;
+      secRunner.mockLlmPort = this.mockLlmPort;
+
+      // Provide a restart callback that kills and restarts the gateway
+      const restartGateway = async () => {
+        this._log("  [lifecycle] Killing gateway for restart test...");
+        if (this.gatewayProc) {
+          this.gatewayProc.kill("SIGTERM");
+          // Wait for process to exit, escalate to SIGKILL if needed
+          const exited = await new Promise(resolve => {
+            const onExit = () => { clearTimeout(timer); resolve(true); };
+            const timer = setTimeout(() => {
+              this.gatewayProc.removeListener("exit", onExit);
+              this.gatewayProc.kill("SIGKILL");
+              resolve(false);
+            }, 5000);
+            this.gatewayProc.on("exit", onExit);
+          });
+          if (!exited) {
+            // Wait a bit for SIGKILL to take effect
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        }
+
+        // Wait a moment for file flushes and port release
+        await new Promise(r => setTimeout(r, 2000));
+
+        this._log("  [lifecycle] Restarting gateway...");
+        this.gatewayStdout = "";
+        this.gatewayStderr = "";
+        // Re-write config — --dev may overwrite on fresh start
+        this._writeConfig();
+        await this._startGateway();
+
+        // Update the security runner's port reference
+        secRunner.gatewayPort = this.gatewayPort;
+
+        this._log("  [lifecycle] Gateway restarted on port " + this.gatewayPort);
+      };
+
+      const lifecycleResults = await secRunner.runLifecycleTests(restartGateway);
+
+      this.results.passed += lifecycleResults.passed;
+      this.results.failed += lifecycleResults.failed;
+      this.results.skipped += lifecycleResults.skipped;
+    } catch (err) {
+      this._log(`Lifecycle tests failed: ${err.message}`);
     }
   }
 
@@ -1336,6 +1398,9 @@ export class OpenClawRunner {
       SHROUD_INJECTION_SCAN_RESPONSES: "true",
       SHROUD_PROFILING_ENABLED: "true",
       SHROUD_PROFILING_MODE: "learning",
+      SHROUD_DASHBOARD: "true",
+      SHROUD_DASHBOARD_PORT: "9380",
+      SHROUD_DASHBOARD_BIND: "127.0.0.1",
       ANTHROPIC_API_KEY: "sk-ant-sandbox-dummy",
       OPENAI_API_KEY: "sk-sandbox-dummy",
       HOME: tmpdir(),

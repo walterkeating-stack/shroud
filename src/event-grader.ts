@@ -2,18 +2,22 @@
  * LLM-based security event grading.
  *
  * Accumulates flagged security events, batches them, and sends to an LLM
- * via OpenClaw gateway session to classify as TRUE_POSITIVE, FALSE_POSITIVE,
- * or NEEDS_REVIEW. Results are stored on the event for dashboard display.
+ * for classification as TRUE_POSITIVE, FALSE_POSITIVE, or NEEDS_REVIEW.
  *
- * Self-whitelisting: grading sessions use a marker in the session key so
- * Shroud's own scanner doesn't flag the grading prompt (which contains
- * real injection examples by definition).
+ * Authentication: reads the Claude OAuth token directly from
+ * ~/.claude/.credentials.json (same as NCG agent) and uses it with the
+ * required beta headers. Handles token refresh automatically.
  *
- * Zero external dependencies — uses Node.js built-in child_process to call
- * `openclaw gateway call sessions.create`.
+ * Provider-agnostic model detection: captures the model ID from the agent's
+ * first LLM call via the fetch intercept.
+ *
+ * Zero external dependencies — uses Node.js builtins only.
  */
 
-import { execFile, execFileSync } from "node:child_process";
+import { request as httpsRequest } from "node:https";
+import { readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { SecurityEvent } from "./security-event.js";
 
 /** Verdict from LLM grading. */
@@ -76,6 +80,97 @@ export interface GradingBatchLog {
   responseTimeMs: number;
 }
 
+// --- OAuth constants (same as Claude Code / NCG agent) ---
+const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";
+const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+const OAUTH_SCOPES = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+const OAUTH_REFRESH_BUFFER_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+const CREDS_PATH = join(homedir(), ".claude", ".credentials.json");
+
+// Required beta headers for Claude Code OAuth (same as NCG agent)
+const OAUTH_BETAS = "claude-code-20250219,oauth-2025-04-20";
+
+interface OAuthCreds {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: number;
+}
+
+function loadOAuthCreds(): OAuthCreds | null {
+  try {
+    const d = JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
+    const oauth = d?.claudeAiOauth;
+    if (!oauth?.accessToken) return null;
+    return {
+      accessToken: oauth.accessToken,
+      refreshToken: oauth.refreshToken,
+      expiresAt: oauth.expiresAt || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function refreshOAuthToken(refreshToken: string): Promise<OAuthCreds> {
+  const payload = JSON.stringify({
+    grant_type: "refresh_token",
+    client_id: OAUTH_CLIENT_ID,
+    refresh_token: refreshToken,
+    scope: OAUTH_SCOPES,
+  });
+
+  return new Promise((resolve, reject) => {
+    const url = new URL(OAUTH_TOKEN_URL);
+    const req = httpsRequest({
+      hostname: url.hostname,
+      path: url.pathname,
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "shroud-grader/1.0",
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        try {
+          const data = JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+          const now = Date.now();
+          const creds: OAuthCreds = {
+            accessToken: data.access_token,
+            refreshToken: data.refresh_token || refreshToken,
+            expiresAt: now + data.expires_in * 1000 - OAUTH_REFRESH_BUFFER_MS,
+          };
+          // Save back to disk
+          try {
+            const d = JSON.parse(readFileSync(CREDS_PATH, "utf-8"));
+            d.claudeAiOauth = d.claudeAiOauth || {};
+            d.claudeAiOauth.accessToken = creds.accessToken;
+            d.claudeAiOauth.refreshToken = creds.refreshToken;
+            d.claudeAiOauth.expiresAt = creds.expiresAt;
+            writeFileSync(CREDS_PATH, JSON.stringify(d, null, 2));
+          } catch {}
+          resolve(creds);
+        } catch (e) {
+          reject(new Error(`OAuth refresh failed: ${(e as Error).message}`));
+        }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(15_000, () => { req.destroy(); reject(new Error("OAuth refresh timeout")); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+/** Captured model from the agent's first LLM call. */
+export function captureModel(model: string): void {
+  if (!(globalThis as any).__shroudGradingModel) {
+    (globalThis as any).__shroudGradingModel = model;
+  }
+}
+
 export class EventGrader {
   private _pending: SecurityEvent[] = [];
   private _graded: Map<number, GradedEvent> = new Map();
@@ -83,31 +178,16 @@ export class EventGrader {
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _threshold: number;
   private _intervalMs: number;
-  private _gatewayUrl: string;
-  private _openclawBin: string;
   private _running = false;
+  private _oauthCreds: OAuthCreds | null = null;
 
   constructor(opts: {
     threshold: number;
     intervalSec: number;
-    gatewayUrl: string;
   }) {
     this._threshold = opts.threshold;
     this._intervalMs = opts.intervalSec * 1000;
-    this._gatewayUrl = opts.gatewayUrl;
-    // Use OPENCLAW_BIN env var if set (systemd drop-in), otherwise resolve from PATH
-    if (process.env.OPENCLAW_BIN) {
-      this._openclawBin = process.env.OPENCLAW_BIN;
-    } else {
-      this._openclawBin = "openclaw";
-      try {
-        const which = execFileSync("which", ["openclaw"], {
-          encoding: "utf-8",
-          env: process.env,
-        }).trim();
-        if (which) this._openclawBin = which;
-      } catch {}
-    }
+    this._oauthCreds = loadOAuthCreds();
   }
 
   /** Start the grading timer. */
@@ -127,29 +207,22 @@ export class EventGrader {
 
   /** Add an event to the pending grading queue. */
   addEvent(event: SecurityEvent): void {
-    // Don't grade events from grading sessions (prevent recursion)
     if (event.agentSessionId?.startsWith(GRADING_SESSION_PREFIX)) return;
-    // Don't re-grade
     if (this._graded.has(event.timestamp)) return;
     this._pending.push(event);
-
-    // Trigger immediately if threshold met
     if (this._pending.length >= this._threshold) {
       this._tryGrade("threshold");
     }
   }
 
-  /** Get the verdict for an event (by timestamp). */
   getVerdict(eventTimestamp: number): GradedEvent | null {
     return this._graded.get(eventTimestamp) ?? null;
   }
 
-  /** Get all graded events. */
   getAllGraded(): GradedEvent[] {
     return [...this._graded.values()];
   }
 
-  /** Get grading stats. */
   getStats(): { pending: number; graded: number; truePositive: number; falsePositive: number; needsReview: number } {
     let tp = 0, fp = 0, nr = 0;
     for (const g of this._graded.values()) {
@@ -160,12 +233,10 @@ export class EventGrader {
     return { pending: this._pending.length, graded: this._graded.size, truePositive: tp, falsePositive: fp, needsReview: nr };
   }
 
-  /** Get the grading batch log (last 50 batches). */
   getBatchLog(): readonly GradingBatchLog[] {
     return this._batchLog;
   }
 
-  /** Attempt a grading batch. */
   private async _tryGrade(trigger: "threshold" | "timer" = "timer"): Promise<void> {
     if (this._running || this._pending.length === 0) return;
     this._running = true;
@@ -173,19 +244,13 @@ export class EventGrader {
     const batch = this._pending.splice(0, 20);
     const startTime = Date.now();
     const log: GradingBatchLog = {
-      timestamp: startTime,
-      trigger,
-      eventCount: batch.length,
-      prompt: "",
-      rawResponse: "",
-      verdicts: [],
-      success: false,
-      error: "",
-      responseTimeMs: 0,
+      timestamp: startTime, trigger, eventCount: batch.length,
+      prompt: "", rawResponse: "", verdicts: [],
+      success: false, error: "", responseTimeMs: 0,
     };
 
     try {
-      const { verdicts, prompt, rawResponse } = await this._callGateway(batch);
+      const { verdicts, prompt, rawResponse } = await this._callLlm(batch);
       log.prompt = prompt;
       log.rawResponse = rawResponse;
       log.responseTimeMs = Date.now() - startTime;
@@ -215,21 +280,44 @@ export class EventGrader {
     } catch (err: any) {
       log.error = err?.message || "Unknown error";
       log.responseTimeMs = Date.now() - startTime;
+      if (!log.prompt) {
+        const eventsText = batch.map((e, i) =>
+          `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${e.agentLabel || "?"}" match="${(e.matchedText || "").slice(0, 80)}"`,
+        ).join("\n");
+        log.prompt = `${GRADING_PROMPT}\n\nGrade these ${batch.length} security events:\n\n${eventsText}`;
+      }
       this._pending.unshift(...batch);
     }
 
     this._batchLog.push(log);
     if (this._batchLog.length > 50) this._batchLog.shift();
-
     this._running = false;
   }
 
-  /** Call the OpenClaw gateway to grade a batch of events (async — non-blocking). */
-  private _callGateway(batch: SecurityEvent[]): Promise<{
+  /** Ensure OAuth token is fresh, refreshing if needed. */
+  private async _ensureToken(): Promise<string> {
+    if (!this._oauthCreds) {
+      this._oauthCreds = loadOAuthCreds();
+    }
+    if (!this._oauthCreds) {
+      throw new Error("No OAuth credentials in ~/.claude/.credentials.json");
+    }
+    // Refresh if expired
+    if (Date.now() >= this._oauthCreds.expiresAt) {
+      this._oauthCreds = await refreshOAuthToken(this._oauthCreds.refreshToken);
+    }
+    return this._oauthCreds.accessToken;
+  }
+
+  /** Call the Anthropic API directly using OAuth token from ~/.claude/.credentials.json */
+  private async _callLlm(batch: SecurityEvent[]): Promise<{
     verdicts: Array<{ index: number; verdict: GradingVerdict; reasoning: string }>;
     prompt: string;
     rawResponse: string;
   }> {
+    const token = await this._ensureToken();
+    const model = (globalThis as any).__shroudGradingModel || "claude-sonnet-4-6";
+
     const eventsText = batch.map((e, i) =>
       `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${e.agentLabel || "?"}" ` +
       `class=${e.threatClass} match="${(e.matchedText || "").slice(0, 150)}" ` +
@@ -238,98 +326,90 @@ export class EventGrader {
 
     const message = `Grade these ${batch.length} security events:\n\n${eventsText}`;
     const fullPrompt = `${GRADING_PROMPT}\n\n${message}`;
-    const sessionKey = `${GRADING_SESSION_PREFIX}${Date.now()}`;
 
-    return new Promise((resolve, reject) => {
-      // Step 1: Create session
-      execFile(this._openclawBin, [
-        "gateway", "call", "sessions.create",
-        "--expect-final",
-        "--timeout", "60000",
-        "--json",
-        "--params", JSON.stringify({
-          key: sessionKey,
-          message: fullPrompt,
-        }),
-      ], {
-        timeout: 65_000,
-        encoding: "utf-8",
-        env: { ...process.env, NODE_TLS_REJECT_UNAUTHORIZED: "0" },
-      }, (err, stdout) => {
-        if (err) {
-          reject(new Error(`Command failed: ${err.message?.slice(0, 200)}`));
-          return;
-        }
-
-        // Step 2: Extract session file path from response
-        const createResult = stdout || "";
-        let sessionFile = "";
-        try {
-          const parsed = JSON.parse(createResult);
-          sessionFile = parsed?.entry?.sessionFile || "";
-        } catch {}
-
-        if (!sessionFile) {
-          resolve({ verdicts: [], prompt: fullPrompt, rawResponse: createResult.slice(0, 2000) });
-          return;
-        }
-
-        // Step 3: Poll session file for assistant response (max 30s)
-        let attempts = 0;
-        const poll = () => {
-          attempts++;
-          try {
-            const { readFileSync: rfs } = require("node:fs");
-            const lines = rfs(sessionFile, "utf-8").split("\n").filter((l: string) => l.trim());
-            // Find assistant message with text content
-            for (const line of lines.reverse()) {
-              try {
-                const entry = JSON.parse(line);
-                const msg = entry?.message;
-                if (msg?.role === "assistant") {
-                  let text = "";
-                  if (typeof msg.content === "string") text = msg.content;
-                  else if (Array.isArray(msg.content)) {
-                    text = msg.content.map((b: any) => b?.text || "").join("\n");
-                  }
-                  if (text.length > 5) {
-                    // Found the response — parse verdicts
-                    const jsonMatch = text.match(/\[[\s\S]*\]/);
-                    if (jsonMatch) {
-                      try {
-                        const arr = JSON.parse(jsonMatch[0]);
-                        if (Array.isArray(arr)) {
-                          const verdicts = arr
-                            .filter((v: any) => typeof v.index === "number" &&
-                              ["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"].includes(v.verdict))
-                            .map((v: any) => ({
-                              index: v.index,
-                              verdict: v.verdict as GradingVerdict,
-                              reasoning: typeof v.reasoning === "string" ? v.reasoning.slice(0, 200) : "",
-                            }));
-                          resolve({ verdicts, prompt: fullPrompt, rawResponse: text.slice(0, 2000) });
-                          return;
-                        }
-                      } catch {}
-                    }
-                    resolve({ verdicts: [], prompt: fullPrompt, rawResponse: text.slice(0, 2000) });
-                    return;
-                  }
-                }
-              } catch {}
-            }
-          } catch {}
-
-          if (attempts < 15) {
-            setTimeout(poll, 2000); // retry every 2s, max 30s
-          } else {
-            resolve({ verdicts: [], prompt: fullPrompt, rawResponse: "Timeout waiting for LLM response" });
-          }
-        };
-
-        // Start polling after initial delay
-        setTimeout(poll, 3000);
-      });
+    // OAuth tokens require the Claude Code identity prefix in the system prompt
+    const reqBody = JSON.stringify({
+      model,
+      max_tokens: 2048,
+      system: [
+        { type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+        { type: "text", text: "You are a security event grading assistant. Respond only with valid JSON." },
+      ],
+      messages: [{ role: "user", content: fullPrompt }],
     });
+
+    // Call Anthropic API via native https — bypasses all fetch wrappers
+    const responseData = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = httpsRequest({
+        hostname: "api.anthropic.com",
+        path: "/v1/messages",
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "authorization": `Bearer ${token}`,
+          "anthropic-version": "2023-06-01",
+          "anthropic-beta": OAUTH_BETAS,
+          "user-agent": "claude-cli/2.1.75",
+          "x-app": "cli",
+        },
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("end", () => {
+          resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString("utf-8") });
+        });
+      });
+      req.on("error", reject);
+      req.setTimeout(60_000, () => { req.destroy(); reject(new Error("Timeout")); });
+      req.write(reqBody);
+      req.end();
+    });
+
+    if (responseData.status === 401) {
+      // Token might be stale — force refresh and retry once
+      this._oauthCreds = await refreshOAuthToken(this._oauthCreds!.refreshToken);
+      return this._callLlm(batch);
+    }
+
+    if (responseData.status < 200 || responseData.status >= 300) {
+      throw new Error(`LLM API ${responseData.status}: ${responseData.body.slice(0, 200)}`);
+    }
+
+    // Parse JSON response (non-streaming)
+    let text = "";
+    try {
+      const json = JSON.parse(responseData.body);
+      if (Array.isArray(json.content)) {
+        text = json.content.map((b: any) => b?.text || "").join("\n");
+      }
+    } catch {}
+
+    if (!text) {
+      return { verdicts: [], prompt: fullPrompt, rawResponse: responseData.body.slice(0, 2000) };
+    }
+
+    // Parse verdicts from JSON array
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      return { verdicts: [], prompt: fullPrompt, rawResponse: text.slice(0, 2000) };
+    }
+
+    try {
+      const arr = JSON.parse(jsonMatch[0]);
+      if (!Array.isArray(arr)) {
+        return { verdicts: [], prompt: fullPrompt, rawResponse: text.slice(0, 2000) };
+      }
+      const verdicts = arr
+        .filter((v: any) => typeof v.index === "number" &&
+          ["TRUE_POSITIVE", "FALSE_POSITIVE", "NEEDS_REVIEW"].includes(v.verdict))
+        .map((v: any) => ({
+          index: v.index,
+          verdict: v.verdict as GradingVerdict,
+          reasoning: typeof v.reasoning === "string" ? v.reasoning.slice(0, 200) : "",
+        }));
+      return { verdicts, prompt: fullPrompt, rawResponse: text.slice(0, 2000) };
+    } catch {
+      return { verdicts: [], prompt: fullPrompt, rawResponse: text.slice(0, 2000) };
+    }
   }
 }

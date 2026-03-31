@@ -15,10 +15,12 @@ OC_VERSION="${1:?Usage: run-compat.sh <openclaw-version> [--rebuild-base|--sandb
 shift
 REBUILD_BASE=""
 SANDBOX=""
+LIFECYCLE=""
 for arg in "$@"; do
   case $arg in
     --rebuild-base) REBUILD_BASE=1 ;;
     --sandbox) SANDBOX=1 ;;
+    --lifecycle) LIFECYCLE=1 ;;
   esac
 done
 
@@ -51,6 +53,7 @@ fi
 SHROUD_VERSION=$(node -e "console.log(require('./package.json').version)")
 echo "Shroud version: ${SHROUD_VERSION} (local build)"
 [ -n "${SANDBOX}" ] && echo "Mode: SANDBOX (rootless Docker)"
+[ -n "${LIFECYCLE}" ] && echo "Mode: LIFECYCLE (long-running agent tests)"
 
 # ── Step 2: Build/reuse base image ──
 if [ -n "${REBUILD_BASE}" ] || \
@@ -109,11 +112,14 @@ if [ -n "${SANDBOX}" ]; then
     --name "shroud-compat-sandbox-${OC_VERSION}" \
     "${SANDBOX_TAG}"
 else
+  MEMORY_LIMIT="1g"
+  [ -n "${LIFECYCLE}" ] && MEMORY_LIMIT="4g"
   docker run --rm \
     --network "${NETWORK}" \
-    --memory 1g \
+    --memory "${MEMORY_LIMIT}" \
     --cpus 2 \
     --name "shroud-compat-${OC_VERSION}" \
+    ${LIFECYCLE:+-e SHROUD_LIFECYCLE=1} \
     "${TEST_TAG}"
 fi
 

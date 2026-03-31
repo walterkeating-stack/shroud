@@ -62,9 +62,17 @@ export class BehaviouralProfiler {
     this._startedAt = Date.now();
   }
 
-  /** Set the agent build ID (from system prompt hash). */
+  /** Set the agent build ID (derived from normalized label). */
   setAgentBuildId(buildId: string): void {
     this._agentBuildId = buildId;
+  }
+
+  /** Tool inventory for the current agent (from body.tools). */
+  private _toolInventory: string[] = [];
+
+  /** Set the full tool inventory so it can be persisted to the baseline. */
+  setToolInventory(tools: string[]): void {
+    this._toolInventory = tools;
   }
 
   /**
@@ -249,7 +257,7 @@ export class BehaviouralProfiler {
 
     // Update the persistent baseline
     if (this._agentBuildId && this._turns.length > 0) {
-      this._store.updateFromSession(this._agentBuildId, profile);
+      this._store.updateFromSession(this._agentBuildId, profile, this._toolInventory);
     }
 
     return profile;

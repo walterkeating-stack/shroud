@@ -6,7 +6,7 @@
  * not raw data. Zero runtime dependencies.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -58,8 +58,12 @@ export class BaselineStore {
   /**
    * Update the baseline with a completed session's feature data.
    * Uses Welford's algorithm for incremental statistics.
+   *
+   * @param agentBuildId Stable agent identity hash (derived from label)
+   * @param session Session profile with per-turn feature vectors
+   * @param toolInventory Full tool inventory from the agent session (body.tools)
    */
-  updateFromSession(agentBuildId: string, session: SessionProfile): void {
+  updateFromSession(agentBuildId: string, session: SessionProfile, toolInventory?: string[]): void {
     let baseline = this.load(agentBuildId);
 
     if (!baseline) {
@@ -83,11 +87,17 @@ export class BaselineStore {
     const toolSet = new Set(baseline.toolProfile);
     const catSet = new Set(baseline.categoryProfile);
 
+    // Add tools from individual turns (tools actually called)
     for (const turn of session.turns) {
       for (const tool of turn.toolNames) toolSet.add(tool);
       for (const cat of Object.keys(turn.entityCategoryCounts)) {
         if (turn.entityCategoryCounts[cat] > 0) catSet.add(cat);
       }
+    }
+
+    // Add full tool inventory (tools available to the agent, from body.tools)
+    if (toolInventory) {
+      for (const tool of toolInventory) toolSet.add(tool);
     }
 
     baseline.toolProfile = [...toolSet];
@@ -102,6 +112,32 @@ export class BaselineStore {
   /** Check if a baseline exists for the given build ID. */
   exists(agentBuildId: string): boolean {
     return existsSync(this._filePath(agentBuildId));
+  }
+
+  /**
+   * Remove baseline files that don't match any known agent.
+   * Call on startup after agent sessions are loaded from disk.
+   * Cleans up orphaned files from the old unstable build ID scheme.
+   */
+  purgeStaleBaselines(knownBuildIds: Set<string>): number {
+    let removed = 0;
+    try {
+      if (!existsSync(this._profileDir)) return 0;
+      const files = readdirSync(this._profileDir);
+      for (const file of files) {
+        // Only touch baseline JSON files (16-char hex name), skip agent-sessions.json etc
+        const match = file.match(/^([a-f0-9]{16})\.json$/);
+        if (!match) continue;
+        const buildId = match[1];
+        if (!knownBuildIds.has(buildId)) {
+          try {
+            unlinkSync(join(this._profileDir, file));
+            removed++;
+          } catch {}
+        }
+      }
+    } catch {}
+    return removed;
   }
 
   private _filePath(agentBuildId: string): string {

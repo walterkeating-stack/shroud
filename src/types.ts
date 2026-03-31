@@ -154,8 +154,6 @@ export interface ShroudConfig {
   llmGradingIntervalSec: number;
   /** Minimum events before triggering a grading batch (default: 5). */
   llmGradingThreshold: number;
-  /** Gateway WebSocket URL for grading sessions (default: ws://127.0.0.1:18789). */
-  llmGradingGatewayUrl: string;
 
   // --- Dashboard ---
 

@@ -60,8 +60,14 @@ export OPENCLAW_CONFIG="${STATE_DIR}/openclaw.json"
 export SHROUD_TEST_DOCKER=1
 
 echo ""
-echo "Running OpenClaw sandbox tests..."
-node /shroud/tests/harness/run.mjs --openclaw --verbose
+LIFECYCLE_FLAG=""
+if [ "${SHROUD_LIFECYCLE:-}" = "1" ]; then
+  LIFECYCLE_FLAG="--lifecycle"
+  echo "Running OpenClaw sandbox tests (with lifecycle tests)..."
+else
+  echo "Running OpenClaw sandbox tests..."
+fi
+node /shroud/tests/harness/run.mjs --openclaw --verbose ${LIFECYCLE_FLAG}
 
 EXIT_CODE=$?
 

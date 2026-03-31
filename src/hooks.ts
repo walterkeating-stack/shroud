@@ -37,7 +37,7 @@ import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
 import { PolicyEngine } from "./policy.js";
 import * as sigLoaderMod from "./signature-loader.js";
-import { EventGrader, GRADING_SESSION_PREFIX, GRADING_AGENT_LABEL } from "./event-grader.js";
+import { EventGrader, GRADING_SESSION_PREFIX, GRADING_AGENT_LABEL, captureModel } from "./event-grader.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -293,7 +293,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   let securityBus: SecurityEventBus | null = null;
 
   if (config.injectionDetection !== "off") {
-    securityBus = new SecurityEventBus();
+    // Reuse existing bus across plugin reloads — the dashboard holds the
+    // original reference, so creating a new bus would orphan events.
+    securityBus = (globalThis as any).__shroudSecurityBus || new SecurityEventBus();
     injectionDetector = new InjectionDetector({
       action: config.injectionDetection,
       disabledSignatures: new Set(config.injectionDisabledSignatures),
@@ -324,7 +326,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
     // --- LLM Event Grading ---
-    // Always recreate — env vars (OPENCLAW_BIN) may change between restarts
+    // Always recreate — config may change between restarts
     if (config.llmGradingEnabled) {
       if ((globalThis as any).__shroudEventGrader) {
         (globalThis as any).__shroudEventGrader.stop();
@@ -332,7 +334,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const grader = new EventGrader({
         threshold: config.llmGradingThreshold,
         intervalSec: config.llmGradingIntervalSec,
-        gatewayUrl: config.llmGradingGatewayUrl,
       });
       // Feed security events to the grader.
       // Wire to BOTH the local bus AND the globalThis bus — covers all cases.
@@ -476,12 +477,26 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           session.channelSource = s.channelSource || "";
           session.toolInventory = s.toolInventory || [];
           session.soulExtract = s.soulExtract || "";
+          session.channels = s.channels || [];
           if (s.classification) session.classification = s.classification;
           if (s.startedAt) session.startedAt = s.startedAt;
         }
       }
     }
   } catch {}
+
+  // Purge stale baseline files from old unstable build ID scheme.
+  // Now that build IDs are derived from labels, orphaned files are garbage.
+  if (config.profilingEnabled) {
+    const profileDir = config.profilingProfileDir.replace("~", process.env.HOME || "/root");
+    const purgeStore = new BaselineStore(profileDir);
+    const knownIds = new Set(agentTracker.getAllSessions().map(s => s.agentBuildId));
+    const purged = purgeStore.purgeStaleBaselines(knownIds);
+    if (purged > 0) {
+      try { writeFileSync("/tmp/shroud-baseline-purge.log",
+        `${new Date().toISOString()}: purged ${purged} stale baseline files\n`, { flag: "a" }); } catch {}
+    }
+  }
 
   // Periodic flush every 10 LLM calls
   let _flushCounter = 0;
@@ -736,6 +751,42 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
     // --- Non-assistant messages: OBFUSCATE (real values → fakes) ---
+
+    // --- Security: injection scanning on user/system messages ---
+    // The fetch intercept may be bypassed (e.g. OpenClaw uses undici fetch),
+    // so scan here in the hook to catch injections before obfuscation.
+    {
+      const hookDetector = getDetectorForAgent();
+      if (hookDetector && securityBus && role !== "assistant") {
+        try {
+          let textToScan = "";
+          if (typeof msg.content === "string") textToScan = msg.content;
+          else if (Array.isArray(msg.content)) {
+            textToScan = msg.content
+              .map((b: any) => b?.type === "text" && typeof b.text === "string" ? b.text : "")
+              .join("\n");
+          }
+          if (textToScan.length > 0) {
+            const isGrading = agentTracker.getCurrentSession()?.agentLabel === GRADING_AGENT_LABEL;
+            const injEvents = isGrading ? [] : hookDetector.scanRequest(textToScan);
+            const agentSession = agentTracker.getCurrentSession();
+            for (const evt of injEvents) {
+              if (agentSession) {
+                evt.agentBuildId = agentSession.agentBuildId;
+                evt.agentLabel = agentSession.agentLabel;
+                evt.channel = agentSession.channels?.[agentSession.channels.length - 1];
+                evt.agentSessionId = agentSession.sessionId;
+              }
+              ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+            }
+            if (injEvents.length > 0) {
+              agentTracker.recordSecurityEvent(injEvents.length);
+            }
+          }
+        } catch { /* injection scan must not break obfuscation */ }
+      }
+    }
+
     if (typeof msg.content === "string") {
       const result = ob().obfuscate(msg.content);
       if (result.entities.length === 0) return;
@@ -1172,6 +1223,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           agentTracker.updateModel(body.model);
         }
 
+        // Capture model ID for the event grader (once — first LLM call)
+        if (typeof body.model === "string") {
+          captureModel(body.model);
+        }
+
         // --- Agent identity from the STABLE system prompt ---
         // Must handle all LLM API formats:
         //   Anthropic:   body.system (string or content block array)
@@ -1218,6 +1274,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             .filter((n: string) => n.length > 0);
           if (toolNames.length > 0) {
             agentTracker.updateTools(toolNames);
+            if (profiler) profiler.setToolInventory(toolNames);
           }
         }
 
@@ -1230,7 +1287,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (Array.isArray(body.system)) {
             for (const block of body.system) {
               const t = block?.text || "";
-              if (t.length > 30 && soulPatterns.test(t) && !t.startsWith("You are Claude Code")) {
+              if (t.length > 30 && soulPatterns.test(t) && !t.startsWith("You are Claude Code") && !/^You are a personal assistant/i.test(t)) {
                 agentTracker.updateSoul(t);
                 break;
               }

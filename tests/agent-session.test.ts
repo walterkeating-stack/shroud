@@ -97,10 +97,17 @@ describe("computeBuildId", () => {
     expect(a).toBe(b);
   });
 
-  test("changes with prompt", () => {
-    const a = computeBuildId("v1", [], "m");
-    const b = computeBuildId("v2", [], "m");
+  test("changes with different agent labels", () => {
+    // Build ID is now derived from the extracted label, not prompt content
+    const a = computeBuildId("- Name: Agent Alpha", [], "m");
+    const b = computeBuildId("- Name: Agent Beta", [], "m");
     expect(a).not.toBe(b);
+  });
+
+  test("same build ID despite different prompt content if same label", () => {
+    const a = computeBuildId("- Name: PJ\nSession started 2026-03-30", [], "m");
+    const b = computeBuildId("- Name: PJ\nSession started 2026-04-01", [], "m");
+    expect(a).toBe(b);
   });
 
   test("returns 16-char hex", () => {
@@ -199,8 +206,15 @@ describe("Prompt Skeleton — resilience to dynamic content", () => {
 
   test("extractLabel: 'You are [ProperName]' without article", () => {
     const tracker = new AgentSessionTracker();
+    // "Claude Code" is a framework preamble and should be filtered — use a real agent name
+    const session = tracker.registerAgent("You are Security Monitor, the network threat detection agent.");
+    expect(session.agentLabel).toBe("Security Monitor");
+  });
+
+  test("extractLabel: framework preamble 'Claude Code' is filtered", () => {
+    const tracker = new AgentSessionTracker();
     const session = tracker.registerAgent("You are Claude Code, Anthropic's official CLI for Claude.");
-    expect(session.agentLabel).toBe("Claude Code");
+    expect(session.agentLabel).toBe("Unknown Agent");
   });
 
   test("extractLabel: 'You are a [role]' with article", () => {

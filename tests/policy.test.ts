@@ -2,7 +2,7 @@
  * Tests for the versioned policy engine.
  */
 
-import { describe, test, expect, beforeEach, afterAll } from "vitest";
+import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { PolicyEngine } from "../src/policy.js";
 import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -14,7 +14,7 @@ beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), "shroud-policy-test-"));
 });
 
-afterAll(() => {
+afterEach(() => {
   try { rmSync(tempDir, { recursive: true }); } catch {}
 });
 

@@ -131,4 +131,179 @@ export function assertNoCgnatRangeLeak(text) {
   }
 }
 
+// ── Agent Identity & Profiling Assertions ──────────────────────
+
+/**
+ * Verify each agent has the expected label and classification role.
+ * @param {object[]} agents - Agent sessions from /api/agents
+ * @param {object[]} expected - Array of { expected_label, expected_role }
+ */
+export function assertAgentIdentity(agents, expected) {
+  for (const exp of expected) {
+    const match = agents.find(a =>
+      a.agentLabel && a.agentLabel.toLowerCase() === exp.expected_label.toLowerCase()
+    );
+    if (!match) {
+      const labels = agents.map(a => a.agentLabel).join(", ");
+      throw new AssertionError(
+        `Agent "${exp.expected_label}" not found. Present: ${labels}`
+      );
+    }
+    if (exp.expected_role && match.classification?.role !== exp.expected_role) {
+      throw new AssertionError(
+        `Agent "${exp.expected_label}" classified as "${match.classification?.role}", expected "${exp.expected_role}"`
+      );
+    }
+  }
+}
+
+/**
+ * Verify all agents have unique build IDs (no collisions).
+ */
+export function assertUniqueBuildIds(agents) {
+  const ids = agents.map(a => a.agentBuildId);
+  const unique = new Set(ids);
+  if (unique.size < ids.length) {
+    const dupes = ids.filter((id, i) => ids.indexOf(id) !== i);
+    const dupeAgents = agents.filter(a => dupes.includes(a.agentBuildId))
+      .map(a => `${a.agentLabel}=${a.agentBuildId}`);
+    throw new AssertionError(
+      `Build ID collision: ${dupeAgents.join(", ")}`
+    );
+  }
+}
+
+/**
+ * Verify no agent's soulExtract starts with framework preamble.
+ */
+export function assertNoFrameworkPreamble(agents) {
+  const preambles = [
+    "you are a personal assistant running inside openclaw",
+    "you are a personal assistant",
+  ];
+  for (const a of agents) {
+    if (!a.soulExtract) continue;
+    const lower = a.soulExtract.toLowerCase().trim();
+    for (const p of preambles) {
+      if (lower.startsWith(p)) {
+        throw new AssertionError(
+          `Agent "${a.agentLabel}" soulExtract starts with framework preamble: "${a.soulExtract.slice(0, 80)}..."`
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Verify tool inventory is populated for agents that should have it.
+ */
+export function assertToolInventory(agents, expectedAgents) {
+  for (const exp of expectedAgents) {
+    const match = agents.find(a =>
+      a.agentLabel?.toLowerCase() === exp.expected_label.toLowerCase()
+    );
+    if (!match) continue;
+    if (!match.toolInventory || match.toolInventory.length === 0) {
+      throw new AssertionError(
+        `Agent "${exp.expected_label}" has empty toolInventory`
+      );
+    }
+  }
+}
+
+/**
+ * Verify profiling baselines have categories populated.
+ */
+export function assertCategoryProfile(agents) {
+  for (const a of agents) {
+    if (!a.profiling) continue;
+    if (a.profiling.maturity === "none") continue; // no baseline yet
+    if (!a.profiling.knownCategories || a.profiling.knownCategories.length === 0) {
+      throw new AssertionError(
+        `Agent "${a.agentLabel}" has baseline but empty categoryProfile`
+      );
+    }
+  }
+}
+
+/**
+ * Verify no duplicate agents (same label appearing twice).
+ */
+export function assertNoDuplicateAgents(agents) {
+  const labels = agents.map(a => a.agentLabel?.toLowerCase());
+  const seen = new Set();
+  for (const label of labels) {
+    if (!label) continue;
+    if (seen.has(label)) {
+      throw new AssertionError(
+        `Duplicate agent label: "${label}"`
+      );
+    }
+    seen.add(label);
+  }
+}
+
+/**
+ * Verify build IDs are stable between two snapshots.
+ * @param {object[]} before - Agents before restart
+ * @param {object[]} after - Agents after restart
+ */
+export function assertBuildIdStability(before, after) {
+  for (const b of before) {
+    const match = after.find(a =>
+      a.agentLabel?.toLowerCase() === b.agentLabel?.toLowerCase()
+    );
+    if (!match) {
+      throw new AssertionError(
+        `Agent "${b.agentLabel}" disappeared after restart`
+      );
+    }
+    if (match.agentBuildId !== b.agentBuildId) {
+      throw new AssertionError(
+        `Agent "${b.agentLabel}" build ID changed: ${b.agentBuildId} → ${match.agentBuildId}`
+      );
+    }
+  }
+}
+
+/**
+ * Verify baselines survived a restart (session counts not reset).
+ */
+export function assertBaselinePersistence(before, after) {
+  for (const b of before) {
+    const match = after.find(a =>
+      a.agentLabel?.toLowerCase() === b.agentLabel?.toLowerCase()
+    );
+    if (!match) continue;
+    if (match.llmCallCount < b.llmCallCount) {
+      throw new AssertionError(
+        `Agent "${b.agentLabel}" call count decreased after restart: ${b.llmCallCount} → ${match.llmCallCount}`
+      );
+    }
+  }
+}
+
+/**
+ * Verify channels are detected for agents that should have them.
+ */
+export function assertChannelsDetected(agents, expectedAgents) {
+  for (const exp of expectedAgents) {
+    if (!exp.channel) continue;
+    const match = agents.find(a =>
+      a.agentLabel?.toLowerCase() === exp.expected_label.toLowerCase()
+    );
+    if (!match) continue;
+    if (!match.channels || match.channels.length === 0) {
+      throw new AssertionError(
+        `Agent "${exp.expected_label}" has no channels detected (expected: ${exp.channel})`
+      );
+    }
+    if (!match.channels.includes(exp.channel)) {
+      throw new AssertionError(
+        `Agent "${exp.expected_label}" missing channel "${exp.channel}". Has: ${match.channels.join(", ")}`
+      );
+    }
+  }
+}
+
 export { AssertionError };

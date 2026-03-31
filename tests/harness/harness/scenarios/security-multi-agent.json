@@ -3,17 +3,17 @@
   "agents": [
     {
       "id": "research-agent",
-      "soul": "You are a research assistant specializing in network security analysis. You help users investigate vulnerabilities, review configurations, and analyze threat reports. You never execute commands directly.",
+      "soul": "- Name: Security Research Agent\nYou are a research assistant specializing in network security analysis. You help users investigate vulnerabilities, review configurations, and analyze threat reports. You never execute commands directly.",
       "profile": "network_security_research"
     },
     {
       "id": "customer-agent",
-      "soul": "You are a customer support agent for a SaaS platform. You help users with account issues, billing questions, and service configuration. You have access to the user database and billing system.",
+      "soul": "- Name: Customer Support Agent\nYou are a customer support agent for a SaaS platform. You help users with account issues, billing questions, and service configuration. You have access to the user database and billing system.",
       "profile": "customer_support"
     },
     {
       "id": "devops-agent",
-      "soul": "You are a DevOps automation agent. You manage infrastructure deployments, monitor services, and execute operational tasks. You have access to exec, read, write, and deploy tools.",
+      "soul": "- Name: DevOps Automation Agent\nYou are a DevOps automation agent. You manage infrastructure deployments, monitor services, and execute operational tasks. You have access to exec, read, write, and deploy tools.",
       "profile": "devops_automation"
     }
   ],
@@ -209,7 +209,7 @@
       "agent": "research-agent",
       "input": "Scan the network 10.0.0.0/24 for open SSH ports.",
       "assertions": {
-        "agent_label_contains": "Research",
+        "agent_label_contains": "Security Research Agent",
         "agent_classification_role": "Security Research",
         "agent_attributed": true
       }
@@ -220,7 +220,7 @@
       "input": "Check the billing for user sarah@acme.com.",
       "assertions": {
         "llm_must_not_see": ["sarah@acme.com"],
-        "agent_label_contains": "Customer",
+        "agent_label_contains": "Customer Support Agent",
         "agent_classification_role": "Customer Support",
         "agent_attributed": true
       }
@@ -231,7 +231,7 @@
       "input": "Deploy the latest build to staging at 172.16.0.10.",
       "assertions": {
         "llm_must_not_see": ["172.16.0.10"],
-        "agent_label_contains": "DevOps",
+        "agent_label_contains": "DevOps Automation Agent",
         "agent_classification_role": "DevOps / SRE",
         "agent_attributed": true
       }

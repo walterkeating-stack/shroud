@@ -25,6 +25,7 @@ const verbose = args.includes("--verbose") || args.includes("-v");
 const shroudPath = getArg("--shroud-path") || resolve(import.meta.dirname, "../..");
 const reportPath = getArg("--report");
 const useOpenClaw = args.includes("--openclaw");
+const lifecycle = args.includes("--lifecycle");
 
 // OpenClaw E2E tests — runs inside Docker container only
 if (useOpenClaw) {
@@ -33,6 +34,7 @@ if (useOpenClaw) {
     shroudPath,
     verbose,
     scenario: getArg("--scenario"),
+    lifecycle,
   });
   const results = await runner.run();
 
