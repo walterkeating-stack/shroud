@@ -32,11 +32,14 @@ import { DnsCache } from "./dns-cache.js";
 import { InjectionDetector } from "./detectors/injection.js";
 import { SecurityEventBus } from "./security-event.js";
 import type { SecurityEvent } from "./security-event.js";
-import { AgentSessionTracker, isHeartbeatPrompt } from "./agent-session.js";
+import { AgentSessionTracker, isHeartbeatPrompt, _isValidAgentLabel, normalizeLabel } from "./agent-session.js";
 import { BehaviouralProfiler } from "./profiler.js";
 import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
+import { extractIntentSignals, checkToolAlignment, checkEgressAttempt, ToolSequenceTracker, buildToolIntentEvent } from "./detectors/tool-intent.js";
+import type { IntentSignals } from "./detectors/tool-intent.js";
 import { PolicyEngine } from "./policy.js";
+import { AgentRegistry } from "./agent-registry.js";
 import * as sigLoaderMod from "./signature-loader.js";
 import { EventGrader, GRADING_SESSION_PREFIX, GRADING_AGENT_LABEL, captureModel } from "./event-grader.js";
 
@@ -296,7 +299,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   if (config.injectionDetection !== "off") {
     // Reuse existing bus across plugin reloads — the dashboard holds the
     // original reference, so creating a new bus would orphan events.
-    securityBus = (globalThis as any).__shroudSecurityBus || new SecurityEventBus();
+    securityBus = (globalThis as any).__shroudSecurityBus || new SecurityEventBus(500, 60_000);
     injectionDetector = new InjectionDetector({
       action: config.injectionDetection,
       disabledSignatures: new Set(config.injectionDisabledSignatures),
@@ -392,6 +395,20 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     return det;
   }
 
+  // --- Agent registry (authoritative source of truth) ---
+  // Reads ~/.openclaw/openclaw.json for agent inventory + channel bindings.
+  // Resolves agent identity from structured signals (Slack channel IDs,
+  // WhatsApp numbers, cron agent IDs) instead of regex-parsing prompts.
+  const agentRegistry = (() => {
+    const g = globalThis as any;
+    if (!g.__shroudAgentRegistry) {
+      const reg = new AgentRegistry();
+      reg.load(); // sync read, ~22KB. Returns false if missing — no regression.
+      g.__shroudAgentRegistry = reg;
+    }
+    return g.__shroudAgentRegistry as AgentRegistry;
+  })();
+
   // --- Agent session tracking ---
   // Maps LLM calls to local agent identities. Enables per-agent WAF rules,
   // per-agent behavioural baselines, and enriched security logging.
@@ -434,6 +451,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   const _isCleanLabel = (s: { agentLabel: string; llmCallCount: number }): boolean =>
     s.llmCallCount > 0 && s.agentLabel !== "Unknown Agent" &&
+    _isValidAgentLabel(s.agentLabel) &&
     s.agentLabel.length < 30 && s.agentLabel.split(/\s+/).length <= 4 &&
     !/@/.test(s.agentLabel) && !/\d{1,3}\.\d{1,3}\.\d{1,3}/.test(s.agentLabel) &&
     !/\+\d{5,}/.test(s.agentLabel) &&
@@ -452,15 +470,19 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       try {
         const existing = JSON.parse(readFileSync(_agentSessionFile, "utf-8")) as any[];
         for (const entry of existing) {
-          if (entry.agentLabel) merged.set(entry.agentLabel, entry);
+          if (entry.agentLabel && _isValidAgentLabel(entry.agentLabel)) {
+            merged.set(normalizeLabel(entry.agentLabel), entry);
+          }
         }
       } catch { /* file may not exist */ }
 
       // In-memory sessions overwrite on-disk entries (fresher data)
       for (const s of inMemory) {
-        merged.set(s.agentLabel, {
+        merged.set(normalizeLabel(s.agentLabel), {
           agentLabel: s.agentLabel, agentBuildId: s.agentBuildId,
           sessionId: s.sessionId, llmCallCount: s.llmCallCount,
+          securityEventCount: s.securityEventCount,
+          detectedModel: s.detectedModel,
           channels: s.channels, classification: s.classification,
           toolInventory: s.toolInventory, startedAt: s.startedAt,
           lastCallAt: s.lastCallAt, soulExtract: s.soulExtract,
@@ -547,11 +569,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   // Shared call reason — set in before_prompt_build, read in deobfuscateResponse
   let _callReason = "";
+  // Tool intent tracking — set in before_prompt_build, checked in before_tool_call
+  let _currentIntent: IntentSignals | null = null;
+  const _toolSequence = new ToolSequenceTracker();
 
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
   // -----------------------------------------------------------------------
-  api.on("before_prompt_build", async (event: any) => {
+  api.on("before_prompt_build", async (event: any, ctx?: any) => {
 
     // Reset tool depth at the start of each turn — tool calls from the
     // previous turn are complete, so the counter should not carry over.
@@ -559,41 +584,85 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ob().resetToolDepth();
     }
 
-    // --- Extract agent identity from the prompt context ---
-    // event.prompt contains session metadata including channel/conversation labels
-    // which identify the agent. Register it here so identity is set BEFORE the
-    // fetch intercept fires.
-    //
-    // Guard: event.prompt sometimes contains the USER MESSAGE instead of the
-    // system prompt. Reject short single-line strings that look like user input.
+    // --- Extract agent identity ---
+    // Tier 0 (definitive): ctx.agentId from OpenClaw hook context (OC 2026.3.22+)
+    // Tier 1: Registry signal matching (Slack channel ID, WhatsApp number, cron agent ID)
+    // Tier 2: Regex extraction from prompt text (extractLabelStrict)
+    // Tier 3: "Unknown Agent" (transient, not persisted)
     const _looksLikeUserMessage = (p: string): boolean =>
       p.length < 200 && !p.includes("\n") && !/[-•]\s*Name:|Conversation info|```/i.test(p);
 
     if (typeof event?.prompt === "string" && event.prompt.length > 10 && !_looksLikeUserMessage(event.prompt)) {
-      const session = agentTracker.registerAgent(event.prompt);
-      // DEBUG: log failed identifications — dump messages[0] to find identity
+      // Tier 0: OpenClaw provides agentId directly via hook context
+      let resolvedName: string | undefined;
+      if (ctx?.agentId) {
+        resolvedName = agentRegistry.getCanonicalName(ctx.agentId) || undefined;
+      }
+      // Tier 1: Registry signal matching from prompt content
+      if (!resolvedName) {
+        resolvedName = agentRegistry.resolve(event.prompt) || undefined;
+      }
+      const session = agentTracker.registerAgent(event.prompt, [], "unknown", true, resolvedName);
+
+      // Store ctx metadata on the session for enrichment
+      // Derive channel from ctx.channelId or ctx.sessionKey
+      const ctxChannel = ctx?.channelId
+        || (ctx?.sessionKey?.match(/agent:[^:]+:(\w+)/)?.[1] === "main" ? undefined
+          : ctx?.sessionKey?.match(/agent:[^:]+:(\w+)/)?.[1]);
+      if (ctxChannel && session.agentLabel !== "Unknown Agent") {
+        agentTracker.updateChannel(ctxChannel);
+      }
+      if (ctx?.trigger) {
+        _callReason = ctx.trigger === "heartbeat" ? "heartbeat check"
+          : ctx.trigger === "cron" ? "cron job"
+          : ctx.trigger === "memory" ? "memory operation"
+          : ctx.channelId ? `${ctx.channelId} message` : "LLM call";
+      }
+
+      // DEBUG: log failed identifications
       if (session.agentLabel === "Claude Code" || session.agentLabel === "Unknown Agent") {
         const msgs = Array.isArray(event?.messages) ? event.messages : [];
         const msg0 = msgs.length > 0 ? JSON.stringify(msgs[0]).slice(0, 300) : "no messages";
-        const msg1 = msgs.length > 1 ? JSON.stringify(msgs[1]).slice(0, 300) : "no msg[1]";
         try { writeFileSync("/tmp/shroud-identity-fail.log",
-          `LABEL=${session.agentLabel}\nMSG_COUNT=${msgs.length}\nMSG[0]=${msg0}\nMSG[1]=${msg1}\nPROMPT_FIRST200:\n${event.prompt.slice(0, 200)}\n===END===\n\n`, { flag: "a" }); } catch {}
+          `LABEL=${session.agentLabel}\nCTX_AGENT=${ctx?.agentId || "null"}\nCTX_SESSION=${ctx?.sessionKey || "null"}\nCTX_CHANNEL=${ctx?.channelId || "null"}\nCTX_TRIGGER=${ctx?.trigger || "null"}\nREGISTRY=${resolvedName || "null"}\nMSG_COUNT=${msgs.length}\nMSG[0]=${msg0}\nPROMPT_FIRST200:\n${event.prompt.slice(0, 200)}\n===END===\n\n`, { flag: "a" }); } catch {}
       }
       if (profiler) profiler.setAgentBuildId(session.agentBuildId);
-      // Detect and record channel type + derive call reason
-      const detectedCh = agentTracker.updateChannelFromPrompt(event.prompt);
-      if (isHeartbeatPrompt(event.prompt)) {
+
+      // Detect channel + call reason (fallback when ctx not available)
+      if (!ctx?.trigger) {
+        const detectedCh = agentTracker.updateChannelFromPrompt(event.prompt);
+        if (isHeartbeatPrompt(event.prompt)) {
+          (globalThis as any).__shroudCurrentHeartbeat = true;
+          _callReason = "heartbeat check";
+        } else if (detectedCh === "cron") {
+          _callReason = "cron job";
+        } else if (detectedCh) {
+          const msgSnippet = event.prompt.match(/(?:from\s+\w+\s*(?:Keating)?:\s*)(.{1,60})/i);
+          _callReason = detectedCh + " message" + (msgSnippet ? ": " + msgSnippet[1].trim() : "");
+        } else {
+          _callReason = "LLM call";
+        }
+      } else if (ctx.trigger === "heartbeat") {
         (globalThis as any).__shroudCurrentHeartbeat = true;
-        _callReason = "heartbeat check";
-      } else if (detectedCh === "cron") {
-        _callReason = "cron job";
-      } else if (detectedCh) {
-        // Extract a snippet of the user message for context
-        const msgSnippet = event.prompt.match(/(?:from\s+\w+\s*(?:Keating)?:\s*)(.{1,60})/i);
-        _callReason = detectedCh + " message" + (msgSnippet ? ": " + msgSnippet[1].trim() : "");
-      } else {
-        _callReason = "LLM call";
       }
+    }
+
+    // ── Tool intent extraction ──
+    // Extract intent signals from the user's message for tool call alignment checks.
+    // The user message is the last item in event.prompt or event.messages.
+    if (config.injectionDetection !== "off") {
+      const msgs = Array.isArray(event?.messages) ? event.messages : [];
+      const lastUserMsg = msgs.length > 0
+        ? (() => {
+            const last = msgs[msgs.length - 1];
+            const content = last?.content;
+            return typeof content === "string" ? content
+              : Array.isArray(content) ? content.map((b: any) => b?.text || "").join(" ")
+              : "";
+          })()
+        : (typeof event?.prompt === "string" ? event.prompt.slice(0, 500) : "");
+      _currentIntent = extractIntentSignals(lastUserMsg);
+      _toolSequence.reset(); // Reset sequence tracker for each new turn
     }
 
     // ── DNS cache warming ──
@@ -946,6 +1015,61 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           );
         }
       }
+
+      // --- Tool intent alignment: does this tool match the user's intent? ---
+      if (_currentIntent) {
+        const toolName = event.toolName ?? "unknown";
+
+        // 1. Check alignment
+        const alignment = checkToolAlignment(toolName, _currentIntent);
+        if (!alignment.aligned) {
+          const evt = buildToolIntentEvent(toolName, alignment, config.injectionDetection === "block" ? "blocked" : "flagged");
+          const agentSession = agentTracker.getCurrentSession();
+          evt.agentBuildId = agentSession?.agentBuildId;
+          evt.agentLabel = agentSession?.agentLabel;
+          evt.agentSessionId = agentSession?.sessionId;
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+          agentTracker.recordSecurityEvent(1);
+
+          if (config.injectionDetection === "block" && alignment.severity === "high") {
+            api.logger?.warn(`[shroud] BLOCKED tool intent mismatch: ${alignment.reason}`);
+            return { block: true, blockReason: `Shroud security: ${alignment.reason}` };
+          }
+          api.logger?.info(`[shroud] Tool intent mismatch (flagged): ${alignment.reason}`);
+        }
+
+        // 2. Check egress attempt
+        const egress = checkEgressAttempt(toolName, event.params, _currentIntent);
+        if (egress && !egress.aligned) {
+          const evt = buildToolIntentEvent(toolName, egress, config.injectionDetection === "block" ? "blocked" : "flagged");
+          const agentSession = agentTracker.getCurrentSession();
+          evt.agentBuildId = agentSession?.agentBuildId;
+          evt.agentLabel = agentSession?.agentLabel;
+          evt.agentSessionId = agentSession?.sessionId;
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+          agentTracker.recordSecurityEvent(1);
+
+          if (config.injectionDetection === "block" && egress.severity === "high") {
+            api.logger?.warn(`[shroud] BLOCKED egress attempt: ${egress.reason}`);
+            return { block: true, blockReason: `Shroud security: ${egress.reason}` };
+          }
+          api.logger?.info(`[shroud] Egress attempt (flagged): ${egress.reason}`);
+        }
+
+        // 3. Track sequence and check for anomalies
+        _toolSequence.record(toolName);
+        const anomaly = _toolSequence.checkAnomaly();
+        if (anomaly) {
+          const evt = buildToolIntentEvent(toolName, anomaly, "flagged");
+          const agentSession = agentTracker.getCurrentSession();
+          evt.agentBuildId = agentSession?.agentBuildId;
+          evt.agentLabel = agentSession?.agentLabel;
+          evt.agentSessionId = agentSession?.sessionId;
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+          agentTracker.recordSecurityEvent(1);
+          api.logger?.warn(`[shroud] Tool sequence anomaly: ${anomaly.reason}`);
+        }
+      }
     }
 
     const serialized = JSON.stringify(event.params);
@@ -1275,14 +1399,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             systemForIdentity = systemMsgs.join("\n");
           }
         }
-        // Agent identity: before_prompt_build is the primary source (channel labels).
+        // Agent identity: before_prompt_build + registry is the primary source.
         // The fetch intercept is the FALLBACK — only used if before_prompt_build
         // couldn't identify the agent (e.g. WhatsApp with no conversation_label).
         if (systemForIdentity && systemForIdentity.length > 10) {
           const existing = agentTracker.getCurrentSession();
           if (!existing || existing.agentLabel === "Unknown Agent" || existing.sessionId === "transient") {
-            // before_prompt_build failed — try fetch intercept as fallback
-            const session = agentTracker.registerAgent(systemForIdentity);
+            // before_prompt_build failed — try registry + full extraction as fallback
+            const registryName = agentRegistry.resolve(systemForIdentity);
+            const session = agentTracker.registerAgent(systemForIdentity, [], "unknown", false, registryName || undefined);
             if (profiler) profiler.setAgentBuildId(session.agentBuildId);
           } else {
             if (profiler) profiler.setAgentBuildId(existing.agentBuildId);

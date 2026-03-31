@@ -155,16 +155,20 @@ export class AgentSessionTracker {
     systemPrompt: string,
     pluginList: string[] = [],
     modelId = "unknown",
+    strict = false,
+    registryName?: string,
   ): AgentSession {
-    const label = extractLabel(systemPrompt);
+    // Registry-resolved name takes priority over regex extraction
+    const label = registryName || (strict ? extractLabelStrict(systemPrompt) : extractLabel(systemPrompt));
     const buildId = computeBuildId(systemPrompt, pluginList, modelId, label);
+    const key = normalizeLabel(label);
 
     // Don't create sessions for unidentifiable prompts
     if (label === "Unknown Agent") {
       // Still set current label so calls get tracked somewhere
-      this._currentLabel = label;
+      this._currentLabel = key;
       // Return a transient session that won't be persisted
-      return this._sessions.get(label) || {
+      return this._sessions.get(key) || {
         agentBuildId: buildId, agentLabel: label, sessionId: "transient",
         startedAt: Date.now(), llmCallCount: 0, securityEventCount: 0,
         lastCallAt: Date.now(), detectedModel: modelId, channelSource: "",
@@ -176,9 +180,9 @@ export class AgentSessionTracker {
       };
     }
 
-    this._currentLabel = label;
+    this._currentLabel = key;
 
-    let session = this._sessions.get(label);
+    let session = this._sessions.get(key);
     if (!session) {
       session = {
         agentBuildId: buildId,
@@ -208,7 +212,7 @@ export class AgentSessionTracker {
           lastAt: 0, status: "unknown", lastResponse: "",
         },
       };
-      this._sessions.set(label, session);
+      this._sessions.set(key, session);
     } else {
       // Update build ID to latest (prompt may evolve, label stays stable)
       session.agentBuildId = buildId;
@@ -230,6 +234,9 @@ export class AgentSessionTracker {
     const session = this._sessions.get(this._currentLabel);
     if (session && source) {
       session.channelSource = source;
+      if (!session.channels.includes(source)) {
+        session.channels.push(source);
+      }
     }
   }
 
@@ -450,9 +457,9 @@ export class AgentSessionTracker {
     return null;
   }
 
-  /** Get session by label (primary key). */
+  /** Get session by label (primary key, case-insensitive). */
   getSessionByLabel(label: string): AgentSession | null {
-    return this._sessions.get(label) ?? null;
+    return this._sessions.get(normalizeLabel(label)) ?? null;
   }
 
   /** Save all sessions to a JSON file. Survives gateway restarts. */
@@ -463,6 +470,8 @@ export class AgentSessionTracker {
         agentBuildId: s.agentBuildId,
         sessionId: s.sessionId,
         llmCallCount: s.llmCallCount,
+        securityEventCount: s.securityEventCount,
+        detectedModel: s.detectedModel,
         channels: s.channels,
         classification: s.classification,
         toolInventory: s.toolInventory,
@@ -483,8 +492,12 @@ export class AgentSessionTracker {
       const data = JSON.parse(raw) as Array<Record<string, unknown>>;
       for (const entry of data) {
         const label = entry.agentLabel as string;
-        if (!label || this._sessions.has(label)) continue;
-        this._sessions.set(label, {
+        if (!label) continue;
+        // Filter ghost labels on load — reject invalid labels persisted before validation existed
+        if (!_isValidAgentLabel(label) || label === "Unknown Agent") continue;
+        const key = normalizeLabel(label);
+        if (this._sessions.has(key)) continue;
+        this._sessions.set(key, {
           agentLabel: label,
           agentBuildId: (entry.agentBuildId as string) || "",
           sessionId: (entry.sessionId as string) || "",
@@ -494,8 +507,8 @@ export class AgentSessionTracker {
           toolInventory: (entry.toolInventory as string[]) || [],
           startedAt: (entry.startedAt as number) || 0,
           lastCallAt: (entry.lastCallAt as number) || 0,
-          securityEventCount: 0,
-          detectedModel: "",
+          securityEventCount: (entry.securityEventCount as number) || 0,
+          detectedModel: (entry.detectedModel as string) || "",
           channelSource: "",
           soulExtract: (entry.soulExtract as string) || "",
           cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
@@ -508,7 +521,7 @@ export class AgentSessionTracker {
         let best = "";
         let bestTime = 0;
         for (const s of this._sessions.values()) {
-          if (s.lastCallAt > bestTime) { bestTime = s.lastCallAt; best = s.agentLabel; }
+          if (s.lastCallAt > bestTime) { bestTime = s.lastCallAt; best = normalizeLabel(s.agentLabel); }
         }
         if (best) this._currentLabel = best;
       }
@@ -728,7 +741,24 @@ function extractLabel(systemPrompt: string): string {
     }
   }
 
-  // 3. Try section-based extraction (framework preamble + agent SOUL.md)
+  // 3. Cron prefix: "[cron:<uuid> <agent-name>: <schedule> <description>]"
+  const cronMatch = systemPrompt.match(/\[cron:[a-f0-9-]+\s+([^:]+):/);
+  if (cronMatch) {
+    const name = _normalizeCronAgent(cronMatch[1].trim());
+    if (name && _isValidAgentLabel(name)) return name;
+  }
+
+  // 4. BOOT.md header: "# BOOT (Agent Name)" or "# BOOT (Agent Name — Alias)"
+  const bootMatch = systemPrompt.match(/# BOOT \(([^)]+)\)/);
+  if (bootMatch) {
+    let name = bootMatch[1].trim();
+    // Take the part before " — " if present (e.g. "PJ — Main Agent" → "PJ")
+    if (name.includes(" — ")) name = name.split(" — ")[0].trim();
+    if (name.includes(" - ")) name = name.split(" - ")[0].trim();
+    if (name.length > 1 && name.length < 50 && _isValidAgentLabel(name)) return name;
+  }
+
+  // 5. Try section-based extraction (framework preamble + agent SOUL.md)
   //    Only search identity-relevant sections — never pass the full prompt
   //    as it contains user messages that can poison the label extraction.
   const sections = systemPrompt.split(/\n---+\n/);
@@ -743,8 +773,111 @@ function extractLabel(systemPrompt: string): string {
   return "Unknown Agent";
 }
 
+/**
+ * Strict label extraction — only high-confidence identity signals.
+ *
+ * Used by the hook path (before_prompt_build) where event.prompt often contains
+ * user messages, boot preambles, and other noise that the full extractLabel
+ * would misinterpret. Strict mode only accepts:
+ *   1. Channel labels (conversation_label, Slack #channel, WhatsApp)
+ *   2. "- Name:" lines (IDENTITY.md)
+ *   3. Cron prefix ("[cron:<uuid> <agent>: ...]")
+ *   4. BOOT.md header ("# BOOT (<Agent Name>)")
+ *
+ * The fetch intercept uses full extractLabel as a fallback for agents that
+ * don't go through hooks (e.g. direct API calls).
+ */
+export function extractLabelStrict(systemPrompt: string): string {
+  // 1. OpenClaw channel/conversation label
+  const channelMatch = systemPrompt.match(/"conversation_label"\s*:\s*"#?([^"]+)"/);
+  if (channelMatch) {
+    let name = channelMatch[1].trim();
+    name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
+    name = name.replace(/[-_]/g, " ");
+    name = normalizeLabelForDisplay(name);
+    if (name.length > 1 && name.length < 50) return name;
+  }
+
+  // 2a. Slack channel header
+  const slackChannelMatch = systemPrompt.match(/Slack\s+message\s+in\s+#([^\s]+)/i);
+  if (slackChannelMatch) {
+    let name = slackChannelMatch[1].trim();
+    name = name.replace(/-(main|dev|test|staging|prod|channel|chat|bot)$/i, "");
+    name = name.replace(/[-_]/g, " ");
+    name = normalizeLabelForDisplay(name);
+    if (name.length > 1 && name.length < 50) return name;
+  }
+
+  // 2b. WhatsApp metadata
+  const waMatch = systemPrompt.match(/WhatsApp\s+(?:message|group)\s+(?:from\s+|in\s+)?["']?([^"'\n]+)/i);
+  if (waMatch) {
+    const name = waMatch[1].trim().replace(/\s*\(.*?\)\s*$/, "");
+    if (name.length > 1 && name.length < 50) return name;
+  }
+  const waE164 = systemPrompt.match(/"e164"\s*:\s*"\+\d+"/);
+  const waSender = systemPrompt.match(/"sender"\s*:\s*"([^"]+)"/);
+  if (waE164 && waSender && !systemPrompt.includes("conversation_label")) {
+    return "WA " + waSender[1].trim();
+  }
+
+  // 2c. TUI / terminal
+  const tuiMatch = systemPrompt.match(/(?:TUI|terminal)\s+(?:session|message)/i);
+  if (tuiMatch) {
+    const agentKeyMatch = systemPrompt.match(/agent:([^:]+):/);
+    if (agentKeyMatch) {
+      let name = agentKeyMatch[1].trim();
+      name = name.split(/[-_]/).map(w =>
+        w.length <= 3 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1)
+      ).join(" ");
+      if (name.length > 1 && name.length < 50) return name;
+    }
+  }
+
+  // 3. "- Name:" from IDENTITY.md (high confidence, no ambiguity)
+  const nameMatch = systemPrompt.match(/-\s*Name:\s*(.+)/i);
+  if (nameMatch) {
+    const name = nameMatch[1].trim();
+    if (name.length > 1 && name.length < 60 && _isValidAgentLabel(name)) return name;
+  }
+
+  // 4. Cron prefix
+  const cronMatch = systemPrompt.match(/\[cron:[a-f0-9-]+\s+([^:]+):/);
+  if (cronMatch) {
+    const name = _normalizeCronAgent(cronMatch[1].trim());
+    if (name && _isValidAgentLabel(name)) return name;
+  }
+
+  // 5. BOOT.md header
+  const bootMatch = systemPrompt.match(/# BOOT \(([^)]+)\)/);
+  if (bootMatch) {
+    let name = bootMatch[1].trim();
+    if (name.includes(" — ")) name = name.split(" — ")[0].trim();
+    if (name.includes(" - ")) name = name.split(" - ")[0].trim();
+    if (name.length > 1 && name.length < 50 && _isValidAgentLabel(name)) return name;
+  }
+
+  // Strict mode: no "You are", no headings, no fallbacks
+  return "Unknown Agent";
+}
+
+/** Map cron short names to canonical agent labels. */
+function _normalizeCronAgent(shortName: string): string | null {
+  const lower = shortName.toLowerCase().trim();
+  // Known agent short names from OpenClaw cron configs
+  const CRON_AGENT_MAP: Record<string, string> = {
+    "pj": "PJ",
+    "endurance-coach": "Coach Alessandra",
+    "semiconalpha": "SemiconAlpha Research",
+    "shroud-research": "Shroud Research",
+  };
+  if (CRON_AGENT_MAP[lower]) return CRON_AGENT_MAP[lower];
+  // Unknown cron agent — title-case the short name
+  const name = lower.replace(/[-_]/g, " ");
+  return normalizeLabelForDisplay(name);
+}
+
 /** Reject labels that look like action phrases, boot tasks, or system noise. */
-function _isValidAgentLabel(label: string): boolean {
+export function _isValidAgentLabel(label: string): boolean {
   const lower = label.toLowerCase();
   // Gerund phrases: "Running A Boot Check", "Checking System Status"
   if (/^(?:running|checking|starting|loading|initializing|booting|processing|executing|performing|waiting|connecting)\b/i.test(label)) return false;
@@ -752,6 +885,8 @@ function _isValidAgentLabel(label: string): boolean {
   if (/\b(?:boot\s*check|startup|shutdown|health\s*check|self[- ]?test|diagnostics?|initialization)\b/i.test(lower)) return false;
   // Generic noise
   if (/^(?:test|debug|untitled|none|null|undefined|default|system|admin|root|user)\s*$/i.test(lower)) return false;
+  // Context noise — generic labels from framework metadata
+  if (/^(?:project\s*context|conversation|session|sender|channel|message|rules|metadata)\s*$/i.test(lower)) return false;
   return true;
 }
 

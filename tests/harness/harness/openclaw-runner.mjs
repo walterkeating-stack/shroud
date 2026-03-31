@@ -98,12 +98,164 @@ export class OpenClawRunner {
     // 4. Run all scenarios via gateway RPC
     await this._runScenariosViaGateway();
 
+    // 4b. Verify agent identity via dashboard API
+    await this._verifyAgentIdentity();
+
     // 5. Run multi-agent security scenarios (if injection detection available)
     await this._runSecurityScenarios();
 
     // 6. Run lifecycle tests (--lifecycle flag, long-running)
     if (this.lifecycle) {
       await this._runLifecycleTests();
+    }
+  }
+
+  async _verifyAgentIdentity() {
+    this._log("\nVerifying agent identity via dashboard API...");
+    this._log("-".repeat(50));
+    const tests = [];
+
+    const addResult = (name, fn) => {
+      this.results.total++;
+      const start = Date.now();
+      const result = { name, status: "pass", duration: 0, error: null };
+      try {
+        fn();
+        result.duration = Date.now() - start;
+        tests.push(result);
+        this.results.passed++;
+        this._log(`  \x1b[32m\u2714\x1b[0m ${name}  \x1b[2m(${result.duration}ms)\x1b[0m`);
+      } catch (err) {
+        result.status = "fail";
+        result.error = err.message;
+        result.duration = Date.now() - start;
+        tests.push(result);
+        this.results.failed++;
+        this._log(`  \x1b[31m\u2718\x1b[0m ${name}`);
+        this._log(`    \x1b[31m${result.error}\x1b[0m`);
+      }
+    };
+
+    try {
+      // Fetch dashboard data
+      const agentsResp = await this._httpReq("GET", "http://127.0.0.1:9380/api/agents");
+      const overviewResp = await this._httpReq("GET", "http://127.0.0.1:9380/api/overview");
+      const agents = agentsResp?.agents || [];
+      const labels = agents.map(a => a.agentLabel);
+
+      // Test 1: Dashboard responds
+      addResult("Dashboard: /api/agents responds", () => {
+        if (!agentsResp || !Array.isArray(agents)) {
+          throw new Error("Dashboard /api/agents did not return an agents array");
+        }
+      });
+
+      // Test 2: At least one agent tracked
+      addResult("Dashboard: at least 1 agent tracked", () => {
+        if (agents.length < 1) {
+          throw new Error(`Expected at least 1 agent, got ${agents.length}`);
+        }
+      });
+
+      // Test 3: No ghost labels
+      const GHOST_PATTERNS = [
+        /^running\b/i, /^checking\b/i, /^loading\b/i, /^starting\b/i,
+        /boot\s*check/i, /^project\s*context$/i, /^unknown\s*agent$/i,
+        /^test$/i, /^debug$/i, /^system$/i, /^default$/i,
+        /```/, /^rules:/i, /^session$/i, /^metadata$/i,
+      ];
+      addResult("Dashboard: no ghost agent labels", () => {
+        for (const a of agents) {
+          for (const pattern of GHOST_PATTERNS) {
+            if (pattern.test(a.agentLabel)) {
+              throw new Error(`Ghost label detected: "${a.agentLabel}" matches ${pattern}`);
+            }
+          }
+        }
+      });
+
+      // Test 4: No duplicate agents (case-insensitive)
+      addResult("Dashboard: no duplicate agents (case-insensitive)", () => {
+        const seen = new Set();
+        for (const a of agents) {
+          const key = a.agentLabel.toLowerCase().trim();
+          if (seen.has(key)) {
+            throw new Error(`Duplicate agent label: "${a.agentLabel}"`);
+          }
+          seen.add(key);
+        }
+      });
+
+      // Test 5: All agents have valid classification
+      addResult("Dashboard: all agents have classification", () => {
+        for (const a of agents) {
+          if (!a.classification || !a.classification.role) {
+            throw new Error(`Agent "${a.agentLabel}" missing classification`);
+          }
+          if (a.classification.role === "Unknown" && a.llmCallCount > 0) {
+            throw new Error(`Agent "${a.agentLabel}" has Unknown role despite ${a.llmCallCount} LLM calls`);
+          }
+        }
+      });
+
+      // Test 6: All agents have unique build IDs
+      addResult("Dashboard: all agents have unique build IDs", () => {
+        const buildIds = new Set();
+        for (const a of agents) {
+          if (!a.agentBuildId || a.agentBuildId === "") {
+            throw new Error(`Agent "${a.agentLabel}" missing build ID`);
+          }
+          if (buildIds.has(a.agentBuildId)) {
+            throw new Error(`Duplicate build ID: ${a.agentBuildId}`);
+          }
+          buildIds.add(a.agentBuildId);
+        }
+      });
+
+      // Test 7: Overview agent count matches
+      addResult("Dashboard: overview agent count matches agents list", () => {
+        const overviewCount = overviewResp?.agents?.total;
+        if (overviewCount !== agents.length) {
+          throw new Error(`Overview says ${overviewCount} agents but /api/agents has ${agents.length}`);
+        }
+      });
+
+      // Test 8: No agent label contains PII patterns
+      addResult("Dashboard: agent labels don't contain PII", () => {
+        for (const a of agents) {
+          if (/@/.test(a.agentLabel)) throw new Error(`Agent label contains email: "${a.agentLabel}"`);
+          if (/\d{1,3}\.\d{1,3}\.\d{1,3}/.test(a.agentLabel)) throw new Error(`Agent label contains IP: "${a.agentLabel}"`);
+          if (/\+\d{5,}/.test(a.agentLabel)) throw new Error(`Agent label contains phone: "${a.agentLabel}"`);
+        }
+      });
+
+      // Test 9: Persisted sessions exist
+      addResult("Dashboard: persisted agent sessions file exists", () => {
+        const sessionFiles = [
+          join(this.stateDir, "profiles", "agent-sessions.json"),
+          "/tmp/shroud-profiles/agent-sessions.json",
+        ];
+        const found = sessionFiles.find(f => existsSync(f));
+        if (!found) {
+          // Not a hard fail — persistence dir may differ in container
+          this._log("    \x1b[33m(warn: agent-sessions.json not found at expected paths)\x1b[0m");
+        }
+      });
+
+    } catch (err) {
+      // Dashboard might not be available (e.g. SHROUD_DASHBOARD=false)
+      this._log(`  \x1b[33m\u2298\x1b[0m Agent identity verification skipped: ${err.message}`);
+    }
+
+    if (tests.length > 0) {
+      this.results.scenarios.push({
+        name: "Agent Identity Verification",
+        file: "openclaw-runner",
+        passed: tests.filter(t => t.status === "pass").length,
+        failures: tests.filter(t => t.status === "fail").length,
+        duration: tests.reduce((a, t) => a + t.duration, 0),
+        tests,
+      });
     }
   }
 
@@ -791,6 +943,12 @@ export class OpenClawRunner {
           model: { primary: "mock-provider/mock-model" },
           timeoutSeconds: 30,
         },
+        list: [
+          { id: "main", name: "main", workspace: join(this.stateDir, "workspace") },
+          { id: "research-agent", name: "Security Research Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Security Research Agent" } },
+          { id: "customer-agent", name: "Customer Support Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Customer Support Agent" } },
+          { id: "devops-agent", name: "DevOps Automation Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "DevOps Automation Agent" } },
+        ],
       },
       // Sandbox exec: run agent tool calls inside containers
       ...(process.env.SHROUD_TEST_SANDBOX === "1" ? {

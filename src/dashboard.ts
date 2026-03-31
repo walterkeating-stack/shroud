@@ -20,6 +20,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
+import { readFileSync } from "node:fs";
 import type { SecurityEventBus, SecurityEvent } from "./security-event.js";
 import type { AgentSessionTracker } from "./agent-session.js";
 import type { BaselineStore } from "./profiler-store.js";
@@ -36,6 +37,8 @@ export interface DashboardDeps {
   profiler: BehaviouralProfiler | null;
   config: ShroudConfig;
   policyEngine: PolicyEngine | null;
+  /** Path to persisted agent-sessions.json (for cross-process agent visibility). */
+  agentSessionFile?: string;
 }
 
 /**
@@ -180,6 +183,23 @@ export function startDashboard(
 // ── Route handlers ──────────────────────────────────
 
 function handleOverview(res: ServerResponse, deps: DashboardDeps) {
+  // Use disk-merged agent count for overview (same as /api/agents)
+  let agentCount = deps.agentTracker.getAllSessions().length;
+  let totalCalls = deps.agentTracker.getAllSessions().reduce((sum, a) => sum + a.llmCallCount, 0);
+  if (deps.agentSessionFile) {
+    try {
+      const raw = readFileSync(deps.agentSessionFile, "utf-8");
+      const diskSessions = JSON.parse(raw) as any[];
+      const inMemoryLabels = new Set(deps.agentTracker.getAllSessions().map(s => s.agentLabel.toLowerCase().trim()));
+      for (const entry of diskSessions) {
+        const key = (entry.agentLabel as string || "").toLowerCase().trim();
+        if (key && !inMemoryLabels.has(key)) {
+          agentCount++;
+          totalCalls += (entry.llmCallCount as number) || 0;
+        }
+      }
+    } catch {}
+  }
   const agents = deps.agentTracker.getAllSessions();
   const secStats = deps.securityBus?.getStats();
   const profiler = deps.profiler;
@@ -195,8 +215,8 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
       flaggedCount: secStats?.flaggedCount ?? 0,
     },
     agents: {
-      total: agents.length,
-      totalLlmCalls: agents.reduce((sum, a) => sum + a.llmCallCount, 0),
+      total: agentCount,
+      totalLlmCalls: totalCalls,
       totalSecurityEvents: agents.reduce((sum, a) => sum + a.securityEventCount, 0),
       withBaseline: deps.baselineStore
         ? agents.filter(a => deps.baselineStore!.exists(a.agentBuildId)).length
@@ -296,7 +316,34 @@ function computeAgentHealth(
 }
 
 function handleAgents(res: ServerResponse, deps: DashboardDeps) {
-  const agents = deps.agentTracker.getAllSessions();
+  // OpenClaw runs multiple gateway processes — each one has its own agent tracker.
+  // The dashboard lives in one process but needs to show ALL agents.
+  // Strategy: disk-persisted sessions are the primary source (written by all processes),
+  // enriched with in-memory data from this process for live stats.
+  const inMemory = deps.agentTracker.getAllSessions();
+  const inMemoryMap = new Map(inMemory.map(s => [s.agentLabel.toLowerCase().trim(), s]));
+  let agents: any[] = [...inMemory];
+  if (deps.agentSessionFile) {
+    try {
+      const raw = readFileSync(deps.agentSessionFile, "utf-8");
+      const diskSessions = JSON.parse(raw) as any[];
+      for (const entry of diskSessions) {
+        const key = (entry.agentLabel as string || "").toLowerCase().trim();
+        if (!key || inMemoryMap.has(key)) continue;
+        // Disk-only session (from another OC process) — add with persisted data
+        agents.push({
+          agentLabel: entry.agentLabel, agentBuildId: entry.agentBuildId || "",
+          sessionId: entry.sessionId || "", llmCallCount: entry.llmCallCount || 0,
+          channels: entry.channels || [], classification: entry.classification || { role: "Unknown", confidencePct: 0, confidence: "low", colour: "#484f58", signals: [] },
+          toolInventory: entry.toolInventory || [], startedAt: entry.startedAt || 0,
+          lastCallAt: entry.lastCallAt || 0, securityEventCount: entry.securityEventCount || 0, detectedModel: entry.detectedModel || "",
+          channelSource: "", soulExtract: entry.soulExtract || "",
+          cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
+          heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+        });
+      }
+    } catch { /* file may not exist or be malformed */ }
+  }
   const allEvents = deps.securityBus?.getEvents() ?? [];
 
   const enriched = agents.map(agent => {
@@ -328,7 +375,15 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps) {
 }
 
 function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: string) {
-  const agent = deps.agentTracker.getSession(buildId);
+  let agent: any = deps.agentTracker.getSession(buildId);
+  // Also search disk-persisted sessions (other OC processes)
+  if (!agent && deps.agentSessionFile) {
+    try {
+      const raw = readFileSync(deps.agentSessionFile, "utf-8");
+      const diskSessions = JSON.parse(raw) as any[];
+      agent = diskSessions.find((e: any) => e.agentBuildId === buildId) || null;
+    } catch {}
+  }
   if (!agent) {
     json(res, 404, { error: `Agent ${buildId} not found` });
     return;
@@ -1028,6 +1083,7 @@ async function showAgent(buildId) {
   viewingAgent = true;
   try {
     const data = await fetchJson('/api/agents/' + buildId);
+    if (data.error || !data.agent) { throw new Error(data.error || 'Agent not found'); }
     const a = data.agent;
     const b = data.baseline;
     const evts = data.recentEvents || [];

@@ -66,12 +66,33 @@ export class SecurityEventBus {
   private _events: SecurityEvent[] = [];
   private _maxEvents: number;
   private _listeners: Array<(event: SecurityEvent) => void> = [];
+  /** Dedup window: signatureId:matchedText:agentLabel → last emit timestamp. */
+  private _dedupWindow = new Map<string, number>();
+  /** Dedup interval in ms — skip duplicate events within this window. */
+  private _dedupIntervalMs: number;
 
-  constructor(maxEvents = 500) {
+  constructor(maxEvents = 500, dedupIntervalMs = 0) {
     this._maxEvents = maxEvents;
+    this._dedupIntervalMs = dedupIntervalMs;
   }
 
   emit(event: SecurityEvent): void {
+    // Dedup: skip events with same signature + matched text + agent within the dedup window.
+    // This prevents shared system prompt content from generating repeated events per call.
+    const dedupKey = `${event.signatureId}:${(event.matchedText || "").slice(0, 100)}:${event.agentLabel || ""}`;
+    const lastEmit = this._dedupWindow.get(dedupKey);
+    if (lastEmit && (event.timestamp - lastEmit) < this._dedupIntervalMs) {
+      return; // Duplicate within window — suppress
+    }
+    this._dedupWindow.set(dedupKey, event.timestamp);
+    // Prune stale dedup entries periodically
+    if (this._dedupWindow.size > 1000) {
+      const cutoff = Date.now() - this._dedupIntervalMs;
+      for (const [k, ts] of this._dedupWindow) {
+        if (ts < cutoff) this._dedupWindow.delete(k);
+      }
+    }
+
     this._events.push(event);
     // Evict oldest if over capacity
     if (this._events.length > this._maxEvents) {

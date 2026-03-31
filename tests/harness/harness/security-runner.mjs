@@ -111,10 +111,11 @@ export class SecurityTestRunner {
       if (!agent) throw new Error(`Unknown agent: ${scenario.agent}`);
 
       // Create session with agent's SOUL as system prompt
-      const sessionKey = `sec-${scenario.agent}-${Date.now()}`;
+      const sessionKey = `agent:${scenario.agent}:sec-${Date.now()}`;
       this._setAgentSoul(agent.soul);
       const response = await this._gatewayCall("sessions.create", {
         key: sessionKey,
+        agentId: scenario.agent,
         message: scenario.input,
       });
 
@@ -266,6 +267,7 @@ export class SecurityTestRunner {
           this._setAgentSoul(agent.soul);
           await this._gatewayCall("sessions.create", {
             key: sessionKey,
+            agentId: scenario.agent,
             message: turn.input,
           });
         } else {
@@ -324,10 +326,11 @@ export class SecurityTestRunner {
       const agent1 = agentMap.get(scenario.agent);
       if (!agent1) throw new Error(`Unknown agent: ${scenario.agent}`);
 
-      const session1Key = `sec-fu1-${Date.now()}`;
+      const session1Key = `agent:${scenario.agent}:sec-fu1-${Date.now()}`;
       this._setAgentSoul(agent1.soul);
       await this._gatewayCall("sessions.create", {
         key: session1Key,
+        agentId: scenario.agent,
         message: scenario.input,
       });
 
@@ -345,10 +348,11 @@ export class SecurityTestRunner {
       if (!agent2) throw new Error(`Unknown agent: ${followup.agent}`);
 
       const followupStart = Date.now();
-      const session2Key = `sec-fu2-${Date.now()}`;
+      const session2Key = `agent:${followup.agent}:sec-fu2-${Date.now()}`;
       this._setAgentSoul(agent2.soul);
       await this._gatewayCall("sessions.create", {
         key: session2Key,
+        agentId: followup.agent,
         message: followup.input,
       });
 
@@ -389,10 +393,11 @@ export class SecurityTestRunner {
         const agent = agentMap.get(sub.agent);
         if (!agent) throw new Error(`Unknown agent: ${sub.agent}`);
 
-        const sessionKey = `sec-par-${sub.agent}-${idx}-${Date.now()}`;
+        const sessionKey = `agent:${sub.agent}:sec-par-${idx}-${Date.now()}`;
         this._setAgentSoul(agent.soul);
         await this._gatewayCall("sessions.create", {
           key: sessionKey,
+          agentId: sub.agent,
           message: sub.input,
         });
 
@@ -639,7 +644,7 @@ export class SecurityTestRunner {
 
         // Generate a message: pick a seed and rotate PII into it
         const message = this._generateTrafficMessage(seeds, turn);
-        const sessionKey = `lifecycle-${agent.id}`;
+        const sessionKey = `agent:${agent.id}:lifecycle-${Date.now()}`;
         const systemPrompt = this._buildAgentPrompt(agent, message);
 
         try {
@@ -647,6 +652,7 @@ export class SecurityTestRunner {
             this._setAgentSoul(systemPrompt);
             await this._gatewayCall("sessions.create", {
               key: sessionKey,
+              agentId: agent.id,
               message,
             });
           } else {
@@ -786,7 +792,7 @@ export class SecurityTestRunner {
       for (const agent of agents) {
         const trafficIdx = (agent.traffic?.length || 1) - turnsAfter + turn;
         const message = agent.traffic?.[Math.max(0, trafficIdx)] || "Hello, are you still there?";
-        const sessionKey = `lifecycle-${agent.id}`;
+        const sessionKey = `agent:${agent.id}:lifecycle-post-restart`;
         const systemPrompt = this._buildAgentPrompt(agent, message);
 
         try {
@@ -794,7 +800,8 @@ export class SecurityTestRunner {
           // After restart, the session key may not exist — use create
           if (turn === 0) {
             await this._gatewayCall("sessions.create", {
-              key: `${sessionKey}-post-restart`,
+              key: sessionKey,
+              agentId: agent.id,
               message,
             });
           } else {
@@ -914,12 +921,14 @@ export class SecurityTestRunner {
       const start = Date.now();
 
       try {
-        const sessionKey = `lifecycle-adv-${i}-${Date.now()}`;
+        const agentId = typeof attack.agent === "object" ? attack.agent.id : attack.agent;
+        const sessionKey = `agent:${agentId}:lifecycle-adv-${i}-${Date.now()}`;
         const systemPrompt = this._buildAgentPrompt(attack.agent, attack.input);
         this._setAgentSoul(systemPrompt);
 
         await this._gatewayCall("sessions.create", {
           key: sessionKey,
+          agentId,
           message: attack.input,
         });
 
