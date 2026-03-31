@@ -738,9 +738,21 @@ function extractLabel(systemPrompt: string): string {
 
   for (const text of candidates) {
     const label = _extractLabelFromText(text);
-    if (label) return label;
+    if (label && _isValidAgentLabel(label)) return label;
   }
   return "Unknown Agent";
+}
+
+/** Reject labels that look like action phrases, boot tasks, or system noise. */
+function _isValidAgentLabel(label: string): boolean {
+  const lower = label.toLowerCase();
+  // Gerund phrases: "Running A Boot Check", "Checking System Status"
+  if (/^(?:running|checking|starting|loading|initializing|booting|processing|executing|performing|waiting|connecting)\b/i.test(label)) return false;
+  // Boot/system tasks
+  if (/\b(?:boot\s*check|startup|shutdown|health\s*check|self[- ]?test|diagnostics?|initialization)\b/i.test(lower)) return false;
+  // Generic noise
+  if (/^(?:test|debug|untitled|none|null|undefined|default|system|admin|root|user)\s*$/i.test(lower)) return false;
+  return true;
 }
 
 /**

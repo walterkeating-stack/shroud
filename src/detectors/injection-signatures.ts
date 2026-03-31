@@ -171,7 +171,7 @@ const PROMPT_EXTRACTION: SignatureDef[] = [
   {
     id: "pe_repeat_instructions",
     threatClass: ThreatClass.PROMPT_EXTRACTION,
-    pattern: /(?:repeat|print|show|display|output|reveal|dump|leak|expose|send|give|share|tell|write\s*out|list|paste|describe|summarize|recite|read\s*back|type|echo)\s+(?:me\s+)?(?:your\s+)?(?:full\s+)?(?:system\s+|initial\s+)?(?:prompt|instructions?|rules?|guidelines?|configuration|message)/gi,
+    pattern: /(?:repeat|print|show|display|output|reveal|dump|leak|expose|send|give|share|tell|write\s*out|list|paste|describe|summarize|recite|read\s*back|type|echo)\s+(?:me\s+)?(?:your\s+)?(?:full\s+)?(?:system\s+|initial\s+)?(?:prompt|instructions?|rules?|guidelines?|configuration|system\s+message)/gi,
     severity: "high",
     description: "Prompt extraction: repeat/reveal system prompt",
     direction: "request",
@@ -179,7 +179,7 @@ const PROMPT_EXTRACTION: SignatureDef[] = [
   {
     id: "pe_what_is_prompt",
     threatClass: ThreatClass.PROMPT_EXTRACTION,
-    pattern: /what\s+(?:is|are|was|were)\s+(?:in\s+)?(?:your|the)\s+(?:full\s+)?(?:system\s+)?(?:prompt|instructions?|initial\s+(?:instructions?|prompt)|rules?|guidelines?|message)/gi,
+    pattern: /what\s+(?:is|are|was|were)\s+(?:in\s+)?(?:your|the)\s+(?:full\s+)?(?:system\s+)?(?:prompt|instructions?|initial\s+(?:instructions?|prompt)|rules?|guidelines?|system\s+message)/gi,
     severity: "medium",
     description: "Prompt extraction: what is your system prompt",
     direction: "request",
