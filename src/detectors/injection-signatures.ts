@@ -171,7 +171,7 @@ const PROMPT_EXTRACTION: SignatureDef[] = [
   {
     id: "pe_repeat_instructions",
     threatClass: ThreatClass.PROMPT_EXTRACTION,
-    pattern: /(?:repeat|print|show|display|output|reveal|dump|leak|expose)\s+(?:me\s+)?(?:your\s+)?(?:full\s+)?(?:system\s+)?(?:prompt|instructions?|rules?|guidelines?|configuration)/gi,
+    pattern: /(?:repeat|print|show|display|output|reveal|dump|leak|expose|send|give|share|tell)\s+(?:me\s+)?(?:your\s+)?(?:full\s+)?(?:system\s+)?(?:prompt|instructions?|rules?|guidelines?|configuration)/gi,
     severity: "high",
     description: "Prompt extraction: repeat/reveal system prompt",
     direction: "request",
@@ -467,7 +467,7 @@ const MCP_TOOL_POISONING: SignatureDef[] = [
   {
     id: "mcp_execute_command",
     threatClass: ThreatClass.MCP_TOOL_POISONING,
-    pattern: /(?:execute|run|eval|spawn|exec)\s+(?:the\s+)?(?:following\s+)?(?:shell\s+)?(?:command|code|script)/gi,
+    pattern: /(?:execute|run|eval|spawn|exec)\s+(?:the\s+)?(?:following\s+)?(?:shell\s+)?(?:command|code|script)\s*[:.\n"]/gi,
     severity: "medium",
     description: "MCP tool poisoning: execute command directive",
     direction: "request",
