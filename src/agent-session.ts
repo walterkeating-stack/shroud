@@ -867,7 +867,7 @@ const ROLE_TAXONOMY: { role: string; keywords: RegExp }[] = [
   { role: "Sales / Outreach",     keywords: /sales|outreach|prospect|lead\s*gen|crm|pipeline|deal|quota|revenue/i },
   { role: "Research",             keywords: /research|investigat|analy[sz]|report|study|academic|paper|journal|semicond|alpha/i },
   { role: "Coaching / Training",  keywords: /coach|train|mentor|fitness|endurance|athlete|workout|nutrition|performance/i },
-  { role: "Writing / Content",    keywords: /writ|content|blog|article|copy|editor|journalist|marketing\s*content/i },
+  { role: "Writing / Content",    keywords: /writing|writer|copywriting|ghostwrit|content\s*creat|blog|article|copy\s*edit|editor|journalist|marketing\s*content/i },
   { role: "Legal / Compliance",   keywords: /legal|compliance|regulat|audit|policy|gdpr|hipaa|sox\b|contract/i },
   { role: "Finance",              keywords: /financ|accounting|budget|invest|portfolio|trading|revenue|forecast/i },
   { role: "Personal Assistant",   keywords: /personal|assistant|scheduler|organiz|reminder|task\s*manag|daily|general\s*purpose/i },

@@ -1064,6 +1064,21 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.95,
   },
 
+  // Linux snmpd.conf: "rocommunity public", "rwcommunity private 10.0.0.0/24"
+  {
+    name: "snmpd_community",
+    pattern: /(?:r[ow]community6?\s+)(\S+)/gi,
+    category: Category.SNMP_COMMUNITY,
+    confidence: 1.0,
+  },
+  // SNMP CLI tools: "snmpwalk -v2c -c COMMUNITY host", "snmpget -c COMMUNITY ..."
+  {
+    name: "snmp_cli_community",
+    pattern: /(?:snmp(?:walk|get|set|bulkwalk|trap|table|status)\s+.*?-c\s+)(\S+)/gi,
+    category: Category.SNMP_COMMUNITY,
+    confidence: 1.0,
+  },
+
   // --- Environment variable secrets ---
   {
     // DB_PASSWORD=value, SMTP_PASSWORD=value, etc. (shell .env format)

@@ -281,10 +281,10 @@ export class EventGrader {
       log.error = err?.message || "Unknown error";
       log.responseTimeMs = Date.now() - startTime;
       if (!log.prompt) {
-        const eventsText = batch.map((e, i) =>
-          `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${e.agentLabel || "?"}" match="${(e.matchedText || "").slice(0, 80)}"`,
+        const fallbackText = batch.map((e, i) =>
+          `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${(e.agentLabel || "?").slice(0, 40)}" match="${JSON.stringify((e.matchedText || "").slice(0, 80)).slice(1, -1)}"`,
         ).join("\n");
-        log.prompt = `${GRADING_PROMPT}\n\nGrade these ${batch.length} security events:\n\n${eventsText}`;
+        log.prompt = `${GRADING_PROMPT}\n\nGrade these ${batch.length} security events:\n\n${fallbackText}`;
       }
       this._pending.unshift(...batch);
     }
@@ -318,10 +318,22 @@ export class EventGrader {
     const token = await this._ensureToken();
     const model = (globalThis as any).__shroudGradingModel || "claude-sonnet-4-6";
 
+    // Sanitise untrusted fields: matchedText is raw attacker input, description
+    // may echo it. JSON-encode to neutralise quote/newline injection, truncate
+    // to limit prompt stuffing, and strip PII-like patterns.
+    const sanitise = (s: string, maxLen: number): string => {
+      let t = (s || "").slice(0, maxLen);
+      // Strip obvious PII that shouldn't reach the grading LLM
+      t = t.replace(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, "[EMAIL]");
+      t = t.replace(/\b\d{1,3}(?:\.\d{1,3}){3}\b/g, "[IP]");
+      // JSON-encode to escape quotes, backslashes, newlines
+      return JSON.stringify(t).slice(1, -1);
+    };
+
     const eventsText = batch.map((e, i) =>
-      `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${e.agentLabel || "?"}" ` +
-      `class=${e.threatClass} match="${(e.matchedText || "").slice(0, 150)}" ` +
-      `desc="${e.description || ""}"`,
+      `[${i}] sig=${e.signatureId} sev=${e.severity} agent="${sanitise(e.agentLabel || "?", 40)}" ` +
+      `class=${e.threatClass} match="${sanitise(e.matchedText || "", 120)}" ` +
+      `desc="${sanitise(e.description || "", 100)}"`,
     ).join("\n");
 
     const message = `Grade these ${batch.length} security events:\n\n${eventsText}`;

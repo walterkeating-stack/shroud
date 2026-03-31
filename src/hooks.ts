@@ -483,12 +483,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
   }
 
-  // Periodic flush every 10 LLM calls
+  // Timer-based periodic flush — ensures persistence even if LLM calls are slow
+  if (!(globalThis as any).__shroudFlushTimer) {
+    (globalThis as any).__shroudFlushTimer = setInterval(() => {
+      try { _flushToDisk(); } catch {}
+    }, 30_000);
+    // Unref so the timer doesn't keep the process alive
+    (globalThis as any).__shroudFlushTimer.unref();
+  }
+
+  // Periodic flush every 5 LLM calls
   let _flushCounter = 0;
   const _origRecordCall = agentTracker.recordLlmCall.bind(agentTracker);
   agentTracker.recordLlmCall = function(): any {
     const result = _origRecordCall();
-    if (++_flushCounter % 10 === 0) {
+    if (++_flushCounter % 5 === 0) {
       _flushToDisk();
       // Check heartbeat health on all agents
       const hbAlerts = agentTracker.checkHeartbeatHealth();
