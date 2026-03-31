@@ -565,13 +565,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // fetch intercept fires.
     //
     // Guard: event.prompt sometimes contains the USER MESSAGE instead of the
-    // system prompt. Only register if it looks like a system prompt (has
-    // structural markers like framework preamble, identity fields, or metadata).
-    const _looksLikeSystemPrompt = (p: string): boolean =>
-      /(?:- Name:|You are |Conversation info|IDENTITY|SOUL|personality:|role:|purpose:|\bpersonal assistant\b)/i.test(p) ||
-      p.includes("```json") || p.length > 500;
+    // system prompt. Reject short single-line strings that look like user input.
+    const _looksLikeUserMessage = (p: string): boolean =>
+      p.length < 200 && !p.includes("\n") && !/[-•]\s*Name:|Conversation info|```/i.test(p);
 
-    if (typeof event?.prompt === "string" && event.prompt.length > 10 && _looksLikeSystemPrompt(event.prompt)) {
+    if (typeof event?.prompt === "string" && event.prompt.length > 10 && !_looksLikeUserMessage(event.prompt)) {
       const session = agentTracker.registerAgent(event.prompt);
       // DEBUG: log failed identifications — dump messages[0] to find identity
       if (session.agentLabel === "Claude Code" || session.agentLabel === "Unknown Agent") {
