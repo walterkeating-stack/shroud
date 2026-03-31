@@ -427,19 +427,7 @@ export class AgentSessionTracker {
 
   /** Get the current active agent session. */
   getCurrentSession(): AgentSession | null {
-    const session = this._sessions.get(this._currentLabel);
-    if (session) return session;
-    // Fallback: after restart _currentLabel is "" until registerAgent fires.
-    // Return the most recently active session so injection events still get
-    // attributed rather than emitted with no agentLabel.
-    if (this._sessions.size > 0) {
-      let best: AgentSession | null = null;
-      for (const s of this._sessions.values()) {
-        if (!best || s.lastCallAt > best.lastCallAt) best = s;
-      }
-      return best;
-    }
-    return null;
+    return this._sessions.get(this._currentLabel) ?? null;
   }
 
   /** Get the current agent build ID. */
