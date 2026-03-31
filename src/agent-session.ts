@@ -455,6 +455,56 @@ export class AgentSessionTracker {
     return this._sessions.get(label) ?? null;
   }
 
+  /** Save all sessions to a JSON file. Survives gateway restarts. */
+  saveToFile(filePath: string): void {
+    try {
+      const data = this.getAllSessions().map(s => ({
+        agentLabel: s.agentLabel,
+        agentBuildId: s.agentBuildId,
+        sessionId: s.sessionId,
+        llmCallCount: s.llmCallCount,
+        channels: s.channels,
+        classification: s.classification,
+        toolInventory: s.toolInventory,
+        startedAt: s.startedAt,
+        lastCallAt: s.lastCallAt,
+        soulExtract: s.soulExtract,
+      }));
+      const dir = require("path").dirname(filePath);
+      if (!require("fs").existsSync(dir)) require("fs").mkdirSync(dir, { recursive: true });
+      require("fs").writeFileSync(filePath, JSON.stringify(data, null, 2));
+    } catch { /* best-effort */ }
+  }
+
+  /** Load sessions from a JSON file (e.g. after restart). */
+  loadFromFile(filePath: string): void {
+    try {
+      const raw = require("fs").readFileSync(filePath, "utf-8");
+      const data = JSON.parse(raw) as Array<Record<string, unknown>>;
+      for (const entry of data) {
+        const label = entry.agentLabel as string;
+        if (!label || this._sessions.has(label)) continue;
+        this._sessions.set(label, {
+          agentLabel: label,
+          agentBuildId: (entry.agentBuildId as string) || "",
+          sessionId: (entry.sessionId as string) || "",
+          llmCallCount: (entry.llmCallCount as number) || 0,
+          channels: (entry.channels as string[]) || [],
+          classification: (entry.classification as AgentClassification) || { role: "unknown", confidence: 0 },
+          toolInventory: (entry.toolInventory as string[]) || [],
+          startedAt: (entry.startedAt as number) || 0,
+          lastCallAt: (entry.lastCallAt as number) || 0,
+          securityEventCount: 0,
+          detectedModel: "",
+          channelSource: "",
+          soulExtract: (entry.soulExtract as string) || "",
+          cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
+          heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+        });
+      }
+    } catch { /* file may not exist */ }
+  }
+
   /** Mark the start of an LLM call (for response time tracking). */
   markCallStart(): void {
     this._callStartTime = Date.now();

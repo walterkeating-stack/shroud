@@ -150,7 +150,7 @@ export class OpenClawRunner {
               this.gatewayProc.removeListener("exit", onExit);
               this.gatewayProc.kill("SIGKILL");
               resolve(false);
-            }, 5000);
+            }, 10000);
             this.gatewayProc.on("exit", onExit);
           });
           if (!exited) {
@@ -612,11 +612,22 @@ export class OpenClawRunner {
     const from = scenario.whatsAppFrom || "+353850000001";
     const jid = from.replace("+", "") + "@s.whatsapp.net";
     const injectPort = 9301; // MOCK_WHATSAPP_INJECT_PORT
-    await this._httpReq("POST", `http://127.0.0.1:${injectPort}/inject`, {
-      from: jid,
-      text: scenario.message,
-      pushName: "Test User",
-    });
+    // Retry inject — the server inside the gateway may take a moment to bind
+    let injected = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        await this._httpReq("POST", `http://127.0.0.1:${injectPort}/inject`, {
+          from: jid,
+          text: scenario.message,
+          pushName: "Test User",
+        });
+        injected = true;
+        break;
+      } catch {
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    if (!injected) throw new Error(`Failed to inject WhatsApp message after 10 attempts (port ${injectPort})`);
 
     // Wait for mock WhatsApp to receive outbound message (agent response)
     await this._waitFor(

@@ -91,8 +91,8 @@ function isInsideQuotes(text: string, matchStart: number, matchEnd: number): boo
 
   // Check for 'like "X"' or 'such as "X"' or 'phrases like "X"' patterns
   // These indicate the text is being discussed, not executed
-  const discussionPatterns = /(?:like|such\s+as|example|e\.g\.|called|known\s+as|termed|phrase|pattern|classified|documented|described|first\s+appeared)/i;
-  if (discussionPatterns.test(before.slice(-100))) return true;
+  const discussionPatterns = /(?:like|such\s+as|example|e\.g\.|called|known\s+as|termed|phrase|pattern|classified|documented|described|first\s+appeared|explain|according\s+to|OWASP|research|analysis|investigate|how\s+do|how\s+does|what\s+(?:is|are)|look\s+for|detect)/i;
+  if (discussionPatterns.test(before.slice(-150))) return true;
 
   return false;
 }

@@ -111,7 +111,12 @@ if (process.env.MOCK_WHATSAPP_PORT) {
       res.end('Not found');
     }
   });
-  _injectServer.listen(_injectPort, '127.0.0.1', () => {});
+  _injectServer.on('error', function(err) {
+    console.error('[mock-whatsapp] Inject server failed to bind on ' + _injectPort + ': ' + err.message);
+  });
+  _injectServer.listen(_injectPort, '127.0.0.1', function() {
+    globalThis.__mockWhatsAppInjectReady = true;
+  });
 
   // Message injection function
   function _injectMessage(msg) {

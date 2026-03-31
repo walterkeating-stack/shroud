@@ -96,6 +96,11 @@ export class SecurityEventBus {
     return this._events;
   }
 
+  /** Clear all events. Used by test harness to isolate scenarios. */
+  clearEvents(): void {
+    this._events.length = 0;
+  }
+
   getStats(): SecurityStats {
     const stats: SecurityStats = {
       totalEvents: this._events.length,

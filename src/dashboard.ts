@@ -68,7 +68,7 @@ export function startDashboard(
 
     // CORS headers for dashboard UIs
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (method === "OPTIONS") {
@@ -88,6 +88,13 @@ export function startDashboard(
           json(res, 500, { error: err.message });
         }
       });
+      return;
+    }
+
+    // DELETE /api/events — clear event queue (used by test harness)
+    if (method === "DELETE" && url === "/api/events") {
+      deps.securityBus?.clearEvents();
+      json(res, 200, { ok: true });
       return;
     }
 

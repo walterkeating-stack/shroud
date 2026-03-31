@@ -23,6 +23,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
@@ -465,23 +466,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // Reload persisted agent sessions from disk
   try {
     if (existsSync(_agentSessionFile)) {
-      const saved = JSON.parse(readFileSync(_agentSessionFile, "utf-8")) as any[];
-      for (const s of saved) {
-        if (s.agentLabel && !agentTracker.getSessionByLabel(s.agentLabel)) {
-          const session = agentTracker.registerAgent(
-            `"conversation_label": "#${s.agentLabel.toLowerCase().replace(/\s+/g, "-")}"`
-          );
-          session.llmCallCount = s.llmCallCount || 0;
-          session.securityEventCount = s.securityEventCount || 0;
-          session.detectedModel = s.detectedModel || "unknown";
-          session.channelSource = s.channelSource || "";
-          session.toolInventory = s.toolInventory || [];
-          session.soulExtract = s.soulExtract || "";
-          session.channels = s.channels || [];
-          if (s.classification) session.classification = s.classification;
-          if (s.startedAt) session.startedAt = s.startedAt;
-        }
-      }
+      agentTracker.loadFromFile(_agentSessionFile);
     }
   } catch {}
 
@@ -757,7 +742,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // so scan here in the hook to catch injections before obfuscation.
     {
       const hookDetector = getDetectorForAgent();
-      if (hookDetector && securityBus && role !== "assistant") {
+      if (hookDetector && securityBus && role === "user") {
         try {
           let textToScan = "";
           if (typeof msg.content === "string") textToScan = msg.content;

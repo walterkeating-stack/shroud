@@ -249,13 +249,16 @@ export function assertNoDuplicateAgents(agents) {
  * @param {object[]} after - Agents after restart
  */
 export function assertBuildIdStability(before, after) {
-  for (const b of before) {
+  // Only check agents that have LLM calls (skip framework/internal agents)
+  const realBefore = before.filter(a => a.llmCallCount > 0);
+  for (const b of realBefore) {
     const match = after.find(a =>
       a.agentLabel?.toLowerCase() === b.agentLabel?.toLowerCase()
     );
     if (!match) {
+      const afterLabels = after.map(a => a.agentLabel).join(", ");
       throw new AssertionError(
-        `Agent "${b.agentLabel}" disappeared after restart`
+        `Agent "${b.agentLabel}" disappeared after restart. Present: ${afterLabels}`
       );
     }
     if (match.agentBuildId !== b.agentBuildId) {

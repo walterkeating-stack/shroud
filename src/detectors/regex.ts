@@ -275,7 +275,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   // --- API keys and tokens ---
   {
     name: "api_key_generic",
-    pattern: /\b(?:sk|pk|api|key|token|secret|access)[-_][a-zA-Z0-9\-_]{20,}\b/gi,
+    pattern: /\b(?:sk|pk|api|key|token|secret|access)[-_][a-zA-Z0-9\-_]{12,}\b/gi,
     category: Category.API_KEY,
     confidence: 0.95,
   },
@@ -600,6 +600,14 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     pattern: /\b([A-Z][A-Z0-9]{1,10}(?:-[A-Z][A-Z0-9]{0,10}){1,5}-\d{1,3})\b/g,
     category: Category.HOSTNAME,
     confidence: 0.80,
+  },
+
+  {
+    // Internal FQDNs: core-fw-01.internal, db-master.prod.internal, app.corp, etc.
+    name: "internal_fqdn",
+    pattern: /\b([a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?)*\.(?:internal|local|corp|intra|lan))\b/gi,
+    category: Category.HOSTNAME,
+    confidence: 0.85,
   },
 
   // --- Syslog / monitoring (#5) ---
