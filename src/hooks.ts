@@ -432,22 +432,44 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     : _rawPersistDir;
   const _agentSessionFile = _persistDir + "/agent-sessions.json";
 
+  const _isCleanLabel = (s: { agentLabel: string; llmCallCount: number }): boolean =>
+    s.llmCallCount > 0 && s.agentLabel !== "Unknown Agent" &&
+    s.agentLabel.length < 30 && s.agentLabel.split(/\s+/).length <= 4 &&
+    !/@/.test(s.agentLabel) && !/\d{1,3}\.\d{1,3}\.\d{1,3}/.test(s.agentLabel) &&
+    !/\+\d{5,}/.test(s.agentLabel) &&
+    !s.agentLabel.endsWith(":") && !s.agentLabel.includes("(") &&
+    !/^(conversation|session|sender|channel|message|rules|metadata)/i.test(s.agentLabel);
+
   function _flushToDisk(): void {
     try {
       if (profiler) profiler.finalizeSession();
-      // Only persist real agent sessions — must have calls, a short clean label,
-      // and no PII-like content (IPs, emails, phone numbers)
-      const sessions = agentTracker.getAllSessions().filter(
-        s => s.llmCallCount > 0 && s.agentLabel !== "Unknown Agent" &&
-             s.agentLabel.length < 30 && s.agentLabel.split(/\s+/).length <= 4 &&
-             !/@/.test(s.agentLabel) && !/\d{1,3}\.\d{1,3}\.\d{1,3}/.test(s.agentLabel) &&
-             !/\+\d{5,}/.test(s.agentLabel) &&
-             !s.agentLabel.endsWith(":") && !s.agentLabel.includes("(") &&
-             !/^(conversation|session|sender|channel|message|rules|metadata)/i.test(s.agentLabel)
-      );
-      if (sessions.length > 0) {
+
+      const inMemory = agentTracker.getAllSessions().filter(_isCleanLabel);
+
+      // Merge with existing file — don't overwrite agents that aren't in memory
+      // (they may not have made calls this session but are still valid)
+      let merged = new Map<string, any>();
+      try {
+        const existing = JSON.parse(readFileSync(_agentSessionFile, "utf-8")) as any[];
+        for (const entry of existing) {
+          if (entry.agentLabel) merged.set(entry.agentLabel, entry);
+        }
+      } catch { /* file may not exist */ }
+
+      // In-memory sessions overwrite on-disk entries (fresher data)
+      for (const s of inMemory) {
+        merged.set(s.agentLabel, {
+          agentLabel: s.agentLabel, agentBuildId: s.agentBuildId,
+          sessionId: s.sessionId, llmCallCount: s.llmCallCount,
+          channels: s.channels, classification: s.classification,
+          toolInventory: s.toolInventory, startedAt: s.startedAt,
+          lastCallAt: s.lastCallAt, soulExtract: s.soulExtract,
+        });
+      }
+
+      if (merged.size > 0) {
         mkdirSync(_persistDir, { recursive: true });
-        writeFileSync(_agentSessionFile, JSON.stringify(sessions, null, 2), "utf-8");
+        writeFileSync(_agentSessionFile, JSON.stringify([...merged.values()], null, 2), "utf-8");
       }
     } catch {}
   }
@@ -541,7 +563,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // event.prompt contains session metadata including channel/conversation labels
     // which identify the agent. Register it here so identity is set BEFORE the
     // fetch intercept fires.
-    if (typeof event?.prompt === "string" && event.prompt.length > 10) {
+    //
+    // Guard: event.prompt sometimes contains the USER MESSAGE instead of the
+    // system prompt. Only register if it looks like a system prompt (has
+    // structural markers like framework preamble, identity fields, or metadata).
+    const _looksLikeSystemPrompt = (p: string): boolean =>
+      /(?:- Name:|You are |Conversation info|IDENTITY|SOUL|personality:|role:|purpose:|\bpersonal assistant\b)/i.test(p) ||
+      p.includes("```json") || p.length > 500;
+
+    if (typeof event?.prompt === "string" && event.prompt.length > 10 && _looksLikeSystemPrompt(event.prompt)) {
       const session = agentTracker.registerAgent(event.prompt);
       // DEBUG: log failed identifications — dump messages[0] to find identity
       if (session.agentLabel === "Claude Code" || session.agentLabel === "Unknown Agent") {
