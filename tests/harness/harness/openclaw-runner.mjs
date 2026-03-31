@@ -1406,7 +1406,7 @@ export class OpenClawRunner {
       SHROUD_STATS_FILE: join(this.stateDir, "shroud-stats.json"),
       // Security extension — enabled via env vars (plugin config validates schema)
       SHROUD_INJECTION_DETECTION: "flag",
-      SHROUD_INJECTION_SCAN_RESPONSES: "true",
+      SHROUD_INJECTION_SCAN_RESPONSES: "false",  // Mock LLM echo mode echoes system prompts, triggering FP injection signatures
       SHROUD_PROFILING_ENABLED: "true",
       SHROUD_PROFILING_MODE: "learning",
       SHROUD_DASHBOARD: "true",

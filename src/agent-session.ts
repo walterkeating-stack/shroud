@@ -427,7 +427,19 @@ export class AgentSessionTracker {
 
   /** Get the current active agent session. */
   getCurrentSession(): AgentSession | null {
-    return this._sessions.get(this._currentLabel) ?? null;
+    const session = this._sessions.get(this._currentLabel);
+    if (session) return session;
+    // Fallback: after restart _currentLabel is "" until registerAgent fires.
+    // Return the most recently active session so injection events still get
+    // attributed rather than emitted with no agentLabel.
+    if (this._sessions.size > 0) {
+      let best: AgentSession | null = null;
+      for (const s of this._sessions.values()) {
+        if (!best || s.lastCallAt > best.lastCallAt) best = s;
+      }
+      return best;
+    }
+    return null;
   }
 
   /** Get the current agent build ID. */
@@ -501,6 +513,16 @@ export class AgentSessionTracker {
           cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
           heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
         });
+      }
+      // Set _currentLabel to the most recently active loaded session so that
+      // events emitted before the first registerAgent() call are attributed.
+      if (this._sessions.size > 0 && !this._currentLabel) {
+        let best = "";
+        let bestTime = 0;
+        for (const s of this._sessions.values()) {
+          if (s.lastCallAt > bestTime) { bestTime = s.lastCallAt; best = s.agentLabel; }
+        }
+        if (best) this._currentLabel = best;
       }
     } catch { /* file may not exist */ }
   }
@@ -773,6 +795,12 @@ function _extractLabelFromText(text: string): string | null {
     if (isFrameworkPreamble(captured)) return false;
     // "You are now X" is almost always an injection, never a real identity
     if (captured.startsWith("now ")) return false;
+    // Reject common injection role patterns that try to override identity
+    if (/^(?:an?\s+)?(?:evil|malicious|unrestricted|unfiltered|jailbroken|hacker|harmful)\b/i.test(captured)) return false;
+    if (/\b(?:without\s+restrict|no\s+(?:rules|limits|ethics|guardrails|safety)|ignore\s+(?:all|previous|safety))\b/i.test(captured)) return false;
+    // "Your new name is EvilBot" produces "EvilBot" — reject single-word ALL-lowercase names
+    // that are common injection artefacts (real agent names are multi-word or title-cased)
+    if (/^[a-z]+$/.test(captured) && captured.length < 12) return false;
     return true;
   });
   if (realRoleMatches.length > 0) {

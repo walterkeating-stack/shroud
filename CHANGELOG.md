@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.3.0] - 2026-03-30
+## [2.3.0] - 2026-03-31
 
 ### Added — Security Extension: Agent Application-Layer Firewall
 
@@ -87,10 +87,16 @@ All notable changes to this project will be documented in this file.
 - Full documentation: docs/SECURITY.md
 
 **Testing:**
-- 1,285 unit tests (30 files) + 359 harness = 1,644 total
-- Agent identity live tests (16 scenarios: channel labels, SOUL.md, classification)
+- 1,297 unit tests (31 files) + 359 harness = 1,656 total
+- Agent identity live tests (22 scenarios: channel labels, SOUL.md, classification)
 - Tool guard: 55 patterns across 8 categories
 - Memory leak and load tests (bounded growth, <5ms per 1KB payload)
+
+### Fixed
+
+- **Agent session attribution after restart**: `getCurrentSession()` falls back to most recently active session when `_currentLabel` is empty (e.g. after restart before first `registerAgent` call). `loadFromFile` now sets `_currentLabel` to the last active persisted session.
+- **Preamble injection label resilience**: strengthened `_extractLabelFromText` filter — rejects injection role names (evil, hacker, unrestricted, jailbroken), single-word lowercase artefacts, and "no rules/ethics/guardrails" patterns.
+- **Response scanning false positives in Docker E2E**: disabled `SHROUD_INJECTION_SCAN_RESPONSES` in test harness — mock LLM echo mode echoes system prompts which triggers false injection signatures that don't occur in production.
 
 **Zero regressions.** Obfuscation pipeline completely untouched. All existing tests pass unchanged.
 
