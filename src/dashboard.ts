@@ -2639,12 +2639,15 @@ async function renderTransformer() {
       html += '<div class="card" style="margin-bottom:16px">';
       html += '<h2>Architecture</h2>';
       html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">';
-      html += '<div class="row"><span class="label">Type</span><span class="value">Decoder-only (GPT-2 style)</span></div>';
-      html += '<div class="row"><span class="label">Layers</span><span class="value">2</span></div>';
-      html += '<div class="row"><span class="label">Attention Heads</span><span class="value">4</span></div>';
+      html += '<div class="row"><span class="label">Type</span><span class="value">Decoder-only, intent-conditioned</span></div>';
+      html += '<div class="row"><span class="label">Layers</span><span class="value">2 (pre-norm, causal mask)</span></div>';
+      html += '<div class="row"><span class="label">Attention Heads</span><span class="value">4 (head_dim=16)</span></div>';
       html += '<div class="row"><span class="label">Hidden Dim</span><span class="value">64</span></div>';
-      html += '<div class="row"><span class="label">FFN Dim</span><span class="value">256</span></div>';
-      html += '<div class="row"><span class="label">Max Sequence</span><span class="value">128 tools</span></div>';
+      html += '<div class="row"><span class="label">FFN Dim</span><span class="value">256 (GELU)</span></div>';
+      html += '<div class="row"><span class="label">Intent Projection</span><span class="value">256 -> 64 (TF-IDF user message)</span></div>';
+      html += '<div class="row"><span class="label">Max Sequence</span><span class="value">128 tool calls</span></div>';
+      html += '<div class="row"><span class="label">Optimizer</span><span class="value">Adam (cosine LR decay)</span></div>';
+      html += '<div class="row"><span class="label">Training</span><span class="value">Self-supervised next-token prediction</span></div>';
       html += '</div>';
       html += '</div>';
 
@@ -2666,17 +2669,34 @@ async function renderTransformer() {
       }
 
       // How it works
-      html += '<div class="card">';
+      html += '<div class="card" style="margin-bottom:16px">';
       html += '<h2>How It Works</h2>';
       html += '<div style="color:var(--text-muted);font-size:12px;line-height:1.8">';
-      html += '<p>The transformer learns the <strong style="color:var(--text-primary)">grammar of normal tool-call sequences</strong> from completed sessions. For each tool call, it predicts what tool should come next based on the session so far.</p>';
-      html += '<p style="margin-top:8px"><strong style="color:var(--text-primary)">Surprise score</strong> = 1 - P(actual tool). High surprise means the agent did something the model has never learned to expect — a signal of injection or hijacking.</p>';
+      html += '<p>A <strong style="color:var(--text-primary)">mini transformer</strong> learns the grammar of normal tool-call sequences from completed agent sessions. For each tool call, it predicts what tool should come next — conditioned on <strong style="color:var(--text-primary)">both the sequence so far and the user original message</strong>.</p>';
+      html += '<p style="margin-top:8px"><strong style="color:var(--text-primary)">Intent conditioning:</strong> The user message is embedded via TF-IDF (256-dim) and projected into the transformer hidden space at position 0. Every tool token attends to this intent vector through multi-head self-attention. This means "read secrets.env" gets different surprise depending on whether the user asked about secrets vs bugs.</p>';
+      html += '<p style="margin-top:8px"><strong style="color:var(--text-primary)">Multi-head attention:</strong> 4 attention heads each learn different aspects of tool sequences. The causal mask ensures each position only sees earlier tools — same principle as GPT, applied to tool names instead of language.</p>';
+      html += '<p style="margin-top:8px"><strong style="color:var(--text-primary)">Surprise score</strong> = 1 - P(actual tool). The softmax output gives a probability distribution over all tools. High surprise means the agent did something the model has never learned to expect in this context.</p>';
       html += '<p style="margin-top:8px"><span style="color:var(--success)">Green</span> = expected (surprise &lt; 0.5) &nbsp; ';
       html += '<span style="color:var(--medium)">Yellow</span> = unusual (0.5-0.85) &nbsp; ';
-      html += '<span style="color:var(--critical)">Red</span> = anomalous (&gt; 0.85 = event fired)</p>';
+      html += '<span style="color:var(--critical)">Red</span> = anomalous (&gt; 0.85 = security event fired)</p>';
+      html += '<p style="margin-top:8px"><strong style="color:var(--text-primary)">Training:</strong> Self-supervised — predicts next tool from completed sessions. Adam optimizer with cosine learning rate decay. Retrains every 50 new sessions. ~1 second on CPU. Zero external dependencies.</p>';
       if (!data.modelLoaded) {
-        html += '<p style="margin-top:12px;color:var(--medium)">Model is in <strong>cold start</strong> — accumulating session data. Training activates automatically after 30 completed sessions.</p>';
+        html += '<p style="margin-top:12px;padding:10px;background:var(--medium-bg);border-radius:6px;color:var(--medium)"><strong>Cold start</strong> — accumulating session data (' + data.trainingSessions + ' workflows, need 30). Training activates automatically once enough data is available. Scoring is neutral until then.</p>';
       }
+      html += '</div>';
+      html += '</div>';
+
+      // Detection layers overview
+      html += '<div class="card">';
+      html += '<h2>Detection Stack</h2>';
+      html += '<div style="color:var(--text-muted);font-size:12px;line-height:1.8">';
+      html += '<p>The transformer is one of four behavioral detection layers. Each catches different attack types:</p>';
+      html += '<table style="width:100%;margin-top:8px;font-size:11px;border-collapse:collapse">';
+      html += '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px;color:var(--accent)">Vector Embeddings</td><td style="padding:6px">"Is this workflow geometrically novel?" — n-gram distance from learned centroid</td></tr>';
+      html += '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px;color:var(--accent)">Semantic Drift</td><td style="padding:6px">"Is the agent still doing what the user asked?" — cosine similarity to user intent</td></tr>';
+      html += '<tr style="border-bottom:1px solid var(--border)"><td style="padding:6px;color:var(--accent)">Causal Coherence</td><td style="padding:6px">"Does this action follow from what the agent just read?" — result-action z-score</td></tr>';
+      html += '<tr><td style="padding:6px;color:var(--accent)">Transformer</td><td style="padding:6px">"Is this tool call grammatically expected given the sequence + user intent?" — learned next-tool prediction</td></tr>';
+      html += '</table>';
       html += '</div>';
       html += '</div>';
     }
