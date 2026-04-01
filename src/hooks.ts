@@ -918,9 +918,19 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       // Register honeypot values with the obfuscator's allowlist so they
       // survive inbound obfuscation (otherwise Shroud neutralizes its own tripwires)
       obfuscator.addRuntimeAllowlist(_honeypot.getTokens().map(t => t.value));
-      const honeypotBlock = _honeypot.buildContextBlock();
-      if (honeypotBlock) {
-        obfuscatedPrompt = obfuscatedPrompt + honeypotBlock;
+      _honeypot.buildContextBlock(); // generates fragments
+      // Scatter honeypot fragments across the prompt — not clustered together.
+      // Insert each fragment at a different position so they look like
+      // incidental context from different system components.
+      const fragments = _honeypot.getContextFragments();
+      if (fragments.length > 0 && obfuscatedPrompt.length > 100) {
+        const lines = obfuscatedPrompt.split("\n");
+        const step = Math.max(1, Math.floor(lines.length / (fragments.length + 1)));
+        for (let f = 0; f < fragments.length; f++) {
+          const insertAt = Math.min((f + 1) * step, lines.length);
+          lines.splice(insertAt, 0, fragments[f]);
+        }
+        obfuscatedPrompt = lines.join("\n");
       }
     }
 

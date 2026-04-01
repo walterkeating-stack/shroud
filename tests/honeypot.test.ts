@@ -69,13 +69,19 @@ describe("HoneypotManager", () => {
 
   // ─── Context block ───
 
-  test("builds context block containing all tokens", () => {
-    const block = hp.buildContextBlock();
-    // Should look like env vars, not HTML comments
-    expect(block).toContain("SLACK_WEBHOOK_URL=");
-    expect(block).toContain("DATABASE_URL=");
-    for (const token of hp.getTokens()) {
-      expect(block).toContain(token.value);
+  test("builds scattered context fragments containing all tokens", () => {
+    hp.buildContextBlock(); // generates fragments
+    const fragments = hp.getContextFragments();
+    expect(fragments.length).toBeGreaterThanOrEqual(4);
+    // Each fragment should contain exactly one honeypot value
+    const allValues = hp.getTokens().map(t => t.value);
+    for (const frag of fragments) {
+      const found = allValues.some(v => frag.includes(v));
+      expect(found).toBe(true);
+    }
+    // Fragments should be natural sentences, not KEY=VALUE format
+    for (const frag of fragments) {
+      expect(frag).not.toMatch(/^[A-Z_]+=\S/); // no env var format
     }
   });
 
