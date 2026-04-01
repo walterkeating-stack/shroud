@@ -1,8 +1,0 @@
-{
-  "default": {
-    "injectionDetection": "flag",
-    "injectionMinSeverity": "medium",
-    "injectionDisabledSignatures": []
-  },
-  "agents": {}
-}

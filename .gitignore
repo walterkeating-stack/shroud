@@ -5,3 +5,5 @@ dist/
 docs/enterprise-implementation-plan.md
 docs/plan-hot-reload-and-policy.md
 docs/plan-openclaw-compat-pipeline.md
+logs-*/
+*.tgz
