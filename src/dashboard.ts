@@ -2434,6 +2434,19 @@ const VIZ_HTML = `<!DOCTYPE html>
   #legend .dot { width: 10px; height: 10px; border-radius: 50%; }
   #pca-info { position: fixed; bottom: 16px; right: 16px; z-index: 100; background: rgba(30,41,59,0.9);
               border: 1px solid #334155; border-radius: 6px; padding: 8px 12px; font-size: 10px; color: #64748b; }
+  #guide { position: fixed; top: 60px; right: 16px; z-index: 100; background: rgba(15,23,42,0.95);
+           border: 1px solid #334155; border-radius: 8px; padding: 16px 20px; font-size: 11px;
+           max-width: 320px; line-height: 1.6; display: none; }
+  #guide h3 { color: #a855f7; font-size: 13px; margin-bottom: 8px; }
+  #guide .section { margin-bottom: 10px; }
+  #guide .label { color: #60a5fa; font-weight: 600; }
+  #guide .good { color: #22c55e; }
+  #guide .bad { color: #ef4444; }
+  #guide .warn { color: #eab308; }
+  #guide .muted { color: #64748b; font-size: 10px; }
+  .help-btn { padding: 8px 12px; background: rgba(30,41,59,0.9); border: 1px solid #a855f7; border-radius: 6px;
+              color: #a855f7; cursor: pointer; font-size: 12px; font-family: inherit; }
+  .help-btn:hover { background: rgba(168,85,247,0.15); }
 </style>
 </head>
 <body>
@@ -2442,11 +2455,13 @@ const VIZ_HTML = `<!DOCTYPE html>
   <button class="tab" onclick="switchView('clusters')">Workflow Clusters</button>
   <button class="tab" onclick="switchView('coherence')">Causal Coherence</button>
   <button class="tab" onclick="switchView('delegation')">Delegation Tree</button>
+  <button class="help-btn" onclick="toggleGuide()">? How to Read</button>
 </div>
 <div id="legend"></div>
 <div id="info"></div>
 <div id="tooltip"></div>
 <div id="pca-info"></div>
+<div id="guide"></div>
 
 <script type="importmap">
 { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
@@ -2516,12 +2531,41 @@ function clearScene() {
   pointMeshes = []; edgeMeshes = []; clusterMeshes = [];
 }
 
+// Create text sprite for 3D labels
+function makeLabel(text, color) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = 256; canvas.height = 64;
+  ctx.font = 'bold 24px monospace';
+  ctx.fillStyle = color || '#e2e8f0';
+  ctx.textAlign = 'center';
+  ctx.fillText(text.slice(0, 20), 128, 40);
+  const tex = new THREE.CanvasTexture(canvas);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(2, 0.5, 1);
+  return sprite;
+}
+
 // Render data
 function renderData(data) {
   clearScene();
 
+  const points = data.points || [];
+  const edges = data.edges || [];
+
+  // Empty state
+  if (points.length === 0) {
+    const label = makeLabel('No data yet — waiting for agent sessions', '#64748b');
+    label.position.set(0, 2, 0);
+    label.scale.set(6, 1.5, 1);
+    scene.add(label);
+    pointMeshes.push(label);
+    return;
+  }
+
   // Points
-  for (const pt of (data.points || [])) {
+  for (const pt of points) {
     const geo = new THREE.SphereGeometry(0.15, 16, 16);
     const mat = new THREE.MeshPhongMaterial({ color: pt.color || '#ffffff', emissive: pt.color || '#ffffff', emissiveIntensity: 0.3 });
     const mesh = new THREE.Mesh(geo, mat);
@@ -2529,6 +2573,14 @@ function renderData(data) {
     mesh.userData = { label: pt.label, metadata: pt.metadata };
     scene.add(mesh);
     pointMeshes.push(mesh);
+
+    // Text label above node
+    if (pt.label) {
+      const sprite = makeLabel(pt.label, pt.color || '#94a3b8');
+      sprite.position.set(pt.x, (pt.z || 0) + 0.35, pt.y);
+      scene.add(sprite);
+      pointMeshes.push(sprite);
+    }
   }
 
   // Edges
@@ -2548,7 +2600,7 @@ function renderData(data) {
     edgeMeshes.push(line);
   }
 
-  // Clusters (transparent spheres)
+  // Clusters (transparent spheres with labels)
   for (const cl of (data.clusters || [])) {
     const geo = new THREE.SphereGeometry(cl.radius || 1, 32, 32);
     const mat = new THREE.MeshPhongMaterial({ color: cl.color || '#3b82f6', transparent: true, opacity: 0.1, side: THREE.DoubleSide });
@@ -2556,6 +2608,15 @@ function renderData(data) {
     mesh.position.set(cl.center.x, cl.center.z || 0, cl.center.y);
     scene.add(mesh);
     clusterMeshes.push(mesh);
+
+    // Cluster label
+    if (cl.label) {
+      const sprite = makeLabel(cl.label.toUpperCase(), cl.color || '#3b82f6');
+      sprite.position.set(cl.center.x, (cl.center.z || 0) + (cl.radius || 1) + 0.5, cl.center.y);
+      sprite.scale.set(3, 0.75, 1);
+      scene.add(sprite);
+      clusterMeshes.push(sprite);
+    }
   }
 
   // Update PCA info
@@ -2625,6 +2686,66 @@ window.switchView = function(view) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector('.tab[onclick*="' + view + '"]')?.classList.add('active');
   loadView(view);
+  updateGuide(view);
+};
+
+// Interpretation guide
+const guides = {
+  trajectory: '<h3>Reading: Intent Trajectory</h3>'
+    + '<div class="section"><span class="label">What you see:</span> The user message is the green origin point. Each tool call is a node. Lines connect them in execution order.</div>'
+    + '<div class="section"><span class="label">Colors mean:</span><br>'
+    + '<span class="good">Green</span> = tool call is semantically close to user intent (similarity &gt; 0.5)<br>'
+    + '<span class="warn">Yellow</span> = moderate drift (0.15 - 0.5) — agent is tangenting but may be legitimate<br>'
+    + '<span class="bad">Red</span> = strong drift (&lt; 0.15) — agent is doing something unrelated to the request</div>'
+    + '<div class="section"><span class="label">What to watch for:</span><br>'
+    + '- <span class="good">Smooth arc</span> = healthy session, agent stays on task<br>'
+    + '- <span class="bad">Sharp angle + color snap</span> = injection point — the exact tool call where control was hijacked<br>'
+    + '- Gradual yellow drift that returns to green = legitimate tangent (reading docs to fix a bug)</div>'
+    + '<div class="muted">Hover any node to see tool name, similarity score, and delta from previous step.</div>',
+
+  clusters: '<h3>Reading: Workflow Clusters</h3>'
+    + '<div class="section"><span class="label">What you see:</span> Each dot is a completed session, positioned by its tool-call sequence fingerprint. Transparent spheres are learned workflow clusters.</div>'
+    + '<div class="section"><span class="label">Cluster labels:</span> Derived from tool patterns — <em>research</em> (read + web_fetch), <em>coding</em> (read + edit + exec), <em>testing</em> (heavy exec), <em>communication</em> (message-heavy), etc.</div>'
+    + '<div class="section"><span class="label">What to watch for:</span><br>'
+    + '- <span class="good">Dots inside clouds</span> = known workflow, agent is doing something it has done before<br>'
+    + '- <span class="bad">Red dots outside all clouds</span> = novel sequence this agent has never exhibited — suspicious<br>'
+    + '- Clusters that grow tighter over time = agent behavior is stabilizing (immune system maturing)</div>'
+    + '<div class="muted">More sessions = more reliable clusters. Learning phase (&lt;5 sessions) has loose boundaries.</div>',
+
+  coherence: '<h3>Reading: Causal Coherence</h3>'
+    + '<div class="section"><span class="label">What you see:</span> Pairs of points connected by lines. <span style="color:#3b82f6">Blue</span> = tool result (what the model received). <span style="color:#f97316">Orange</span> = next action (what the model decided to do).</div>'
+    + '<div class="section"><span class="label">Line length = causal distance:</span><br>'
+    + '<span class="good">Short green line</span> = result and action are semantically related (read Python file → edit Python file)<br>'
+    + '<span class="warn">Medium yellow line</span> = weak but plausible connection<br>'
+    + '<span class="bad">Long red line</span> = result and action are unrelated — the model did something that does not follow from what it just read</div>'
+    + '<div class="section"><span class="label">Why this catches injections:</span><br>'
+    + 'An injection MUST break the causal link — its purpose is to make the model do something unrelated to what it consumed. '
+    + 'A long red line is the injection fingerprint. The exact pair where the line stretches is where control was hijacked.</div>'
+    + '<div class="muted">Z-score flagging activates after 3+ observations of each transition type (e.g. read to edit).</div>',
+
+  delegation: '<h3>Reading: Delegation Tree</h3>'
+    + '<div class="section"><span class="label">What you see:</span> A radial tree. <span class="good">Green center</span> = root agent (talks to user). <span style="color:#3b82f6">Blue</span> = first-level delegates. <span style="color:#a855f7">Purple</span> = sub-delegates (depth 2+).</div>'
+    + '<div class="section"><span class="label">Distance from center:</span> = drift from the user original intent. Sub-agents close to center are still aligned with what the user asked for. Agents far from center have diverged.</div>'
+    + '<div class="section"><span class="label">What to watch for:</span><br>'
+    + '- <span class="good">Tight tree</span> = all agents working coherently toward user goal<br>'
+    + '- <span class="bad">An arm stretching far out</span> = a sub-agent has been hijacked — it drifted from both its delegation instruction AND the root intent<br>'
+    + '- Sub-agents get tighter thresholds (0.10 vs 0.15) because they should be MORE focused, not less</div>'
+    + '<div class="muted">Lines show parent to child delegation. Hover nodes to see delegation message and coherence scores.</div>',
+};
+
+function updateGuide(view) {
+  const el = document.getElementById('guide');
+  el.innerHTML = guides[view] || '';
+}
+
+window.toggleGuide = function() {
+  const el = document.getElementById('guide');
+  if (el.style.display === 'block') {
+    el.style.display = 'none';
+  } else {
+    el.style.display = 'block';
+    updateGuide(currentView);
+  }
 };
 
 // Tooltip on hover
@@ -2659,6 +2780,9 @@ renderer?.domElement?.addEventListener('mousemove', (e) => {
 // Init
 init();
 loadView('trajectory');
+// Auto-show guide on first visit
+document.getElementById('guide').style.display = 'block';
+updateGuide('trajectory');
 
 // Auto-refresh every 5 seconds
 setInterval(() => loadView(currentView), 5000);
