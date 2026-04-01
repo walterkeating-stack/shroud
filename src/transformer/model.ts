@@ -24,6 +24,7 @@ export interface TransformerConfig {
   numLayers: number;     // 2
   ffnDim: number;        // 256
   maxSeqLen: number;     // 128
+  intentDim: number;     // 256 (TF-IDF intent vector dimension)
 }
 
 export interface LayerWeights {
@@ -44,6 +45,8 @@ export interface LayerWeights {
 export interface TransformerWeights {
   tokenEmb: Float64Array;      // vocabSize × hiddenDim
   posEmb: Float64Array;        // maxSeqLen × hiddenDim
+  intentProj: Float64Array;    // intentDim × hiddenDim (projects user intent into hidden space)
+  intentBias: Float64Array;    // hiddenDim
   layers: LayerWeights[];
   finalLnGamma: Float64Array;  // hiddenDim
   finalLnBeta: Float64Array;   // hiddenDim
@@ -55,6 +58,7 @@ export interface TransformerWeights {
 export interface ForwardCache {
   tokenIds: number[];
   seqLen: number;
+  intentVec: Float64Array | null;  // intentDim (raw intent vector, for backprop)
   embedded: Float64Array;      // seqLen × hiddenDim
   layerCaches: LayerCache[];
   finalLnOut: Float64Array;
@@ -91,6 +95,7 @@ export const DEFAULT_CONFIG: TransformerConfig = {
   numLayers: 2,
   ffnDim: 256,
   maxSeqLen: 128,
+  intentDim: 256,
 };
 
 // ─── Model ───
@@ -127,6 +132,11 @@ export class MiniTransformer {
       }
     }
 
+    // Intent projection: Xavier
+    const intentInit = xavier(this.config.intentDim + d);
+    for (let i = 0; i < w.intentProj.length; i++) w.intentProj[i] = intentInit();
+    // intentBias: zero (default)
+
     // Layer weights
     for (const layer of w.layers) {
       // Attention projections: Xavier
@@ -157,33 +167,45 @@ export class MiniTransformer {
   }
 
   /** Forward pass. Returns logits for the last position. */
-  forward(tokenIds: number[]): Float64Array {
-    return this.forwardFull(tokenIds).logits;
+  forward(tokenIds: number[], intentVec?: Float64Array | null): Float64Array {
+    return this.forwardFull(tokenIds, intentVec).logits;
   }
 
   /** Predict next-token probabilities (softmax of logits). */
-  predict(tokenIds: number[]): Float64Array {
-    const logits = this.forward(tokenIds);
+  predict(tokenIds: number[], intentVec?: Float64Array | null): Float64Array {
+    const logits = this.forward(tokenIds, intentVec);
     return softmax(logits, this.config.vocabSize);
   }
 
   /** Forward pass with full cache for backpropagation. */
-  forwardFull(tokenIds: number[]): ForwardCache {
-    const { hiddenDim: d, numHeads, numLayers, ffnDim, vocabSize } = this.config;
+  forwardFull(tokenIds: number[], intentVec?: Float64Array | null): ForwardCache {
+    const { hiddenDim: d, numHeads, numLayers, ffnDim, vocabSize, intentDim } = this.config;
     const T = tokenIds.length;
     const headDim = d / numHeads;
     const w = this.weights;
 
     // 1. Embedding: token + positional
+    //    If intentVec is provided, position 0 (BOS) gets replaced with
+    //    the projected intent vector — the model attends to user intent.
     const embedded = new Float64Array(T * d);
     for (let t = 0; t < T; t++) {
-      // Clamp token ID to vocab range (out-of-range tokens use ID 1 = UNK)
       const tokId = tokenIds[t] < vocabSize ? tokenIds[t] : 1;
       const tokOff = tokId * d;
       const posOff = t * d;
       const embOff = t * d;
       for (let i = 0; i < d; i++) {
         embedded[embOff + i] = w.tokenEmb[tokOff + i] + w.posEmb[posOff + i];
+      }
+    }
+
+    // Project intent vector into position 0 (replaces BOS embedding)
+    if (intentVec && intentVec.length === intentDim) {
+      // intent_hidden = intentVec × intentProj + intentBias
+      const projected = matmul(intentVec, w.intentProj, 1, intentDim, d);
+      addBias(projected, w.intentBias, 1, d);
+      // Replace position 0 embedding (keep positional encoding, add projected intent)
+      for (let i = 0; i < d; i++) {
+        embedded[i] = projected[i] + w.posEmb[i];
       }
     }
 
@@ -307,7 +329,7 @@ export class MiniTransformer {
     const probs = softmax(logits, vocabSize);
 
     return {
-      tokenIds, seqLen: T, embedded,
+      tokenIds, seqLen: T, intentVec: intentVec || null, embedded,
       layerCaches, finalLnOut, finalLnCache,
       lastHidden: lastHiddenRaw, logits, probs,
     };
@@ -535,6 +557,20 @@ export class MiniTransformer {
       }
     }
 
+    // ── Intent projection gradients ──
+    if (cache.intentVec && cache.intentVec.length === this.config.intentDim) {
+      const dPos0 = getRow(dH, 0, d);
+      // dIntentBias = dPos0
+      for (let i = 0; i < d; i++) grad.intentBias[i] += dPos0[i];
+      // dIntentProj = intentVec^T × dPos0 (intentDim×1 × 1×d = intentDim×d)
+      for (let i = 0; i < this.config.intentDim; i++) {
+        for (let j = 0; j < d; j++) {
+          grad.intentProj[i * d + j] += cache.intentVec[i] * dPos0[j];
+        }
+      }
+      // Don't need dIntentVec — it's input data, not a parameter
+    }
+
     return grad;
   }
 
@@ -600,6 +636,8 @@ export class MiniTransformer {
     return {
       tokenEmb: new Float64Array(vocabSize * d),
       posEmb: new Float64Array(maxSeqLen * d),
+      intentProj: new Float64Array(this.config.intentDim * d),
+      intentBias: new Float64Array(d),
       layers,
       finalLnGamma: new Float64Array(d),
       finalLnBeta: new Float64Array(d),
@@ -610,7 +648,7 @@ export class MiniTransformer {
 
   /** Flatten all weight tensors into an ordered list (for serialization). */
   private _flattenWeights(w: TransformerWeights): Float64Array[] {
-    const all: Float64Array[] = [w.tokenEmb, w.posEmb];
+    const all: Float64Array[] = [w.tokenEmb, w.posEmb, w.intentProj, w.intentBias];
     for (const l of w.layers) {
       all.push(
         l.attnLnGamma, l.attnLnBeta,
@@ -642,7 +680,7 @@ export function addGradients(
 
 /** Flatten weights into ordered list (standalone version for optimizer). */
 export function flattenWeightsList(w: TransformerWeights): Float64Array[] {
-  const all: Float64Array[] = [w.tokenEmb, w.posEmb];
+  const all: Float64Array[] = [w.tokenEmb, w.posEmb, w.intentProj, w.intentBias];
   for (const l of w.layers) {
     all.push(
       l.attnLnGamma, l.attnLnBeta,

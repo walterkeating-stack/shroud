@@ -100,8 +100,11 @@ export class TransformerScorer {
     this._modelLoaded = this._loadModel();
   }
 
-  /** Score a tool call given the sequence so far. */
-  scoreToolCall(currentSequence: string[], nextTool: string): ToolPrediction {
+  /** Score a tool call given the sequence so far.
+   *  @param intentVec — 256-dim TF-IDF embedding of the user's message (from DriftDetector).
+   *    When provided, the model conditions predictions on user intent — "read secrets.env"
+   *    gets different surprise depending on whether the user asked about secrets vs bugs. */
+  scoreToolCall(currentSequence: string[], nextTool: string, intentVec?: Float64Array | null): ToolPrediction {
     if (!this._modelLoaded || currentSequence.length < this._config.minSequenceLength) {
       return {
         topK: [],
@@ -125,7 +128,7 @@ export class TransformerScorer {
       inputIds.splice(0, inputIds.length - this._model.config.maxSeqLen);
     }
 
-    const probs = this._model.predict(inputIds);
+    const probs = this._model.predict(inputIds, intentVec);
     const nextId = this._tokenizer.encode(nextTool);
     const nextProb = probs[nextId] || 0;
     const surprise = 1 - nextProb;

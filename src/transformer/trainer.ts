@@ -80,8 +80,10 @@ export class TransformerTrainer {
   /**
    * Train on a list of tool-call sequences (from VectorStore workflows).
    * Each sequence is a string[] of tool names.
+   * Optional intentVecs: parallel array of 256-dim TF-IDF embeddings of the user message
+   * that initiated each session (enables intent-conditioned prediction).
    */
-  trainOnSequences(sequences: string[][]): TrainResult {
+  trainOnSequences(sequences: string[][], intentVecs?: Array<Float64Array | null>): TrainResult {
     const start = Date.now();
     const cfg = this._config;
 
@@ -101,15 +103,18 @@ export class TransformerTrainer {
       }
     }
 
-    // Prepare training examples: (prefix, target) pairs
-    const examples: Array<{ input: number[]; target: number }> = [];
-    for (const seq of data) {
+    // Prepare training examples: (prefix, target, intentVec) triples
+    const examples: Array<{ input: number[]; target: number; intentVec: Float64Array | null }> = [];
+    for (let s = 0; s < data.length; s++) {
+      const seq = data[s];
       const encoded = this._tokenizer.encodeSequence(seq);
+      const intent = intentVecs ? intentVecs[s] || null : null;
       // For each position i (starting from 1, since 0 is BOS), predict position i+1
       for (let i = 1; i < encoded.length - 1; i++) {
         examples.push({
           input: encoded.slice(0, i + 1),     // [BOS, tool_0, ..., tool_i]
           target: encoded[i + 1],             // tool_{i+1}
+          intentVec: intent,
         });
       }
     }
@@ -141,10 +146,10 @@ export class TransformerTrainer {
         let batchLoss = 0;
 
         for (let i = b; i < batchEnd; i++) {
-          const { input, target } = examples[i];
+          const { input, target, intentVec } = examples[i];
 
-          // Forward pass
-          const cache = this._model.forwardFull(input);
+          // Forward pass (with intent vector if available)
+          const cache = this._model.forwardFull(input, intentVec);
           batchLoss += crossEntropyLoss(cache.probs, target);
 
           // Backward pass

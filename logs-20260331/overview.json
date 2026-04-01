@@ -1,0 +1,44 @@
+{
+  "timestamp": "2026-03-31T19:52:09.392Z",
+  "security": {
+    "injectionDetection": "flag",
+    "profilingEnabled": true,
+    "profilingMode": "learning",
+    "totalEvents": 17,
+    "blockedCount": 0,
+    "flaggedCount": 17
+  },
+  "agents": {
+    "total": 1,
+    "totalLlmCalls": 8,
+    "totalSecurityEvents": 8,
+    "withBaseline": 1
+  },
+  "obfuscation": {
+    "storeMappings": 153,
+    "totalObfuscated": 719,
+    "totalDeobfuscated": 0
+  },
+  "anomalyAlerts": 0,
+  "cache": {
+    "totalInput": 243573,
+    "totalOutput": 1904,
+    "totalCacheRead": 14263,
+    "totalCacheWrite": 229298,
+    "hitRatio": 0.05855739347136177,
+    "turns": 4
+  },
+  "externalSignatures": {
+    "version": "0.2.0",
+    "updated": "2026-03-30T14:00:00Z",
+    "count": 26,
+    "loadedAt": "2026-03-31T19:49:15.667Z"
+  },
+  "grading": {
+    "pending": 0,
+    "graded": 7,
+    "truePositive": 3,
+    "falsePositive": 0,
+    "needsReview": 4
+  }
+}

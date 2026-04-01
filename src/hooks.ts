@@ -1391,10 +1391,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
 
       // --- Transformer sequence prediction: check tool-call surprise ---
+      //     Pass the user intent vector from the drift detector so the model
+      //     conditions its predictions on what the user actually asked for.
       if (_transformerScorer && _sessionToolSequence.length >= 3) {
+        const intentVec = _driftDetector?.getProvider()
+          ? (_driftDetector.getReferenceText()
+            ? _driftDetector.getProvider().embed(_driftDetector.getReferenceText())
+            : null)
+          : null;
         const prediction = _transformerScorer.scoreToolCall(
           _sessionToolSequence,
           event.toolName ?? "unknown",
+          intentVec,
         );
         const anomalyEvt = _transformerScorer.checkAnomaly(
           prediction,

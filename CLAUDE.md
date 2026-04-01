@@ -249,11 +249,11 @@ Vector-based behavioral IDS (4 horizons):
 
 Learned next-tool predictor for tool-call anomaly detection. Pure TypeScript, zero dependencies, ~113K parameters.
 
-**Architecture**: Decoder-only transformer, 2 layers, 4 heads, hidden dim 64, FFN dim 256. Causal masking, pre-norm (GPT-2 style). Inference ~1-2ms on CPU.
+**Architecture**: Decoder-only transformer, 2 layers, 4 heads, hidden dim 64, FFN dim 256. Causal masking, pre-norm (GPT-2 style). Intent-conditioned: user message is projected (256→64 via learned projection) into position 0, so all tool tokens attend to user intent via cross-attention. ~130K parameters. Inference ~1-2ms on CPU.
 
-**Training**: Self-supervised next-token prediction on completed sessions from VectorStore. Adam optimizer with cosine LR decay. In-process training (~1s for 500 sequences). Cold start: neutral scores until 30 sessions accumulate, then auto-trains.
+**Training**: Self-supervised next-token prediction on completed sessions from VectorStore. Adam optimizer with cosine LR decay. In-process training (~1s for 500 sequences). Cold start: neutral scores until 30 sessions accumulate, then auto-trains. Retrains every 50 new sessions.
 
-**Scoring**: On each `before_tool_call`, feeds current session's tool sequence through the model. `surprise = 1 - P(actual_next_tool)`. Sliding window for session-level anomaly score. Events emitted when surprise > threshold.
+**Scoring**: On each `before_tool_call`, feeds current session's tool sequence + user intent vector through the model. `surprise = 1 - P(actual_next_tool)`. Sliding window for session-level anomaly score. Events emitted when surprise > threshold. Softmax predictions logged for all calls.
 
 | File | What |
 |------|------|
