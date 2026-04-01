@@ -245,6 +245,36 @@ Vector-based behavioral IDS (4 horizons):
 | `src/detectors/honeypot.ts` | Fake credential injection as zero-FP tripwires |
 | `src/detectors/phantom-tools.ts` | Canary tool definitions that catch injection |
 
+### Mini Transformer (feature/transformer)
+
+Learned next-tool predictor for tool-call anomaly detection. Pure TypeScript, zero dependencies, ~113K parameters.
+
+**Architecture**: Decoder-only transformer, 2 layers, 4 heads, hidden dim 64, FFN dim 256. Causal masking, pre-norm (GPT-2 style). Inference ~1-2ms on CPU.
+
+**Training**: Self-supervised next-token prediction on completed sessions from VectorStore. Adam optimizer with cosine LR decay. In-process training (~1s for 500 sequences). Cold start: neutral scores until 30 sessions accumulate, then auto-trains.
+
+**Scoring**: On each `before_tool_call`, feeds current session's tool sequence through the model. `surprise = 1 - P(actual_next_tool)`. Sliding window for session-level anomaly score. Events emitted when surprise > threshold.
+
+| File | What |
+|------|------|
+| `src/transformer/linalg.ts` | Float64Array matrix ops: matmul, softmax, layerNorm, GELU + backward |
+| `src/transformer/tokenizer.ts` | Dynamic tool vocabulary (max 128 tokens, 4 special + tools) |
+| `src/transformer/model.ts` | Forward + backward pass, weight init (Xavier/sinusoidal), serialization |
+| `src/transformer/trainer.ts` | Training loop, Adam optimizer, gradient clipping, LR scheduling |
+| `src/transformer/scorer.ts` | Inference bridge: scoring, cold start, persistence, retraining trigger |
+
+**Config:**
+
+| Var | Default | What |
+|-----|---------|------|
+| `SHROUD_TRANSFORMER_ENABLED` | auto (with dashboard) | Enable transformer predictor |
+| `SHROUD_TRANSFORMER_THRESHOLD` | 0.85 | Surprise score to trigger event |
+| `SHROUD_TRANSFORMER_WINDOW` | 10 | Sliding window for session score |
+| `SHROUD_TRANSFORMER_MIN_SESSIONS` | 30 | Min sessions before first training |
+| `SHROUD_TRANSFORMER_TRAIN_INTERVAL` | 50 | Sessions between retraining |
+
+**Persistence**: `~/.shroud/profiles/transformer-weights.bin` (Float64 binary) + `transformer-config.json` (vocab, model config, training metadata).
+
 ### LLM Event Grading
 
 The grader batches security events and sends them to the Anthropic API for classification as TRUE_POSITIVE, FALSE_POSITIVE, or NEEDS_REVIEW.
