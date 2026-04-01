@@ -40,6 +40,7 @@ import { extractIntentSignals, checkToolAlignment, checkEgressAttempt, ToolSeque
 import type { IntentSignals } from "./detectors/tool-intent.js";
 import { createTurnContext, validateToolResult, checkExfilChain, checkNovelToolUsage } from "./detectors/result-validator.js";
 import { HoneypotManager } from "./detectors/honeypot.js";
+import { registerPhantomTools } from "./detectors/phantom-tools.js";
 import type { TurnContext } from "./detectors/result-validator.js";
 import { PolicyEngine } from "./policy.js";
 import { AgentRegistry } from "./agent-registry.js";
@@ -578,6 +579,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const _toolSequence = new ToolSequenceTracker();
   // Honeypot manager — injects fake secrets as tripwires
   const _honeypot = new HoneypotManager();
+
+  // Phantom tools — canary tool definitions that catch injection through action.
+  // Only register once per process (the tools persist across plugin reloads).
+  if (config.honeypotEnabled && !(globalThis as any).__shroudPhantomToolsRegistered) {
+    (globalThis as any).__shroudPhantomToolsRegistered = true;
+    registerPhantomTools(api, (event, toolName, params) => {
+      const agentSession = agentTracker.getCurrentSession();
+      event.agentBuildId = agentSession?.agentBuildId;
+      event.agentLabel = agentSession?.agentLabel;
+      event.agentSessionId = agentSession?.sessionId;
+      ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(event);
+      agentTracker.recordSecurityEvent(1);
+      api.logger?.warn(`[shroud] PHANTOM TOOL TRIPPED: ${toolName} — confirmed injection`);
+    });
+  }
 
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
