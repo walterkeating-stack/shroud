@@ -793,6 +793,69 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
+
+  /* ── Mobile: < 768px ── */
+  @media (max-width: 768px) {
+    .header { padding: 0 14px; height: 48px; }
+    .header .subtitle { display: none; }
+    .header h1 { font-size: 14px; }
+    .logo-icon { width: 24px; height: 24px; font-size: 12px; }
+
+    .tabs { padding: 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab { padding: 10px 14px; font-size: 11px; white-space: nowrap; }
+
+    .grid { grid-template-columns: 1fr; gap: 10px; padding: 12px; }
+    .card { padding: 14px; }
+    .card h2 { font-size: 10px; margin-bottom: 10px; }
+    .card-wide { grid-column: 1; }
+
+    .stat { font-size: 24px; }
+    .stat-row { gap: 16px; flex-wrap: wrap; }
+    .stat-label { font-size: 10px; }
+
+    .agent-card { padding: 12px; }
+    .agent-header { flex-direction: column; align-items: flex-start; gap: 6px; }
+    .agent-name { font-size: 13px; }
+    .agent-stats { flex-wrap: wrap; gap: 10px; }
+    .agent-meta { font-size: 10px; gap: 8px; }
+
+    .event { padding: 8px 10px; }
+    .event .match { font-size: 10px; padding: 3px 6px; }
+    .events-list { max-height: 300px; }
+
+    .data-table { font-size: 11px; }
+    .data-table th, .data-table td { padding: 6px 8px; }
+
+    .policy-section { padding: 12px; }
+    .rule-card { padding: 14px; }
+    .btn { padding: 6px 12px; font-size: 11px; }
+    .btn-group { flex-wrap: wrap; }
+
+    .row { font-size: 11px; padding: 6px 0; }
+    .pill { font-size: 9px; padding: 1px 6px; }
+
+    .toast { bottom: 12px; right: 12px; left: 12px; text-align: center; }
+  }
+
+  /* ── Small mobile: < 480px ── */
+  @media (max-width: 480px) {
+    .header { padding: 0 10px; }
+    .header .logo { gap: 8px; }
+    .live-indicator span:not(.live-dot) { display: none; }
+
+    .grid { padding: 8px; gap: 8px; }
+    .card { padding: 12px; border-radius: 6px; }
+
+    .stat { font-size: 20px; }
+    .stat-row { gap: 12px; }
+
+    .agent-card { padding: 10px; }
+    .agent-role { display: none; }
+    .agent-stats { font-size: 10px; }
+
+    .tabs .tab { padding: 8px 10px; font-size: 10px; }
+  }
 </style>
 </head>
 <body>
