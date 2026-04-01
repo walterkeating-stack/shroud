@@ -1494,13 +1494,13 @@ async function refresh() {
 
       // Tool frequency (top 5)
       const tf = beh.toolFrequency || {};
-      const topTools = Object.entries(tf).sort((a,b) => (b[1] as number) - (a[1] as number)).slice(0, 5);
+      const topTools = Object.entries(tf).sort((a,b) => b[1] - a[1]).slice(0, 5);
       if (topTools.length > 0) {
-        const maxCount = topTools[0][1] as number;
+        const maxCount = topTools[0][1];
         html += '<div style="margin-top:8px;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px">Tool Usage</div>';
         html += '<div style="margin-top:4px">';
         for (const [name, count] of topTools) {
-          const pct = Math.round(((count as number) / maxCount) * 100);
+          const pct = Math.round((count / maxCount) * 100);
           html += '<div style="display:flex;align-items:center;gap:6px;margin-top:2px;font-size:11px">';
           html += '<span style="width:80px;text-align:right;color:var(--text-muted)">' + name + '</span>';
           html += '<div style="flex:1;height:6px;background:var(--border);border-radius:3px"><div style="width:' + pct + '%;height:100%;background:' + archColour + ';border-radius:3px"></div></div>';
@@ -1577,18 +1577,18 @@ async function refresh() {
     const totalAgents = (agents.agents || []).length || 1;
 
     html += '<div class="card card-wide"><h2>Behavioral Archetypes</h2>';
-    html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Derived from runtime tool call patterns — what agents actually do, not what they\'re labelled as. Builds over time.</p>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Derived from runtime tool call patterns — what agents actually do, not what they are labelled as. Builds over time.</p>';
     // Stacked bar
     html += '<div style="display:flex;height:28px;border-radius:6px;overflow:hidden;gap:1px">';
-    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => (b[1] as number) - (a[1] as number))) {
-      const pct = Math.round((count as number) / totalAgents * 100);
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
+      const pct = Math.round(count / totalAgents * 100);
       const col = archColourMap[arch] || '#484f58';
       html += '<div style="flex:' + count + ';background:' + col + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0d1117;min-width:40px" title="' + arch + ': ' + count + ' agent(s)">' + arch + '</div>';
     }
     html += '</div>';
     // Legend with agent names
     html += '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:12px">';
-    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => (b[1] as number) - (a[1] as number))) {
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
       const col = archColourMap[arch] || '#484f58';
       const archAgents = (agents.agents || []).filter(a => ((a.behavior || {}).archetype || 'Unknown') === arch);
       html += '<div style="font-size:11px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + col + ';margin-right:4px"></span>';
