@@ -36,8 +36,10 @@ import { AgentSessionTracker, isHeartbeatPrompt, _isValidAgentLabel, normalizeLa
 import { BehaviouralProfiler } from "./profiler.js";
 import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
-import { extractIntentSignals, checkToolAlignment, checkEgressAttempt, ToolSequenceTracker, buildToolIntentEvent } from "./detectors/tool-intent.js";
+import { extractIntentSignals, checkToolAlignment, checkEgressAttempt, ToolSequenceTracker, buildToolIntentEvent, TOOL_CATEGORIES } from "./detectors/tool-intent.js";
 import type { IntentSignals } from "./detectors/tool-intent.js";
+import { createTurnContext, validateToolResult, checkExfilChain } from "./detectors/result-validator.js";
+import type { TurnContext } from "./detectors/result-validator.js";
 import { PolicyEngine } from "./policy.js";
 import { AgentRegistry } from "./agent-registry.js";
 import * as sigLoaderMod from "./signature-loader.js";
@@ -571,6 +573,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   let _callReason = "";
   // Tool intent tracking — set in before_prompt_build, checked in before_tool_call
   let _currentIntent: IntentSignals | null = null;
+  let _turnContext: TurnContext | null = null;
   const _toolSequence = new ToolSequenceTracker();
 
   // -----------------------------------------------------------------------
@@ -662,6 +665,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           })()
         : (typeof event?.prompt === "string" ? event.prompt.slice(0, 500) : "");
       _currentIntent = extractIntentSignals(lastUserMsg);
+      _turnContext = createTurnContext(_currentIntent);
       _toolSequence.reset(); // Reset sequence tracker for each new turn
     }
 
@@ -1069,6 +1073,31 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           agentTracker.recordSecurityEvent(1);
           api.logger?.warn(`[shroud] Tool sequence anomaly: ${anomaly.reason}`);
         }
+
+        // 4. Exfil chain check: communication/network after PII-containing results
+        if (_turnContext) {
+          const exfil = checkExfilChain(_turnContext, toolName);
+          if (exfil) {
+            const agentSession = agentTracker.getCurrentSession();
+            exfil.agentBuildId = agentSession?.agentBuildId;
+            exfil.agentLabel = agentSession?.agentLabel;
+            exfil.agentSessionId = agentSession?.sessionId;
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(exfil);
+            agentTracker.recordSecurityEvent(1);
+            if (config.injectionDetection === "block") {
+              api.logger?.warn(`[shroud] BLOCKED exfil chain: ${exfil.description}`);
+              return { block: true, blockReason: `Shroud security: ${exfil.description}` };
+            }
+            api.logger?.warn(`[shroud] Exfil chain detected (flagged): ${exfil.description}`);
+          }
+
+          // Stash pending tool call for result validation in tool_result_persist
+          _turnContext.pendingToolCall = {
+            toolName,
+            category: TOOL_CATEGORIES[toolName],
+            timestamp: Date.now(),
+          };
+        }
       }
     }
 
@@ -1097,10 +1126,42 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // Exit tool depth
     ob().exitToolCall();
 
+    // Collect PII categories from obfuscation for result validation
+    const resultCategories = new Set<string>();
+    let totalResultSize = 0;
+
     const obfuscated = walkStrings(event.message, (s) => {
       const result = ob().obfuscate(s);
+      totalResultSize += s.length;
+      for (const entity of result.entities) {
+        resultCategories.add(entity.category);
+      }
       return result.obfuscated;
     });
+
+    // Validate tool result against user intent (Heuristic 1 + 3)
+    if (_turnContext?.pendingToolCall && config.injectionDetection !== "off" && securityBus) {
+      const flags = validateToolResult(_turnContext, resultCategories, totalResultSize);
+      if (flags.length > 0) {
+        const agentSession = agentTracker.getCurrentSession();
+        for (const evt of flags) {
+          evt.agentBuildId = agentSession?.agentBuildId;
+          evt.agentLabel = agentSession?.agentLabel;
+          evt.agentSessionId = agentSession?.sessionId;
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+        }
+        agentTracker.recordSecurityEvent(flags.length);
+      }
+
+      // Record result for cross-tool correlation (Heuristic 2 in next before_tool_call)
+      _turnContext.toolResults.push({
+        toolName: _turnContext.pendingToolCall.toolName,
+        category: _turnContext.pendingToolCall.category,
+        resultCategories,
+        resultSize: totalResultSize,
+      });
+      _turnContext.pendingToolCall = null;
+    }
 
     dumpStatsFile(obfuscator);
     return { message: obfuscated };

@@ -30,7 +30,7 @@ export enum ToolCategory {
 }
 
 /** Map tool names to categories. */
-const TOOL_CATEGORIES: Record<string, ToolCategory> = {
+export const TOOL_CATEGORIES: Record<string, ToolCategory> = {
   Read: ToolCategory.READ_ONLY,
   read: ToolCategory.READ_ONLY,
   read_file: ToolCategory.READ_ONLY,
@@ -75,6 +75,8 @@ export interface IntentSignals {
   wantsNetwork: boolean;
   /** Domains/URLs mentioned by the user (allowlisted for egress). */
   mentionedDomains: Set<string>;
+  /** Whether the user's message mentions credentials/secrets/keys. */
+  mentionsCredentials: boolean;
 }
 
 /** Result of checking tool alignment. */
@@ -162,6 +164,7 @@ export function extractIntentSignals(userMessage: string): IntentSignals {
     wantsExecution: EXECUTION_VERBS.test(userMessage),
     wantsNetwork: NETWORK_VERBS.test(userMessage),
     mentionedDomains: extractDomains(userMessage),
+    mentionsCredentials: /\b(?:credentials?|secrets?|api\s*keys?|passwords?|certs?|certificates?|tokens?|ssn|credit.?cards?|payment|iban|ssh\s*keys?|pgp|private.?keys?|access.?keys?)\b/i.test(userMessage),
   };
 }
 
