@@ -6,6 +6,8 @@
  * queryable during the session.
  */
 
+import { readFileSync } from "node:fs";
+
 /** Threat classes for injection signature detection. */
 export enum ThreatClass {
   INSTRUCTION_OVERRIDE = "instruction_override",
@@ -120,6 +122,39 @@ export class SecurityEventBus {
   /** Clear all events. Used by test harness to isolate scenarios. */
   clearEvents(): void {
     this._events.length = 0;
+  }
+
+  /**
+   * Load events from a JSONL file (e.g. SIEM log) to restore state after restart.
+   * Only loads events from the last `maxAgeMs` (default 1 hour).
+   * Events loaded this way bypass dedup and listeners (they're historical).
+   */
+  loadFromJsonl(filePath: string, maxAgeMs = 3_600_000): number {
+    try {
+      const raw = readFileSync(filePath, "utf-8");
+      const cutoff = Date.now() - maxAgeMs;
+      let loaded = 0;
+
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const event = JSON.parse(line) as SecurityEvent;
+          if (event.timestamp && event.timestamp > cutoff && event.signatureId) {
+            this._events.push(event);
+            loaded++;
+          }
+        } catch { /* skip malformed lines */ }
+      }
+
+      // Trim to capacity
+      if (this._events.length > this._maxEvents) {
+        this._events.splice(0, this._events.length - this._maxEvents);
+      }
+
+      return loaded;
+    } catch {
+      return 0; // File may not exist
+    }
   }
 
   getStats(): SecurityStats {

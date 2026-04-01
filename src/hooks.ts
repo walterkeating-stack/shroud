@@ -303,7 +303,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   if (config.injectionDetection !== "off") {
     // Reuse existing bus across plugin reloads — the dashboard holds the
     // original reference, so creating a new bus would orphan events.
+    const isNewBus = !(globalThis as any).__shroudSecurityBus;
     securityBus = (globalThis as any).__shroudSecurityBus || new SecurityEventBus(500, 60_000);
+    // Restore recent events from SIEM JSONL log on fresh start (survives gateway restarts)
+    if (isNewBus && config.siemJsonlPath && securityBus) {
+      const restored = securityBus.loadFromJsonl(config.siemJsonlPath);
+      if (restored > 0) {
+        try { writeFileSync("/tmp/shroud-event-restore.log",
+          `${new Date().toISOString()} restored ${restored} events from ${config.siemJsonlPath}\n`, { flag: "a" }); } catch {}
+      }
+    }
     injectionDetector = new InjectionDetector({
       action: config.injectionDetection,
       disabledSignatures: new Set(config.injectionDisabledSignatures),
