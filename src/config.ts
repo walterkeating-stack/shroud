@@ -370,6 +370,37 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (env) return parseFloat(env) || 0.10;
       return typeof raw.delegationDriftThreshold === "number" ? raw.delegationDriftThreshold : 0.10;
     })(),
+
+    // --- Transformer sequence predictor ---
+    transformerEnabled: (() => {
+      const env = process.env.SHROUD_TRANSFORMER_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.transformerEnabled === "boolean") return raw.transformerEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    transformerThreshold: (() => {
+      const env = process.env.SHROUD_TRANSFORMER_THRESHOLD;
+      if (env) return parseFloat(env) || 0.85;
+      return typeof raw.transformerThreshold === "number" ? raw.transformerThreshold : 0.85;
+    })(),
+    transformerWindowSize: (() => {
+      const env = process.env.SHROUD_TRANSFORMER_WINDOW;
+      if (env) return parseInt(env) || 10;
+      return typeof raw.transformerWindowSize === "number" ? raw.transformerWindowSize : 10;
+    })(),
+    transformerMinSessions: (() => {
+      const env = process.env.SHROUD_TRANSFORMER_MIN_SESSIONS;
+      if (env) return parseInt(env) || 30;
+      return typeof raw.transformerMinSessions === "number" ? raw.transformerMinSessions : 30;
+    })(),
+    transformerTrainInterval: (() => {
+      const env = process.env.SHROUD_TRANSFORMER_TRAIN_INTERVAL;
+      if (env) return parseInt(env) || 50;
+      return typeof raw.transformerTrainInterval === "number" ? raw.transformerTrainInterval : 50;
+    })(),
   };
 
   return config;

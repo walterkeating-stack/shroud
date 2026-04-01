@@ -286,6 +286,11 @@ export function startDashboard(
           delegations: ic.getHistoryForAgent(buildId),
         } : { enabled: false });
       }
+      // --- Transformer stats ---
+      else if (url === "/api/transformer") {
+        const scorer = (globalThis as any).__shroudTransformerScorer;
+        json(res, 200, scorer ? scorer.getStats() : { enabled: false });
+      }
       // --- 3D visualization projection ---
       else if (url?.startsWith("/api/viz/projection")) {
         handleVizProjection(req, res, deps);

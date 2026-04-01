@@ -220,4 +220,16 @@ export interface ShroudConfig {
   intentChainEnabled: boolean;
   /** Drift threshold for delegated sub-agents (tighter than root, default: 0.10). */
   delegationDriftThreshold: number;
+
+  // --- Transformer sequence predictor ---
+  /** Enable transformer next-tool predictor (auto-enables with dashboard). */
+  transformerEnabled: boolean;
+  /** Surprise score threshold to trigger security event (default: 0.85). */
+  transformerThreshold: number;
+  /** Sliding window size for session anomaly score (default: 10). */
+  transformerWindowSize: number;
+  /** Minimum completed sessions before first training (default: 30). */
+  transformerMinSessions: number;
+  /** Sessions between retraining cycles (default: 50). */
+  transformerTrainInterval: number;
 }

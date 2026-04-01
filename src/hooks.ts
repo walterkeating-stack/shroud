@@ -51,6 +51,7 @@ import { ShadowExecutor, buildShadowEvent } from "./shadow-executor.js";
 import { CausalCoherenceTracker, buildCoherenceEvent } from "./causal-coherence.js";
 import { VectorStore, buildNovelWorkflowEvent, buildUrlCorrelationEvent } from "./vector-store.js";
 import { IntentChain, buildDelegationDriftEvent } from "./intent-chain.js";
+import { TransformerScorer } from "./transformer/scorer.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -517,6 +518,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
         }
         _vectorStore.flush();
+
+        // Trigger transformer retraining if enough new data, always save on flush
+        if (_transformerScorer) {
+          const result = _transformerScorer.maybeRetrain(_vectorStore);
+          if (result) {
+            api.logger?.info(`[shroud] Transformer retrained: loss=${result.finalLoss.toFixed(4)}, ${result.sequencesUsed} sequences, ${result.durationMs}ms`);
+          }
+          _transformerScorer._saveModel();
+        }
       }
 
       const inMemory = agentTracker.getAllSessions().filter(_isCleanLabel);
@@ -656,6 +666,17 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     delegationDriftThreshold: config.delegationDriftThreshold,
   }) : null;
   if (_intentChain) (globalThis as any).__shroudIntentChain = _intentChain;
+  // Transformer sequence predictor — learned next-tool anomaly detection
+  const _transformerScorer = config.transformerEnabled && _vectorStore
+    ? TransformerScorer.create(config.profilingProfileDir, {
+        anomalyThreshold: config.transformerThreshold,
+        windowSize: config.transformerWindowSize,
+        minSequenceLength: 3,
+        minSessionsToTrain: config.transformerMinSessions,
+        trainIntervalSessions: config.transformerTrainInterval,
+      }, _vectorStore)
+    : null;
+  if (_transformerScorer) (globalThis as any).__shroudTransformerScorer = _transformerScorer;
   // Session tool sequence accumulator for vector store workflow recording
   let _sessionToolSequence: string[] = [];
   let _sessionUrls: string[] = [];
@@ -1366,6 +1387,35 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             return { block: true, blockReason: `Shroud security: ${coherence.reason}` };
           }
           api.logger?.info(`[shroud] Causal incoherence (flagged): ${coherence.reason}`);
+        }
+      }
+
+      // --- Transformer sequence prediction: check tool-call surprise ---
+      if (_transformerScorer && _sessionToolSequence.length >= 3) {
+        const prediction = _transformerScorer.scoreToolCall(
+          _sessionToolSequence,
+          event.toolName ?? "unknown",
+        );
+        const anomalyEvt = _transformerScorer.checkAnomaly(
+          prediction,
+          event.toolName ?? "unknown",
+          agentTracker.getCurrentSession()?.agentLabel,
+        );
+        // Log softmax prediction for all tool calls (not just anomalies)
+        if (prediction.topK.length > 0) {
+          const topStr = prediction.topK.map(k => `${k.tool}=${(k.prob * 100).toFixed(1)}%`).join(" ");
+          api.logger?.info(`[shroud] Transformer: ${event.toolName} surprise=${prediction.surprise.toFixed(3)} session=${prediction.sessionAnomalyScore.toFixed(3)} top=[${topStr}]`);
+        }
+        if (anomalyEvt) {
+          const agentSession = agentTracker.getCurrentSession();
+          anomalyEvt.agentBuildId = agentSession?.agentBuildId;
+          anomalyEvt.agentSessionId = agentSession?.sessionId;
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(anomalyEvt);
+          agentTracker.recordSecurityEvent(1);
+          if (config.injectionDetection === "block" && prediction.surprise > 0.95) {
+            api.logger?.warn(`[shroud] BLOCKED by transformer: surprise=${prediction.surprise.toFixed(3)}`);
+            return { block: true, blockReason: `Shroud security: anomalous tool sequence (surprise=${prediction.surprise.toFixed(3)})` };
+          }
         }
       }
 

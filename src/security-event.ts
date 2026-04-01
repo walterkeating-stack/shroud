@@ -24,6 +24,7 @@ export enum ThreatClass {
   NOVEL_WORKFLOW = "novel_workflow",
   URL_CORRELATION = "url_correlation",
   DELEGATION_DRIFT = "delegation_drift",
+  TOOL_SEQUENCE_ANOMALY = "tool_sequence_anomaly",
 }
 
 /** Severity levels for security events. */
