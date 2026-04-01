@@ -271,6 +271,19 @@ export class Obfuscator {
     this._initDetectors();
   }
 
+  /**
+   * Add values to the runtime allowlist — these will pass through obfuscation
+   * unchanged. Used by honeypot injection to prevent Shroud from neutralizing
+   * its own tripwire tokens.
+   */
+  addRuntimeAllowlist(values: string[]): void {
+    for (const v of values) {
+      if (v && !this.config.allowlist.includes(v)) {
+        this.config.allowlist.push(v);
+      }
+    }
+  }
+
   private _initDetectors(): void {
     const overrides = this.config.detectorOverrides;
 

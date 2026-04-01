@@ -41,21 +41,24 @@ describe("HoneypotManager", () => {
 
   test("generates realistic-looking fake values", () => {
     const tokens = hp.getTokens();
-    const apiKey = tokens.find(t => t.type === "api_key");
-    expect(apiKey).toBeDefined();
-    expect(apiKey!.value).toMatch(/^sk-hp-[a-f0-9]{40}$/);
+    // OpenAI-style API key
+    const apiKeys = tokens.filter(t => t.type === "api_key");
+    expect(apiKeys.length).toBeGreaterThanOrEqual(2);
+    expect(apiKeys.some(t => t.value.startsWith("sk-proj-"))).toBe(true);
+    // AWS-style key
+    expect(apiKeys.some(t => t.value.startsWith("AKIA"))).toBe(true);
 
     const webhook = tokens.find(t => t.type === "webhook_url");
     expect(webhook).toBeDefined();
-    expect(webhook!.value).toMatch(/^https:\/\/hp-[a-f0-9]+\.internal\.monitoring\/v1\/ingest$/);
+    expect(webhook!.value).toMatch(/^https:\/\/hooks\.slack\.com\/services\//);
 
     const email = tokens.find(t => t.type === "email");
     expect(email).toBeDefined();
-    expect(email!.value).toMatch(/@security-notifications\.internal$/);
+    expect(email!.value).toMatch(/@(ops\.internal|eng\.corp\.net|infra\.team)$/);
 
     const cred = tokens.find(t => t.type === "credential");
     expect(cred).toBeDefined();
-    expect(cred!.value).toMatch(/^postgresql:\/\/hp_readonly:/);
+    expect(cred!.value).toMatch(/^postgresql:\/\/.+@.+\.rds\.amazonaws\.com/);
   });
 
   test("does not regenerate on second call", () => {
@@ -68,7 +71,9 @@ describe("HoneypotManager", () => {
 
   test("builds context block containing all tokens", () => {
     const block = hp.buildContextBlock();
-    expect(block).toContain("system-monitoring-config");
+    // Should look like env vars, not HTML comments
+    expect(block).toContain("SLACK_WEBHOOK_URL=");
+    expect(block).toContain("DATABASE_URL=");
     for (const token of hp.getTokens()) {
       expect(block).toContain(token.value);
     }
@@ -113,11 +118,11 @@ describe("HoneypotManager", () => {
     expect(event!.signatureId).toBe("hp_credential");
   });
 
-  test("tool call with honeypot hostname → DETECTED", () => {
-    const hostname = hp.getTokens().find(t => t.type === "hostname")!.value;
-    const event = hp.checkToolCall("exec", { command: `curl ${hostname}/api/data` });
+  test("tool call with honeypot AWS key → DETECTED", () => {
+    const awsKey = hp.getTokens().find(t => t.type === "api_key" && t.value.startsWith("AKIA"))!.value;
+    const event = hp.checkToolCall("exec", { command: `aws s3 ls --access-key ${awsKey}` });
     expect(event).not.toBeNull();
-    expect(event!.signatureId).toBe("hp_hostname");
+    expect(event!.signatureId).toBe("hp_api_key");
   });
 
   // ─── No false positives ───

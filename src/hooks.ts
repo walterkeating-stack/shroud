@@ -894,6 +894,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const agentSession = agentTracker.getCurrentSession();
       const seed = (agentSession?.agentLabel || "default") + ":" + (agentSession?.sessionId || "0");
       _honeypot.generate(seed, config.secretKey);
+      // Register honeypot values with the obfuscator's allowlist so they
+      // survive inbound obfuscation (otherwise Shroud neutralizes its own tripwires)
+      obfuscator.addRuntimeAllowlist(_honeypot.getTokens().map(t => t.value));
       const honeypotBlock = _honeypot.buildContextBlock();
       if (honeypotBlock) {
         obfuscatedPrompt = obfuscatedPrompt + honeypotBlock;

@@ -10,6 +10,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
 
 /** A logged LLM API call. */
 export interface LlmCallRecord {
@@ -91,6 +93,8 @@ export interface AgentSession {
   channels: string[];
   /** Heartbeat tracking. */
   heartbeat: AgentHeartbeat;
+  /** Accumulated behavioral profile for archetype mapping. */
+  behavior: AgentBehaviorProfile;
 }
 
 /** Per-agent heartbeat tracking. */
@@ -109,6 +113,24 @@ export interface AgentHeartbeat {
   lastResponse: string;
 }
 
+/** Accumulated behavioral signals for archetype mapping. */
+export interface AgentBehaviorProfile {
+  /** Tool call frequency map: tool name -> call count. */
+  toolFrequency: Record<string, number>;
+  /** Total tool calls tracked. */
+  totalToolCalls: number;
+  /** Running average similarity score from drift checks (0-1, EMA alpha=0.2). */
+  avgSimilarity: number;
+  /** Count of drift checks performed. */
+  driftCheckCount: number;
+  /** Recent similarity scores (last 20, for per-agent sparkline). */
+  recentSimilarities: number[];
+  /** Derived behavioral archetype (computed from tool patterns). */
+  archetype: string;
+  /** Archetype confidence (0-100). */
+  archetypeConfidence: number;
+}
+
 /** Per-agent LLM cache tracking for anomaly detection. */
 export interface AgentCacheStats {
   totalInputTokens: number;
@@ -124,6 +146,14 @@ export interface AgentCacheStats {
   /** Number of calls with cache data. */
   callsWithCache: number;
 }
+
+/** Default behavior profile for new agents. */
+const DEFAULT_BEHAVIOR: AgentBehaviorProfile = {
+  toolFrequency: {}, totalToolCalls: 0,
+  avgSimilarity: 1.0, driftCheckCount: 0,
+  recentSimilarities: [], archetype: "Unknown",
+  archetypeConfidence: 0,
+};
 
 /**
  * Tracks agent sessions and maps LLM calls to agent identities.
@@ -177,6 +207,7 @@ export class AgentSessionTracker {
         cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
         channels: [],
         heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+        behavior: { ...DEFAULT_BEHAVIOR, toolFrequency: {} },
       };
     }
 
@@ -211,6 +242,7 @@ export class AgentSessionTracker {
           enabled: false, recent: [], avgIntervalMs: -1,
           lastAt: 0, status: "unknown", lastResponse: "",
         },
+        behavior: { ...DEFAULT_BEHAVIOR, toolFrequency: {} },
       };
       this._sessions.set(key, session);
     } else {
@@ -229,14 +261,24 @@ export class AgentSessionTracker {
     }
   }
 
-  /** Update channel source (e.g. "slack:C00000001"). */
+  /** Update channel source (e.g. "slack:C00000001"). Normalizes to base type. */
   updateChannel(source: string): void {
     const session = this._sessions.get(this._currentLabel);
-    if (session && source) {
-      session.channelSource = source;
-      if (!session.channels.includes(source)) {
-        session.channels.push(source);
-      }
+    if (!session || !source) return;
+
+    session.channelSource = source;
+
+    // Normalize: "slack:C00000001" → "slack", "whatsapp:direct" → "whatsapp", etc.
+    const normalized = source.split(":")[0].toLowerCase();
+    const channelType = normalized === "tui" ? "tui"
+      : normalized === "slack" ? "slack"
+      : normalized === "whatsapp" ? "whatsapp"
+      : normalized === "cron" ? "cron"
+      : normalized === "api" ? "api"
+      : normalized;
+
+    if (!session.channels.includes(channelType)) {
+      session.channels.push(channelType);
     }
   }
 
@@ -396,6 +438,26 @@ export class AgentSessionTracker {
     }
   }
 
+  /** Record a tool call for behavioral archetype tracking. */
+  recordToolCall(toolName: string, similarity?: number): void {
+    const session = this._sessions.get(this._currentLabel);
+    if (!session) return;
+    const b = session.behavior;
+    b.toolFrequency[toolName] = (b.toolFrequency[toolName] || 0) + 1;
+    b.totalToolCalls++;
+    if (similarity !== undefined) {
+      b.driftCheckCount++;
+      b.avgSimilarity = b.driftCheckCount === 1
+        ? similarity
+        : b.avgSimilarity * 0.8 + similarity * 0.2; // EMA
+      b.recentSimilarities.push(similarity);
+      if (b.recentSimilarities.length > 20) b.recentSimilarities.shift();
+    }
+    const result = computeArchetype(b);
+    b.archetype = result.name;
+    b.archetypeConfidence = result.confidence;
+  }
+
   /** Update SOUL extract from early messages. Only sets once. Skips framework preamble. */
   updateSoul(soul: string): void {
     const session = this._sessions.get(this._currentLabel);
@@ -478,17 +540,18 @@ export class AgentSessionTracker {
         startedAt: s.startedAt,
         lastCallAt: s.lastCallAt,
         soulExtract: s.soulExtract,
+        behavior: s.behavior,
       }));
-      const dir = require("path").dirname(filePath);
-      if (!require("fs").existsSync(dir)) require("fs").mkdirSync(dir, { recursive: true });
-      require("fs").writeFileSync(filePath, JSON.stringify(data, null, 2));
+      const dir = dirname(filePath);
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+      writeFileSync(filePath, JSON.stringify(data, null, 2));
     } catch { /* best-effort */ }
   }
 
   /** Load sessions from a JSON file (e.g. after restart). */
   loadFromFile(filePath: string): void {
     try {
-      const raw = require("fs").readFileSync(filePath, "utf-8");
+      const raw = readFileSync(filePath, "utf-8");
       const data = JSON.parse(raw) as Array<Record<string, unknown>>;
       for (const entry of data) {
         const label = entry.agentLabel as string;
@@ -513,6 +576,7 @@ export class AgentSessionTracker {
           soulExtract: (entry.soulExtract as string) || "",
           cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
           heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+          behavior: (entry.behavior as AgentBehaviorProfile) || { ...DEFAULT_BEHAVIOR, toolFrequency: {} },
         });
       }
       // Set _currentLabel to the most recently active loaded session so that
@@ -1024,6 +1088,87 @@ function makeClassification(
   // Colour: green for high, blue for medium, grey for low
   const colour = pct >= 80 ? "#3fb950" : pct >= 50 ? "#58a6ff" : "#8b949e";
   return { role, confidencePct: pct, confidence, colour, signals };
+}
+
+// ── Behavioral Archetype Mapping ──
+// Derived from runtime tool call patterns — builds over time as the agent works.
+// Unlike role classification (from label/prompt keywords), archetypes reflect
+// what the agent actually *does*.
+
+interface ArchetypeRule {
+  name: string;
+  /** Return a score 0-100. Highest wins. */
+  score: (b: AgentBehaviorProfile) => number;
+  colour: string;
+}
+
+const ARCHETYPE_RULES: ArchetypeRule[] = [
+  {
+    name: "Deep Researcher",
+    colour: "#a78bfa",
+    score: (b) => {
+      const search = ["web_fetch", "fetch", "browser", "search", "web_search", "memory_search", "Read"];
+      const pct = search.reduce((s, t) => s + (b.toolFrequency[t] || 0), 0) / Math.max(b.totalToolCalls, 1);
+      return pct > 0.3 ? 60 + Math.min(20, Math.round(pct * 30)) : Math.round(pct * 180);
+    },
+  },
+  {
+    name: "Builder",
+    colour: "#f97316",
+    score: (b) => {
+      const build = ["Write", "Edit", "write", "edit", "exec", "bash", "Bash", "code_execution"];
+      const pct = build.reduce((s, t) => s + (b.toolFrequency[t] || 0), 0) / Math.max(b.totalToolCalls, 1);
+      return pct > 0.35 ? 60 + Math.min(20, Math.round(pct * 25)) : Math.round(pct * 160);
+    },
+  },
+  {
+    name: "Conversationalist",
+    colour: "#06b6d4",
+    score: (b) => {
+      const msg = ["message", "sessions_send", "slack_send", "whatsapp_send", "reply"];
+      const msgPct = msg.reduce((s, t) => s + (b.toolFrequency[t] || 0), 0) / Math.max(b.totalToolCalls, 1);
+      return msgPct > 0.3 ? 55 + Math.round(msgPct * 30) : Math.round(msgPct * 160);
+    },
+  },
+  {
+    name: "Explorer",
+    colour: "#eab308",
+    score: (b) => {
+      const unique = Object.keys(b.toolFrequency).length;
+      if (unique < 4) return 0;
+      const max = Math.max(...Object.values(b.toolFrequency));
+      const spread = 1 - (max / b.totalToolCalls);
+      return spread > 0.6 ? 50 + Math.round(spread * 30) : Math.round(spread * 70);
+    },
+  },
+  {
+    name: "Operator",
+    colour: "#22c55e",
+    score: (b) => {
+      const ops = ["exec", "bash", "Bash", "deploy", "restart", "kill", "cron"];
+      const pct = ops.reduce((s, t) => s + (b.toolFrequency[t] || 0), 0) / Math.max(b.totalToolCalls, 1);
+      return pct > 0.4 ? 55 + Math.round(pct * 25) : Math.round(pct * 120);
+    },
+  },
+];
+
+/** Archetype colour lookup for dashboard rendering. */
+export const ARCHETYPE_COLOURS: Record<string, string> = Object.fromEntries(
+  ARCHETYPE_RULES.map(r => [r.name, r.colour]),
+);
+ARCHETYPE_COLOURS["General"] = "#64748b";
+ARCHETYPE_COLOURS["Unknown"] = "#484f58";
+
+function computeArchetype(b: AgentBehaviorProfile): { name: string; confidence: number } {
+  if (b.totalToolCalls < 3) return { name: "Unknown", confidence: 0 };
+  let best = { name: "General", score: 0 };
+  for (const rule of ARCHETYPE_RULES) {
+    const s = rule.score(b);
+    if (s > best.score) best = { name: rule.name, score: s };
+  }
+  if (best.score < 25) return { name: "General", confidence: Math.round(best.score) };
+  const dataPenalty = Math.min(1, b.totalToolCalls / 20);
+  return { name: best.name, confidence: Math.round(Math.min(95, best.score * dataPenalty)) };
 }
 
 /**

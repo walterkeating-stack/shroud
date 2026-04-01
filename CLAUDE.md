@@ -197,6 +197,18 @@ Full chain (execute without stopping unless tests fail):
 | `SHROUD_SIEM_WEBHOOK_URL` | Webhook URL for shipping security events |
 | `SHROUD_SIEM_WEBHOOK_AUTH` | Auth header for SIEM webhook |
 | `SHROUD_SIEM_JSONL_PATH` | JSONL file path for security event log |
+| `SHROUD_DRIFT_ENABLED` | Enable semantic drift detection (auto-enables with dashboard) |
+| `SHROUD_DRIFT_THRESHOLD` | Cosine similarity threshold for drift alert (default: 0.15) |
+| `SHROUD_DRIFT_SUDDEN_TURN` | Delta threshold for sudden turn detection (default: 0.3) |
+| `SHROUD_COHERENCE_ENABLED` | Enable causal coherence tracking (auto-enables with dashboard) |
+| `SHROUD_COHERENCE_ZSCORE` | Z-score threshold for coherence anomaly (default: 2.5) |
+| `SHROUD_COHERENCE_RESULT_LIMIT` | Max result categories to track (default: 100) |
+| `SHROUD_VECTOR_STORE_ENABLED` | Enable workflow fingerprinting/clustering (auto-enables with dashboard) |
+| `SHROUD_VECTOR_STORE_MAX` | Max stored workflows before eviction (default: 10000) |
+| `SHROUD_CLUSTERING_ENABLED` | Enable workflow clustering (auto-enables with vector store) |
+| `SHROUD_URL_CORRELATION_ENABLED` | Enable cross-session URL correlation (default: false) |
+| `SHROUD_INTENT_CHAIN_ENABLED` | Enable multi-agent delegation coherence (auto-enables with dashboard) |
+| `SHROUD_DELEGATION_DRIFT_THRESHOLD` | Drift threshold for delegated agents (default: 0.10) |
 
 ## Security Extension (feature/security-extension)
 
@@ -212,7 +224,26 @@ User input → injection scan (40+ signatures) → flag/block
            → behavioural profiling (per-agent pattern learning)
            → security event bus → event grader (LLM classification)
            → dashboard (real-time) + SIEM export (webhook/JSONL)
+
+Vector-based behavioral IDS (4 horizons):
+  Per-Step:       Causal Coherence — result→action pair z-scores
+  Per-Session:    Intent Drift — TF-IDF trajectory vs user message
+  Per-Lifetime:   Workflow Clusters — n-gram sequence vectors, PCA
+  Cross-Agent:    Intent Chain — delegation drift through agent tree
 ```
+
+### Key Files (Vector IDS)
+
+| File | What |
+|------|------|
+| `src/detectors/drift-detector.ts` | Semantic drift: TF-IDF cosine similarity, feature hashing |
+| `src/detectors/sequence-embedder.ts` | N-gram embedding for tool sequences (bi/trigrams) |
+| `src/causal-coherence.ts` | Result→action pair tracking with Welford's z-score |
+| `src/vector-store.ts` | Persisted workflows, clusters, URL correlation, agent baselines |
+| `src/intent-chain.ts` | Multi-agent delegation chain with depth-scaled drift |
+| `src/pca.ts` | Power iteration PCA for 256→3D projection (zero deps) |
+| `src/detectors/honeypot.ts` | Fake credential injection as zero-FP tripwires |
+| `src/detectors/phantom-tools.ts` | Canary tool definitions that catch injection |
 
 ### LLM Event Grading
 

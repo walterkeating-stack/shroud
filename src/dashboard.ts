@@ -1489,9 +1489,12 @@ async function fetchJson(path) {
 
 function timeAgo(ts) {
   const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return s + 's ago';
-  if (s < 3600) return Math.floor(s/60) + 'm ago';
-  return Math.floor(s/3600) + 'h ago';
+  // Show HH:MM:SS for recent events, relative for older
+  const d = new Date(ts);
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  if (s < 3600) return time;
+  if (s < 86400) return time + ' (' + Math.floor(s/3600) + 'h ago)';
+  return Math.floor(s/86400) + 'd ago';
 }
 
 function truncate(s, n) { return s.length > n ? s.slice(0, n) + '...' : s; }
@@ -2762,12 +2765,22 @@ function makeLabel(text, color) {
   ctx.font = 'bold ' + fontSize + 'px monospace';
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   // Background pill
+  // roundRect polyfill for older browsers
+  function rr(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x+r, y);
+    c.lineTo(x+w-r, y); c.quadraticCurveTo(x+w, y, x+w, y+r);
+    c.lineTo(x+w, y+h-r); c.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+    c.lineTo(x+r, y+h); c.quadraticCurveTo(x, y+h, x, y+h-r);
+    c.lineTo(x, y+r); c.quadraticCurveTo(x, y, x+r, y);
+    c.closePath();
+  }
   ctx.fillStyle = 'rgba(10,14,26,0.88)';
-  ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 6);
+  rr(ctx, 2, 2, canvas.width - 4, canvas.height - 4, 6);
   ctx.fill();
   ctx.strokeStyle = color || '#94a3b8';
   ctx.lineWidth = 1.5;
-  ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 6);
+  rr(ctx, 2, 2, canvas.width - 4, canvas.height - 4, 6);
   ctx.stroke();
   // Text
   ctx.fillStyle = color || '#e2e8f0';
