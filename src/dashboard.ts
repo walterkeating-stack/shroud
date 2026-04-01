@@ -637,80 +637,178 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shroud Security Dashboard</title>
+<title>Shroud Agent Firewall</title>
 <style>
+  :root {
+    --bg-primary: #0a0e1a;
+    --bg-secondary: #111827;
+    --bg-card: #1a2035;
+    --bg-card-hover: #1e2540;
+    --bg-input: #0f1629;
+    --border: #1e293b;
+    --border-light: #334155;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --accent: #3b82f6;
+    --accent-hover: #60a5fa;
+    --critical: #ef4444;
+    --critical-bg: rgba(239,68,68,0.12);
+    --high: #f97316;
+    --high-bg: rgba(249,115,22,0.12);
+    --medium: #eab308;
+    --medium-bg: rgba(234,179,8,0.12);
+    --low: #22c55e;
+    --low-bg: rgba(34,197,94,0.12);
+    --info: #06b6d4;
+    --info-bg: rgba(6,182,212,0.12);
+    --success: #10b981;
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #0d1117; color: #c9d1d9; }
-  .header { background: #161b22; border-bottom: 1px solid #30363d; padding: 16px 24px; display: flex; align-items: center; gap: 16px; }
-  .header h1 { font-size: 18px; color: #58a6ff; }
-  .header .badge { background: #238636; color: #fff; padding: 2px 8px; border-radius: 12px; font-size: 12px; }
-  .header .badge.warn { background: #d29922; }
-  .header .badge.danger { background: #da3633; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; padding: 24px; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; }
-  .card h2 { font-size: 14px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
-  .stat { font-size: 32px; font-weight: bold; color: #58a6ff; }
-  .stat.green { color: #3fb950; }
-  .stat.red { color: #f85149; }
-  .stat.yellow { color: #d29922; }
-  .stat-label { font-size: 12px; color: #8b949e; margin-top: 4px; }
-  .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #21262d; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; background: var(--bg-primary); color: var(--text-primary); font-size: 13px; line-height: 1.5; }
+
+  /* ── Header ── */
+  .header { background: var(--bg-secondary); border-bottom: 1px solid var(--border); padding: 0 28px; height: 56px; display: flex; align-items: center; gap: 16px; }
+  .header .logo { display: flex; align-items: center; gap: 10px; }
+  .header .logo-icon { width: 28px; height: 28px; background: linear-gradient(135deg, var(--accent), #8b5cf6); border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; color: #fff; }
+  .header h1 { font-size: 15px; font-weight: 600; color: var(--text-primary); letter-spacing: -0.3px; }
+  .header .subtitle { font-size: 11px; color: var(--text-muted); font-weight: 400; margin-left: -6px; }
+  .header .spacer { flex: 1; }
+  .header .live-indicator { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); }
+  .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* ── Tabs ── */
+  .tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); padding: 0 28px; background: var(--bg-secondary); }
+  .tab { padding: 11px 20px; cursor: pointer; color: var(--text-muted); border-bottom: 2px solid transparent; font-size: 12px; font-weight: 500; letter-spacing: 0.3px; text-transform: uppercase; transition: all 0.15s; }
+  .tab:hover { color: var(--text-secondary); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  /* ── Grid & Cards ── */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; padding: 20px 28px; }
+  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; }
+  .card h2 { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.8px; font-weight: 600; margin-bottom: 14px; }
+  .card-wide { grid-column: 1 / -1; }
+
+  /* ── Stats ── */
+  .stat { font-size: 28px; font-weight: 700; color: var(--text-primary); letter-spacing: -1px; }
+  .stat.accent { color: var(--accent); }
+  .stat.green { color: var(--success); }
+  .stat.red { color: var(--critical); }
+  .stat.yellow { color: var(--medium); }
+  .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .stat-row { display: flex; gap: 28px; align-items: flex-end; }
+  .stat-group { }
+
+  /* ── Rows ── */
+  .row { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid rgba(30,41,59,0.5); font-size: 12px; }
   .row:last-child { border-bottom: none; }
-  .row .label { color: #8b949e; }
-  .row .value { color: #c9d1d9; font-weight: 500; }
-  .agent-card { margin-bottom: 8px; padding: 12px; background: #0d1117; border-radius: 6px; border-left: 3px solid #30363d; }
-  .agent-card.mature { border-left-color: #3fb950; }
-  .agent-card.reliable { border-left-color: #58a6ff; }
-  .agent-card.learning { border-left-color: #d29922; }
-  .agent-card.none { border-left-color: #484f58; }
-  .agent-name { font-weight: 600; color: #c9d1d9; font-size: 13px; margin-bottom: 4px; }
-  .agent-meta { font-size: 11px; color: #8b949e; }
-  .progress { height: 4px; background: #21262d; border-radius: 2px; margin-top: 6px; }
-  .progress-bar { height: 100%; border-radius: 2px; background: #58a6ff; transition: width 0.5s; }
-  .events-list { max-height: 400px; overflow-y: auto; }
-  .event { padding: 8px; margin-bottom: 4px; background: #0d1117; border-radius: 4px; font-size: 12px; border-left: 3px solid #30363d; }
-  .event.high { border-left-color: #f85149; }
-  .event.medium { border-left-color: #d29922; }
-  .event.low { border-left-color: #3fb950; }
-  .event .sig { color: #58a6ff; font-weight: 600; }
-  .event .agent { color: #8b949e; }
-  .event .time { color: #484f58; font-size: 10px; float: right; }
-  .event .match { color: #c9d1d9; margin-top: 4px; font-family: monospace; font-size: 11px; }
-  .threat-bar { display: flex; gap: 4px; margin-top: 8px; }
-  .threat-bar .bar { flex: 1; height: 24px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; }
-  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; display: inline-block; animation: pulse 2s infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-  .refresh { color: #484f58; font-size: 11px; }
-  .tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; padding: 0 24px; background: #161b22; }
-  .tab { padding: 10px 20px; cursor: pointer; color: #8b949e; border-bottom: 2px solid transparent; font-size: 13px; }
-  .tab:hover { color: #c9d1d9; }
-  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
-  .policy-section { padding: 24px; }
-  .rule-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px; margin-bottom: 12px; }
-  .rule-card h3 { color: #58a6ff; font-size: 14px; margin-bottom: 8px; }
-  .input-group { margin-bottom: 12px; }
-  .input-group label { display: block; color: #8b949e; font-size: 12px; margin-bottom: 4px; }
-  .input-group select, .input-group input { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9; padding: 6px 10px; border-radius: 4px; font-size: 13px; width: 100%; }
-  .input-group select:focus, .input-group input:focus { border-color: #58a6ff; outline: none; }
-  .btn { padding: 8px 16px; border-radius: 6px; border: none; cursor: pointer; font-size: 13px; font-weight: 500; }
-  .btn-primary { background: #238636; color: #fff; }
-  .btn-primary:hover { background: #2ea043; }
-  .btn-danger { background: #da3633; color: #fff; }
-  .btn-danger:hover { background: #f85149; }
-  .btn-secondary { background: #30363d; color: #c9d1d9; }
-  .btn-secondary:hover { background: #484f58; }
+  .row .label { color: var(--text-muted); }
+  .row .value { color: var(--text-primary); font-weight: 500; }
+
+  /* ── Severity pills ── */
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; letter-spacing: 0.3px; text-transform: uppercase; }
+  .pill-critical { background: var(--critical-bg); color: var(--critical); }
+  .pill-high { background: var(--high-bg); color: var(--high); }
+  .pill-medium { background: var(--medium-bg); color: var(--medium); }
+  .pill-low { background: var(--low-bg); color: var(--low); }
+  .pill-info { background: var(--info-bg); color: var(--info); }
+  .pill-blocked { background: var(--critical-bg); color: var(--critical); }
+  .pill-flagged { background: var(--medium-bg); color: var(--medium); }
+  .pill-healthy { background: var(--low-bg); color: var(--success); }
+
+  /* ── Agent cards ── */
+  .agent-card { margin-bottom: 8px; padding: 14px 16px; background: var(--bg-input); border-radius: 6px; border-left: 3px solid var(--border); cursor: pointer; transition: background 0.15s; }
+  .agent-card:hover { background: var(--bg-card-hover); }
+  .agent-card.mature { border-left-color: var(--success); }
+  .agent-card.reliable { border-left-color: var(--accent); }
+  .agent-card.learning { border-left-color: var(--medium); }
+  .agent-card.none { border-left-color: var(--text-muted); }
+  .agent-card.critical { border-left-color: var(--critical); }
+  .agent-card.warning { border-left-color: var(--high); }
+  .agent-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  .agent-name { font-weight: 600; color: var(--text-primary); font-size: 13px; }
+  .agent-role { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(59,130,246,0.15); color: var(--accent); font-weight: 500; }
+  .agent-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 12px; flex-wrap: wrap; }
+  .agent-meta span { display: flex; align-items: center; gap: 3px; }
+  .agent-stats { display: flex; gap: 16px; margin-top: 8px; font-size: 11px; }
+  .agent-stats .stat-mini { }
+  .agent-stats .stat-mini .num { font-weight: 600; color: var(--text-primary); }
+  .agent-stats .stat-mini .lbl { color: var(--text-muted); margin-left: 3px; }
+  .progress { height: 3px; background: var(--border); border-radius: 2px; margin-top: 8px; }
+  .progress-bar { height: 100%; border-radius: 2px; transition: width 0.5s; }
+
+  /* ── Events ── */
+  .events-list { max-height: 420px; overflow-y: auto; }
+  .events-list::-webkit-scrollbar { width: 4px; }
+  .events-list::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 2px; }
+  .event { padding: 10px 12px; margin-bottom: 4px; background: var(--bg-input); border-radius: 5px; font-size: 12px; border-left: 3px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+  .event.high { border-left-color: var(--critical); }
+  .event.medium { border-left-color: var(--high); }
+  .event.low { border-left-color: var(--success); }
+  .event-header { display: flex; justify-content: space-between; align-items: center; }
+  .event .sig { color: var(--accent); font-weight: 600; font-size: 11px; }
+  .event .agent { color: var(--text-muted); font-size: 11px; }
+  .event .time { color: var(--text-muted); font-size: 10px; }
+  .event .match { color: var(--text-secondary); font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 11px; padding: 4px 8px; background: rgba(15,22,41,0.6); border-radius: 3px; word-break: break-all; }
+  .event .verdict { font-size: 10px; font-weight: 600; }
+
+  /* ── Threat bars ── */
+  .threat-bar { display: flex; gap: 3px; margin-top: 10px; border-radius: 4px; overflow: hidden; }
+  .threat-bar .bar { height: 22px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; letter-spacing: 0.3px; color: rgba(255,255,255,0.9); transition: flex 0.3s; }
+
+  /* ── Tables ── */
+  .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .data-table th { text-align: left; padding: 8px 12px; color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; border-bottom: 1px solid var(--border); }
+  .data-table td { padding: 8px 12px; border-bottom: 1px solid rgba(30,41,59,0.3); color: var(--text-secondary); }
+  .data-table tr:hover td { background: rgba(59,130,246,0.04); }
+  .data-table code { color: var(--accent); font-size: 11px; font-family: 'JetBrains Mono', 'SF Mono', monospace; }
+
+  /* ── Policy / Forms ── */
+  .policy-section { padding: 20px 28px; }
+  .rule-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 12px; }
+  .rule-card h3 { color: var(--accent); font-size: 13px; font-weight: 600; margin-bottom: 10px; }
+  .input-group { margin-bottom: 10px; }
+  .input-group label { display: block; color: var(--text-muted); font-size: 11px; margin-bottom: 3px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.3px; }
+  .input-group select, .input-group input { background: var(--bg-input); border: 1px solid var(--border); color: var(--text-primary); padding: 7px 10px; border-radius: 4px; font-size: 12px; width: 100%; transition: border-color 0.15s; }
+  .input-group select:focus, .input-group input:focus { border-color: var(--accent); outline: none; }
+  .btn { padding: 7px 16px; border-radius: 5px; border: 1px solid transparent; cursor: pointer; font-size: 12px; font-weight: 500; transition: all 0.15s; }
+  .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-danger { background: transparent; color: var(--critical); border-color: var(--critical); }
+  .btn-danger:hover { background: var(--critical-bg); }
+  .btn-secondary { background: transparent; color: var(--text-secondary); border-color: var(--border-light); }
+  .btn-secondary:hover { background: var(--bg-card-hover); color: var(--text-primary); }
   .btn-group { display: flex; gap: 8px; margin-top: 12px; }
-  .history-item { padding: 8px 12px; background: #0d1117; border-radius: 4px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
-  .history-item .ver { color: #58a6ff; font-weight: 600; }
-  .toast { position: fixed; bottom: 24px; right: 24px; background: #238636; color: #fff; padding: 12px 20px; border-radius: 8px; font-size: 13px; display: none; z-index: 100; }
-  .toast.error { background: #da3633; }
+
+  /* ── History ── */
+  .history-item { padding: 8px 12px; background: var(--bg-input); border-radius: 4px; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; font-size: 11px; }
+  .history-item .ver { color: var(--accent); font-weight: 600; }
+
+  /* ── Toast ── */
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg-card); border: 1px solid var(--success); color: var(--text-primary); padding: 12px 20px; border-radius: 6px; font-size: 12px; display: none; z-index: 100; box-shadow: 0 8px 24px rgba(0,0,0,0.4); }
+  .toast.error { border-color: var(--critical); }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 3px; }
 </style>
 </head>
 <body>
 <div class="header">
-  <h1>Shroud Security Dashboard</h1>
-  <span class="live-dot"></span>
-  <span class="refresh" id="lastUpdate">Loading...</span>
+  <div class="logo">
+    <div class="logo-icon">S</div>
+    <div>
+      <h1>Shroud</h1>
+      <div class="subtitle">Agent Firewall</div>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <div class="live-indicator">
+    <span class="live-dot"></span>
+    <span id="lastUpdate">Connecting...</span>
+  </div>
 </div>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
@@ -719,7 +817,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab" onclick="switchTab('calls')">Detection</div>
 </div>
 <div class="grid" id="content">
-  <div class="card"><h2>Loading...</h2></div>
+  <div class="card"><h2>Initializing...</h2></div>
 </div>
 <div id="rulesContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
@@ -864,28 +962,32 @@ async function refresh() {
 
     let html = '';
 
-    // Overview cards
-    html += '<div class="card"><h2>Security Events</h2>';
-    html += '<div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div>';
-    html += '<div class="stat-label">Total events detected</div>';
-    html += '<div class="row"><span class="label">Flagged</span><span class="value">' + sec.flaggedCount + '</span></div>';
-    html += '<div class="row"><span class="label">Blocked</span><span class="value" style="color:#f85149">' + sec.blockedCount + '</span></div>';
-    html += '<div class="row"><span class="label">Mode</span><span class="value">' + sec.injectionDetection + '</span></div>';
+    // Overview cards — top row metrics
+    const modeColor = sec.injectionDetection === 'block' ? 'pill-critical' : sec.injectionDetection === 'flag' ? 'pill-medium' : 'pill-info';
+    html += '<div class="card"><h2>Threat Detection</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div><div class="stat-label">Events</div></div>';
+    html += '<div class="stat-group"><div class="stat red">' + sec.blockedCount + '</div><div class="stat-label">Blocked</div></div>';
+    html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Firewall Mode</span><span class="pill ' + modeColor + '">' + sec.injectionDetection.toUpperCase() + '</span></div>';
     html += '</div>';
 
-    html += '<div class="card"><h2>Agents</h2>';
-    html += '<div class="stat">' + ag.total + '</div>';
-    html += '<div class="stat-label">Active agents tracked</div>';
-    html += '<div class="row"><span class="label">LLM Calls</span><span class="value">' + ag.totalLlmCalls + '</span></div>';
-    html += '<div class="row"><span class="label">With Baseline</span><span class="value">' + ag.withBaseline + '/' + ag.total + '</span></div>';
-    html += '<div class="row"><span class="label">Profiling</span><span class="value">' + (sec.profilingEnabled ? sec.profilingMode : 'off') + '</span></div>';
+    html += '<div class="card"><h2>Agent Inventory</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">With Baseline</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Profiling</span><span class="pill pill-info">' + (sec.profilingEnabled ? sec.profilingMode.toUpperCase() : 'OFF') + '</span></div>';
     html += '</div>';
 
-    html += '<div class="card"><h2>Obfuscation</h2>';
-    html += '<div class="stat green">' + obf.totalObfuscated + '</div>';
-    html += '<div class="stat-label">Entities obfuscated</div>';
-    html += '<div class="row"><span class="label">Store Mappings</span><span class="value">' + obf.storeMappings + '</span></div>';
-    html += '<div class="row"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
+    html += '<div class="card"><h2>Privacy Shield</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat green">' + obf.totalObfuscated.toLocaleString() + '</div><div class="stat-label">Entities Protected</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + obf.storeMappings + '</div><div class="stat-label">Active Mappings</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
     html += '</div>';
 
     // LLM Cache + External Signatures
@@ -894,20 +996,20 @@ async function refresh() {
     html += '<div class="card"><h2>LLM Cache</h2>';
     if (cache && cache.turns > 0) {
       const hitPct = Math.round(cache.hitRatio * 100);
-      const hitColor = hitPct >= 70 ? '#3fb950' : hitPct >= 30 ? '#d29922' : '#f85149';
-      html += '<div class="stat" style="color:' + hitColor + '">' + hitPct + '%</div>';
+      const hitCls = hitPct >= 70 ? 'green' : hitPct >= 30 ? 'yellow' : 'red';
+      html += '<div class="stat ' + hitCls + '">' + hitPct + '%</div>';
       html += '<div class="stat-label">Cache hit ratio (' + cache.turns + ' turns)</div>';
       html += '<div class="row"><span class="label">Input tokens</span><span class="value">' + cache.totalInput.toLocaleString() + '</span></div>';
-      html += '<div class="row"><span class="label">Cache read</span><span class="value" style="color:#3fb950">' + cache.totalCacheRead.toLocaleString() + '</span></div>';
+      html += '<div class="row"><span class="label">Cache read</span><span class="value" style="color:var(--success)">' + cache.totalCacheRead.toLocaleString() + '</span></div>';
       html += '<div class="row"><span class="label">Cache write</span><span class="value">' + cache.totalCacheWrite.toLocaleString() + '</span></div>';
       html += '<div class="row"><span class="label">Output tokens</span><span class="value">' + cache.totalOutput.toLocaleString() + '</span></div>';
     } else {
-      html += '<div class="stat" style="color:#484f58">—</div>';
+      html += '<div class="stat" style="color:var(--text-muted)">—</div>';
       html += '<div class="stat-label">No LLM calls profiled yet</div>';
     }
     if (extSigs) {
-      html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid #30363d">';
-      html += '<div class="row"><span class="label">External Sigs</span><span class="value" style="color:#58a6ff">' + extSigs.count + ' (v' + extSigs.version + ')</span></div>';
+      html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border)">';
+      html += '<div class="row"><span class="label">External Sigs</span><span class="pill pill-info">' + extSigs.count + ' (v' + extSigs.version + ')</span></div>';
       html += '<div class="row"><span class="label">Last refresh</span><span class="value">' + timeAgo(new Date(extSigs.loadedAt).getTime()) + '</span></div>';
       html += '</div>';
     }
@@ -965,46 +1067,42 @@ async function refresh() {
       const complianceText = h.compliant === false ? 'non-compliant' : h.compliant === true ? 'compliant' : 'pending';
       const complianceColour = h.compliant === false ? '#f85149' : h.compliant === true ? '#3fb950' : '#8b949e';
 
-      html += '<div class="agent-card ' + maturity + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)" style="cursor:pointer">';
-      html += '<div style="display:flex;justify-content:space-between;align-items:center">';
-      html += '<div class="agent-name" style="font-size:15px">';
-      html += '<span style="color:' + healthColour + ';margin-right:6px" title="' + (h.status || 'unknown') + '">' + healthIcon + '</span>';
-      html += (a.agentLabel || a.agentBuildId);
-      html += ' <span style="font-size:11px;color:' + roleColour + ';font-weight:400;margin-left:8px;padding:1px 6px;border:1px solid ' + roleColour + ';border-radius:10px">' + roleLabel + ' <span style="opacity:0.7">' + rolePct + '%</span></span>';
+      const healthCls = h.status === 'critical' ? 'critical' : h.status === 'warning' ? 'warning' : maturity;
+      const compliancePill = h.compliant === false ? 'pill-critical' : h.compliant === true ? 'pill-healthy' : 'pill-info';
+      const eventPill = a.securityEventCount > 5 ? 'pill-critical' : a.securityEventCount > 0 ? 'pill-medium' : 'pill-low';
+
+      html += '<div class="agent-card ' + healthCls + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)">';
+      html += '<div class="agent-header">';
+      html += '<div class="agent-name">' + (a.agentLabel || a.agentBuildId) + '</div>';
+      html += '<div style="display:flex;gap:6px;align-items:center">';
+      html += '<span class="agent-role">' + roleLabel + ' ' + rolePct + '%</span>';
+      html += '<span class="pill ' + compliancePill + '">' + complianceText + '</span>';
       html += '</div>';
-      html += '<div style="display:flex;gap:8px;align-items:center">';
-      html += '<span style="font-size:10px;color:' + complianceColour + ';border:1px solid ' + complianceColour + ';padding:1px 5px;border-radius:8px">' + complianceText + '</span>';
-      html += '<span class="badge' + (a.securityEventCount > 5 ? ' danger' : a.securityEventCount > 0 ? ' warn' : '') + '">' + a.securityEventCount + ' events</span>';
       html += '</div>';
-      html += '</div>';
+
       if (h.issues && h.issues.length > 0) {
-        html += '<div style="margin-top:4px;font-size:11px;color:#f85149">';
+        html += '<div style="margin-top:4px;font-size:11px;color:var(--critical)">';
         for (const issue of h.issues) html += '&#x26A0; ' + issue + '<br>';
         html += '</div>';
       }
-      html += '<table style="width:100%;margin-top:8px;font-size:12px;color:#8b949e"><tr>';
-      html += '<td>Build: <span style="color:#58a6ff">' + a.agentBuildId.slice(0,12) + '</span></td>';
-      html += '<td>Calls: <span style="color:#c9d1d9">' + a.llmCallCount + '</span></td>';
-      html += '<td>Sessions: <span style="color:#c9d1d9">' + (p.sessionCount||0) + '</span></td>';
-      html += '<td>Model: <span style="color:#c9d1d9">' + (a.detectedModel || 'unknown') + '</span></td>';
-      html += '</tr></table>';
+
+      html += '<div class="agent-stats">';
+      html += '<div class="stat-mini"><span class="num">' + a.llmCallCount + '</span><span class="lbl">calls</span></div>';
+      html += '<div class="stat-mini"><span class="num">' + (p.sessionCount||0) + '</span><span class="lbl">sessions</span></div>';
+      html += '<div class="stat-mini"><span class="pill ' + eventPill + '">' + a.securityEventCount + ' events</span></div>';
+      html += '<div class="stat-mini"><span class="lbl">' + (a.detectedModel || 'unknown') + '</span></div>';
+      html += '</div>';
+
+      html += '<div class="agent-meta" style="margin-top:6px">';
       const inv = (a.toolInventory || []);
-      const toolDisplay = inv.length > 0
-        ? '<span style="color:#d2a8ff">' + inv.length + ' tools</span> — ' + inv.slice(0, 8).join(', ') + (inv.length > 8 ? '...' : '')
-        : '<span style="color:#484f58">' + tools + '</span>';
-      html += '<table style="width:100%;margin-top:4px;font-size:12px;color:#8b949e"><tr>';
-      html += '<td>Entity categories: <span style="color:#d2a8ff">' + cats + '</span></td>';
-      html += '<td>Tools: ' + toolDisplay + '</td>';
-      html += '</tr></table>';
+      if (inv.length > 0) html += '<span>Tools: ' + inv.length + '</span>';
+      html += '<span>Build: ' + a.agentBuildId.slice(0,8) + '</span>';
       const channels = a.channels || [];
-      if (channels.length > 0) {
-        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">Channels: ';
-        for (const ch of channels) {
-          const chColor = ch === 'slack' ? '#4A154B' : ch === 'whatsapp' ? '#25D366' : ch === 'tui' ? '#58a6ff' : ch === 'email' ? '#d29922' : ch === 'heartbeat' ? '#f85149' : ch === 'cron' ? '#bc4c00' : '#8b949e';
-          html += '<span style="color:' + chColor + ';border:1px solid ' + chColor + ';padding:0 4px;border-radius:3px;margin-right:4px">' + ch + '</span>';
-        }
-        html += '</div>';
+      for (const ch of channels) {
+        const chCls = ch === 'slack' ? 'pill-info' : ch === 'whatsapp' ? 'pill-low' : ch === 'cron' ? 'pill-medium' : 'pill-info';
+        html += '<span class="pill ' + chCls + '">' + ch + '</span>';
       }
+      html += '</div>';
       const hb = a.heartbeat || {};
       if (hb.enabled) {
         const hbColor = hb.status === 'alive' ? '#3fb950' : hb.status === 'stale' ? '#d29922' : hb.status === 'dead' ? '#f85149' : '#8b949e';
