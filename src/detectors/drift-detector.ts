@@ -231,7 +231,8 @@ export class DriftDetector {
   setReference(userMessage: string): void {
     this._referenceText = userMessage;
     this._referenceVec = this._provider.embed(userMessage);
-    this._trajectory = [];
+    // Don't clear trajectory — accumulate across turns for dashboard visualization.
+    // Reset similarity baseline so the first tool call in a new turn isn't a "sudden turn".
     this._prevSimilarity = 1.0;
   }
 
@@ -248,7 +249,7 @@ export class DriftDetector {
     const suddenTurn = delta < -this._suddenTurnDelta;
     const drifted = similarity < this._driftThreshold;
 
-    // Record trajectory point
+    // Record trajectory point (cap at 200 to bound memory)
     this._trajectory.push({
       step: this._trajectory.length + 1,
       toolName,
@@ -256,6 +257,7 @@ export class DriftDetector {
       delta,
       timestamp: Date.now(),
     });
+    if (this._trajectory.length > 200) this._trajectory.shift();
 
     this._prevSimilarity = similarity;
 

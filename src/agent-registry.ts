@@ -15,7 +15,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 
 /** A registered OpenClaw agent. */
 export interface AgentRegistryEntry {
@@ -399,7 +399,6 @@ function _defaultOpenClawDir(): string {
   // OPENCLAW_CONFIG_PATH points to openclaw.json directly — use its parent dir
   const configPath = process.env.OPENCLAW_CONFIG_PATH;
   if (configPath) {
-    const { dirname } = require("path");
     return dirname(configPath);
   }
   // OPENCLAW_STATE_DIR is the state directory containing openclaw.json

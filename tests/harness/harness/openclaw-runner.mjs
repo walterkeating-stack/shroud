@@ -357,8 +357,9 @@ export class OpenClawRunner {
     delete env.OPENCLAW_SKIP_CHANNELS;
     delete env.OPENCLAW_SKIP_CRON;
 
-    // --dev: auto-creates dev config + workspace without BOOTSTRAP.md
-    this.gatewayProc = spawn("node", [bin, "gateway", "run", "--dev", "--auth", "token", "--token", "shroud-test-token", "--port", String(this.gatewayPort)], {
+    // State dir + config fully controlled via env vars (OPENCLAW_STATE_DIR, OPENCLAW_CONFIG_PATH)
+    // Do NOT use --dev: it overrides state dir to ~/.openclaw-dev, missing installed plugins
+    this.gatewayProc = spawn("node", [bin, "gateway", "run", "--auth", "token", "--token", "shroud-test-token", "--port", String(this.gatewayPort)], {
       stdio: ["pipe", "pipe", "pipe"],
       env,
       cwd: join(this.stateDir, "workspace"),
@@ -388,6 +389,8 @@ export class OpenClawRunner {
 
     // Verify plugin loaded
     if (!this.gatewayStdout.includes("Plugin loaded") && !this.gatewayStderr.includes("Plugin loaded")) {
+      this._log(`Gateway stdout (last 2000):\n${this.gatewayStdout.slice(-2000)}`);
+      this._log(`Gateway stderr (last 2000):\n${this.gatewayStderr.slice(-2000)}`);
       throw new Error("Shroud plugin did not load in gateway — check config");
     }
     this._log("Shroud plugin loaded in gateway");

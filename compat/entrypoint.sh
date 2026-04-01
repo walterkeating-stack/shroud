@@ -28,7 +28,9 @@ export OPENCLAW_STATE_DIR="${STATE_DIR}"
 # Install plugin — same path real users hit
 echo "Installing Shroud plugin..."
 SHROUD_PKG=$(npm root -g)/shroud-privacy
-openclaw plugins install "${SHROUD_PKG}" 2>&1
+# Disable dashboard during install — OC loads plugin to verify, and the HTTP
+# server would keep the install process alive forever.
+SHROUD_DASHBOARD=false openclaw plugins install "${SHROUD_PKG}" --dangerously-force-unsafe-install 2>&1
 
 # Add WhatsApp channel (uses Baileys intercept in Docker)
 echo "Adding WhatsApp channel..."
