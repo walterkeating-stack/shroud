@@ -8,7 +8,7 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { createTurnContext, validateToolResult, checkExfilChain } from "../src/detectors/result-validator.js";
+import { createTurnContext, validateToolResult, checkExfilChain, checkNovelToolUsage } from "../src/detectors/result-validator.js";
 import { extractIntentSignals, ToolCategory } from "../src/detectors/tool-intent.js";
 
 // ─── Heuristic 1: Category escalation ───
@@ -287,5 +287,118 @@ describe("Baseline deviation detection", () => {
 
     const events = validateToolResult(ctx, new Set(["api_key"]), 500);
     expect(events.filter(e => e.signatureId === "rv_baseline_deviation")).toHaveLength(0);
+  });
+});
+
+// ─── Adaptive bulk threshold ───
+
+describe("Adaptive bulk threshold from baseline", () => {
+  test("uses baseline responseLength stats when available", () => {
+    const baseline = {
+      agentBuildId: "test",
+      sessionCount: 10,
+      maturity: "mature" as const,
+      features: {
+        responseLength: { mean: 2000, m2: 500000, n: 10, min: 500, max: 4000 },
+      },
+      toolProfile: ["exec"],
+      categoryProfile: ["email"],
+      lastUpdated: Date.now(),
+    };
+    // mean=2000, sd=sqrt(500000/10)=~223, threshold=2000+3*223=~2670, min 5000
+    // So threshold is 5000 (floor)
+    const intent = extractIntentSignals("Run something");
+    const ctx = createTurnContext(intent, baseline);
+    ctx.pendingToolCall = { toolName: "exec", category: ToolCategory.EXECUTE, timestamp: Date.now() };
+
+    // 6KB should trigger with adaptive threshold (5KB floor), 3+ categories
+    const events = validateToolResult(ctx, new Set(["email", "ip_address", "hostname"]), 6_000);
+    expect(events.some(e => e.signatureId === "rv_bulk_sensitive")).toBe(true);
+  });
+
+  test("falls back to 10KB when no baseline", () => {
+    const intent = extractIntentSignals("Run something");
+    const ctx = createTurnContext(intent, null);
+    ctx.pendingToolCall = { toolName: "exec", category: ToolCategory.EXECUTE, timestamp: Date.now() };
+
+    // 8KB should NOT trigger with default 10KB threshold
+    const events = validateToolResult(ctx, new Set(["email", "ip_address", "hostname"]), 8_000);
+    expect(events.some(e => e.signatureId === "rv_bulk_sensitive")).toBe(false);
+
+    // 12KB should trigger
+    const events2 = validateToolResult(ctx, new Set(["email", "ip_address", "hostname"]), 12_000);
+    expect(events2.some(e => e.signatureId === "rv_bulk_sensitive")).toBe(true);
+  });
+});
+
+// ─── Novel egress tool detection ───
+
+describe("Novel egress tool detection", () => {
+  const baseline = {
+    agentBuildId: "coach-test",
+    sessionCount: 10,
+    maturity: "mature" as const,
+    features: {},
+    toolProfile: ["Read", "Write", "exec", "memory_search"],
+    categoryProfile: ["email", "phone", "person_name"],
+    lastUpdated: Date.now(),
+  };
+
+  test("agent uses 'message' for the first time → flagged", () => {
+    const intent = extractIntentSignals("Do something");
+    const ctx = createTurnContext(intent, baseline);
+
+    const event = checkNovelToolUsage(ctx, "message");
+    expect(event).not.toBeNull();
+    expect(event!.signatureId).toBe("rv_novel_egress_tool");
+    expect(event!.severity).toBe("high");
+  });
+
+  test("agent uses 'web_fetch' for the first time → flagged", () => {
+    const intent = extractIntentSignals("Do something");
+    const ctx = createTurnContext(intent, baseline);
+
+    const event = checkNovelToolUsage(ctx, "web_fetch");
+    expect(event).not.toBeNull();
+  });
+
+  test("agent uses known tool 'Read' → NOT flagged", () => {
+    const intent = extractIntentSignals("Do something");
+    const ctx = createTurnContext(intent, baseline);
+
+    expect(checkNovelToolUsage(ctx, "Read")).toBeNull();
+  });
+
+  test("agent uses novel non-egress tool → NOT flagged", () => {
+    const intent = extractIntentSignals("Do something");
+    const ctx = createTurnContext(intent, baseline);
+
+    // "browser" is novel but we only flag COMMUNICATE and NETWORK for egress
+    // browser is NETWORK, so this SHOULD be flagged
+    const event = checkNovelToolUsage(ctx, "browser");
+    expect(event).not.toBeNull();
+  });
+
+  test("agent uses novel Write tool → NOT flagged (local, not egress)", () => {
+    const baselineNoWrite = { ...baseline, toolProfile: ["Read", "exec"] };
+    const intent = extractIntentSignals("Do something");
+    const ctx = createTurnContext(intent, baselineNoWrite);
+
+    expect(checkNovelToolUsage(ctx, "Write")).toBeNull();
+  });
+
+  test("learning baseline → NOT flagged (not enough data)", () => {
+    const learningBaseline = { ...baseline, maturity: "learning" as const, sessionCount: 2 };
+    const intent = extractIntentSignals("Do something");
+    const ctx = createTurnContext(intent, learningBaseline);
+
+    expect(checkNovelToolUsage(ctx, "message")).toBeNull();
+  });
+
+  test("no baseline → NOT flagged", () => {
+    const intent = extractIntentSignals("Do something");
+    const ctx = createTurnContext(intent, null);
+
+    expect(checkNovelToolUsage(ctx, "message")).toBeNull();
   });
 });

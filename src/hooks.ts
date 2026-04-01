@@ -38,7 +38,7 @@ import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
 import { extractIntentSignals, checkToolAlignment, checkEgressAttempt, ToolSequenceTracker, buildToolIntentEvent, TOOL_CATEGORIES } from "./detectors/tool-intent.js";
 import type { IntentSignals } from "./detectors/tool-intent.js";
-import { createTurnContext, validateToolResult, checkExfilChain } from "./detectors/result-validator.js";
+import { createTurnContext, validateToolResult, checkExfilChain, checkNovelToolUsage } from "./detectors/result-validator.js";
 import type { TurnContext } from "./detectors/result-validator.js";
 import { PolicyEngine } from "./policy.js";
 import { AgentRegistry } from "./agent-registry.js";
@@ -1094,6 +1094,22 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               return { block: true, blockReason: `Shroud security: ${exfil.description}` };
             }
             api.logger?.warn(`[shroud] Exfil chain detected (flagged): ${exfil.description}`);
+          }
+
+          // 5. Novel egress tool check: agent using communication/network tool for the first time
+          const novelTool = checkNovelToolUsage(_turnContext, toolName);
+          if (novelTool) {
+            const agentSession = agentTracker.getCurrentSession();
+            novelTool.agentBuildId = agentSession?.agentBuildId;
+            novelTool.agentLabel = agentSession?.agentLabel;
+            novelTool.agentSessionId = agentSession?.sessionId;
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(novelTool);
+            agentTracker.recordSecurityEvent(1);
+            if (config.injectionDetection === "block") {
+              api.logger?.warn(`[shroud] BLOCKED novel egress tool: ${novelTool.description}`);
+              return { block: true, blockReason: `Shroud security: ${novelTool.description}` };
+            }
+            api.logger?.warn(`[shroud] Novel egress tool (flagged): ${novelTool.description}`);
           }
 
           // Stash pending tool call for result validation in tool_result_persist

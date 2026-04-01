@@ -85,14 +85,26 @@ export function validateToolResult(
   }
 
   // Heuristic 3: Bulk sensitive data from exec/network tools
-  if (resultSize > 10_000 && resultCategories.size > 2
+  // Adaptive threshold: use baseline responseLength stats if available (mean + 3σ),
+  // otherwise fall back to 10KB hardcoded.
+  const bulkThreshold = (() => {
+    if (ctx.baseline?.features?.responseLength) {
+      const stats = ctx.baseline.features.responseLength;
+      if (stats.n >= 5) {
+        const sd = stats.n >= 2 ? Math.sqrt(stats.m2 / stats.n) : 0;
+        return Math.max(5_000, Math.round(stats.mean + 3 * sd)); // at least 5KB
+      }
+    }
+    return 10_000; // default
+  })();
+  if (resultSize > bulkThreshold && resultCategories.size > 2
       && tool.category !== ToolCategory.READ_ONLY
       && tool.category !== ToolCategory.WRITE_LOCAL) {
     events.push(buildEvent(
       tool.toolName,
       "bulk_sensitive",
       "medium",
-      `Large result (${Math.round(resultSize / 1024)}KB) with ${resultCategories.size} PII categories from "${tool.toolName}"`,
+      `Large result (${Math.round(resultSize / 1024)}KB, threshold ${Math.round(bulkThreshold / 1024)}KB) with ${resultCategories.size} PII categories from "${tool.toolName}"`,
     ));
   }
 
@@ -154,6 +166,38 @@ export function checkExfilChain(
     "exfil_chain",
     "high",
     `"${toolName}" called after tools returned PII (${[...allCategories].slice(0, 5).join(", ")}); user did not request ${category === ToolCategory.COMMUNICATE ? "communication" : "network access"}`,
+  );
+}
+
+/**
+ * Check if a tool transition is novel for this agent.
+ *
+ * Uses the baseline's toolProfile to determine if the agent has ever used
+ * this tool before. Novel egress tools (communicate/network) that the agent
+ * has never used are flagged — they may indicate injection-driven behavior.
+ *
+ * Called in before_tool_call.
+ */
+export function checkNovelToolUsage(
+  ctx: TurnContext,
+  toolName: string,
+): SecurityEvent | null {
+  if (!ctx.baseline || ctx.baseline.maturity === "learning") return null;
+
+  const knownTools = new Set(ctx.baseline.toolProfile);
+  if (knownTools.has(toolName)) return null; // Agent has used this tool before
+
+  const category = TOOL_CATEGORIES[toolName];
+  if (!category) return null;
+
+  // Only flag novel EGRESS tools — novel read/write is expected as agents evolve
+  if (category !== ToolCategory.COMMUNICATE && category !== ToolCategory.NETWORK) return null;
+
+  return buildEvent(
+    toolName,
+    "novel_egress_tool",
+    "high",
+    `Agent used "${toolName}" for the first time (not in ${ctx.baseline.sessionCount}-session baseline); this is an egress tool`,
   );
 }
 
