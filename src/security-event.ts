@@ -78,6 +78,9 @@ export class SecurityEventBus {
   private _dedupWindow = new Map<string, number>();
   /** Dedup interval in ms — skip duplicate events within this window. */
   private _dedupIntervalMs: number;
+  /** Content-hash dedup: signatureId:matchStart:matchedText:agentBuildId → true.
+   *  Permanently suppresses identical matches at the same offset (system prompt FPs). */
+  private _contentDedup = new Set<string>();
 
   constructor(maxEvents = 500, dedupIntervalMs = 0) {
     this._maxEvents = maxEvents;
@@ -85,8 +88,24 @@ export class SecurityEventBus {
   }
 
   emit(event: SecurityEvent): void {
-    // Dedup: skip events with same signature + matched text + agent within the dedup window.
-    // This prevents shared system prompt content from generating repeated events per call.
+    // Content-hash dedup: if the same signature fires on the same text at the same
+    // offset for the same agent, suppress permanently. This catches shared system
+    // prompt content (pe_repeat_instructions, eb_token_smuggling) that fires on
+    // every request but never changes.
+    const contentKey = `${event.signatureId}:${event.matchStart}:${(event.matchedText || "").slice(0, 80)}:${event.agentBuildId || ""}`;
+    if (this._contentDedup.has(contentKey)) {
+      return; // Already seen this exact match — suppress
+    }
+    this._contentDedup.add(contentKey);
+    // Cap content dedup set
+    if (this._contentDedup.size > 5000) {
+      // Keep most recent entries by rebuilding (rare — only under sustained novel attacks)
+      const entries = [...this._contentDedup];
+      this._contentDedup.clear();
+      for (const e of entries.slice(-2500)) this._contentDedup.add(e);
+    }
+
+    // Time-window dedup: skip events with same signature + matched text + agent within the dedup window.
     const dedupKey = `${event.signatureId}:${(event.matchedText || "").slice(0, 100)}:${event.agentLabel || ""}`;
     const lastEmit = this._dedupWindow.get(dedupKey);
     if (lastEmit && (event.timestamp - lastEmit) < this._dedupIntervalMs) {

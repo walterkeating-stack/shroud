@@ -806,51 +806,93 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
 
   if (view === "trajectory") {
     // Intent drift trajectory projected to 3D
-    if (!dd) return json(res, 200, { view, points: [], edges: [], pca: { varianceExplained: [0, 0, 0] } });
+    // First try live drift trajectory, then fall back to persisted workflow data
+    const trajectory = dd ? dd.getTrajectory() : [];
+    const refText = dd ? dd.getReferenceText() : "";
 
-    const trajectory = dd.getTrajectory();
-    const provider = dd.getProvider();
-    const refText = dd.getReferenceText();
-
-    // Collect all vectors for PCA
-    const allVecs: Float64Array[] = [];
-    const refVec = refText ? provider.embed(refText) : null;
-    if (refVec) allVecs.push(refVec);
-    // We need to re-embed tool descriptions for the trajectory points
-    // Since we only have similarity scores, we'll create a synthetic projection
-    // based on similarity as distance from reference
     const points: any[] = [];
     const edges: any[] = [];
 
-    if (refVec) {
-      points.push({
-        id: "ref", x: 0, y: 0, z: 0,
-        label: "User Intent", color: "#22c55e",
-        metadata: { text: refText.slice(0, 100), similarity: 1.0 },
-      });
-    }
+    if (trajectory.length > 0) {
+      // Live drift data — show active session trajectory
+      const provider = dd!.getProvider();
+      const refVec = refText ? provider.embed(refText) : null;
+      if (refVec) {
+        points.push({
+          id: "ref", x: 0, y: 0, z: 0,
+          label: "User Intent", color: "#22c55e",
+          metadata: { text: refText.slice(0, 100), similarity: 1.0 },
+        });
+      }
 
-    for (let i = 0; i < trajectory.length; i++) {
-      const tp = trajectory[i];
-      // Position based on similarity: closer = nearer to origin
-      const angle = (i / Math.max(trajectory.length, 1)) * Math.PI * 2;
-      const distance = (1 - tp.similarity) * 5;
-      points.push({
-        id: `t${i}`,
-        x: Math.cos(angle) * distance,
-        y: Math.sin(angle) * distance,
-        z: i * 0.3,
-        label: tp.toolName,
-        color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
-        metadata: { similarity: tp.similarity, delta: tp.delta, step: tp.step, timestamp: tp.timestamp },
-      });
-      // Edge from previous point
-      const fromId = i === 0 ? "ref" : `t${i - 1}`;
-      edges.push({
-        from: fromId, to: `t${i}`,
-        color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
-        width: Math.max(0.5, tp.similarity * 3),
-      });
+      for (let i = 0; i < trajectory.length; i++) {
+        const tp = trajectory[i];
+        const angle = (i / Math.max(trajectory.length, 1)) * Math.PI * 2;
+        const distance = (1 - tp.similarity) * 5;
+        points.push({
+          id: `t${i}`,
+          x: Math.cos(angle) * distance,
+          y: Math.sin(angle) * distance,
+          z: i * 0.3,
+          label: tp.toolName,
+          color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
+          metadata: { similarity: tp.similarity, delta: tp.delta, step: tp.step, timestamp: tp.timestamp },
+        });
+        const fromId = i === 0 ? "ref" : `t${i - 1}`;
+        edges.push({
+          from: fromId, to: `t${i}`,
+          color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
+          width: Math.max(0.5, tp.similarity * 3),
+        });
+      }
+    } else if (vs) {
+      // No live data — show recent workflows from vector store as a tool sequence map.
+      // Each workflow becomes a trajectory from origin, colored by health status.
+      const workflows = vs.getWorkflows().slice(-20);
+      const labelMap = new Map<string, string>();
+      for (const s of deps.agentTracker.getAllSessions()) {
+        labelMap.set(s.agentBuildId, s.agentLabel);
+      }
+
+      // Group workflows by agent and show sequences radiating from center
+      const agents = [...new Set(workflows.map(w => w.agentBuildId))];
+      for (let a = 0; a < agents.length; a++) {
+        const agentId = agents[a];
+        const agentName = labelMap.get(agentId) || agentId.slice(0, 8);
+        const agentWorkflows = workflows.filter(w => w.agentBuildId === agentId);
+        const baseAngle = (a / agents.length) * Math.PI * 2;
+
+        // Agent origin node
+        points.push({
+          id: `agent-${a}`, x: Math.cos(baseAngle) * 2, y: Math.sin(baseAngle) * 2, z: 0,
+          label: agentName, color: "#3b82f6",
+          metadata: { type: "agent", workflows: agentWorkflows.length },
+        });
+
+        for (let w = 0; w < agentWorkflows.length; w++) {
+          const wf = agentWorkflows[w];
+          const seq = wf.sequence.slice(0, 8);
+          for (let s = 0; s < seq.length; s++) {
+            const dist = (s + 1) * 0.8;
+            const spread = ((w - agentWorkflows.length / 2) * 0.3);
+            points.push({
+              id: `w${a}-${w}-${s}`,
+              x: Math.cos(baseAngle + spread * 0.1) * (2 + dist),
+              y: Math.sin(baseAngle + spread * 0.1) * (2 + dist),
+              z: w * 0.5 + s * 0.1,
+              label: seq[s],
+              color: wf.healthy ? "#22c55e" : "#ef4444",
+              metadata: { agent: agentName, session: wf.sessionId.slice(0, 8), step: s + 1 },
+            });
+            const fromId = s === 0 ? `agent-${a}` : `w${a}-${w}-${s - 1}`;
+            edges.push({
+              from: fromId, to: `w${a}-${w}-${s}`,
+              color: wf.healthy ? "#22c55e44" : "#ef444444",
+              width: 1,
+            });
+          }
+        }
+      }
     }
 
     return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.5, 0.3, 0.2] } });
@@ -875,12 +917,17 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
     const points = workflows.map((w, i) => {
       const [x, y, z] = pcaResult ? pcaResult.project(vectors[i]) : [0, 0, 0];
       const agentName = labelMap.get(w.agentBuildId) || w.agentBuildId.slice(0, 8);
+      // Show unique tools in sequence, not repeated names
+      const uniqueTools = [...new Set(w.sequence)];
+      const seqLabel = uniqueTools.length <= 4
+        ? uniqueTools.join("→")
+        : uniqueTools.slice(0, 3).join("→") + " +" + (uniqueTools.length - 3);
       return {
         id: w.id,
         x, y, z,
-        label: agentName + ": " + w.sequence.slice(0, 3).join("→"),
+        label: agentName + ": " + seqLabel,
         color: w.healthy ? "#22c55e" : "#ef4444",
-        metadata: { agent: agentName, sequence: w.sequence.join("→"), healthy: w.healthy },
+        metadata: { agent: agentName, tools: uniqueTools.join(", "), calls: w.sequence.length, healthy: w.healthy },
       };
     });
 
@@ -902,32 +949,86 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
   }
 
   if (view === "coherence") {
-    if (!ct) return json(res, 200, { view, points: [], edges: [], pca: { varianceExplained: [0, 0, 0] } });
-
-    const pairs = ct.getRecentPairs();
+    const pairs = ct ? ct.getRecentPairs() : [];
     const points: any[] = [];
     const edges: any[] = [];
 
-    for (let i = 0; i < pairs.length; i++) {
-      const p = pairs[i];
-      // Result point (blue)
-      points.push({
-        id: `r${i}`, x: i * 2, y: 0, z: 0,
-        label: p.resultToolName, color: "#3b82f6",
-        metadata: { type: "result", distance: p.distance },
-      });
-      // Action point (orange), offset by distance
-      points.push({
-        id: `a${i}`, x: i * 2 + 0.5, y: p.distance * 3, z: 0.5,
-        label: p.actionToolName, color: "#f97316",
-        metadata: { type: "action", distance: p.distance },
-      });
-      // Connecting edge — red if incoherent (high distance)
-      edges.push({
-        from: `r${i}`, to: `a${i}`,
-        color: p.distance < 0.5 ? "#22c55e" : p.distance < 0.8 ? "#eab308" : "#ef4444",
-        width: Math.max(0.5, (1 - p.distance) * 3),
-      });
+    if (pairs.length > 0) {
+      // Live coherence pairs
+      for (let i = 0; i < pairs.length; i++) {
+        const p = pairs[i];
+        points.push({
+          id: `r${i}`, x: i * 2, y: 0, z: 0,
+          label: p.resultToolName, color: "#3b82f6",
+          metadata: { type: "result", distance: p.distance },
+        });
+        points.push({
+          id: `a${i}`, x: i * 2 + 0.5, y: p.distance * 3, z: 0.5,
+          label: p.actionToolName, color: "#f97316",
+          metadata: { type: "action", distance: p.distance },
+        });
+        edges.push({
+          from: `r${i}`, to: `a${i}`,
+          color: p.distance < 0.5 ? "#22c55e" : p.distance < 0.8 ? "#eab308" : "#ef4444",
+          width: Math.max(0.5, (1 - p.distance) * 3),
+        });
+      }
+    } else if (vs) {
+      // No live data — show persisted transition stats as a tool-flow graph
+      const labelMap = new Map<string, string>();
+      for (const s of deps.agentTracker.getAllSessions()) {
+        labelMap.set(s.agentBuildId, s.agentLabel);
+      }
+
+      // Build flow graph from all agents' workflows
+      const toolNodes = new Map<string, { count: number; agents: Set<string> }>();
+      const transitionEdges = new Map<string, { from: string; to: string; count: number }>();
+
+      for (const w of vs.getWorkflows().slice(-30)) {
+        const agentName = labelMap.get(w.agentBuildId) || w.agentBuildId.slice(0, 8);
+        for (let i = 0; i < w.sequence.length; i++) {
+          const tool = w.sequence[i];
+          const existing = toolNodes.get(tool) || { count: 0, agents: new Set() };
+          existing.count++;
+          existing.agents.add(agentName);
+          toolNodes.set(tool, existing);
+
+          if (i > 0) {
+            const edgeKey = `${w.sequence[i - 1]}→${tool}`;
+            const ex = transitionEdges.get(edgeKey) || { from: w.sequence[i - 1], to: tool, count: 0 };
+            ex.count++;
+            transitionEdges.set(edgeKey, ex);
+          }
+        }
+      }
+
+      // Position tool nodes in a circle
+      const tools = [...toolNodes.keys()];
+      for (let i = 0; i < tools.length; i++) {
+        const angle = (i / tools.length) * Math.PI * 2;
+        const radius = 4;
+        const info = toolNodes.get(tools[i])!;
+        points.push({
+          id: tools[i],
+          x: Math.cos(angle) * radius,
+          y: Math.sin(angle) * radius,
+          z: 0,
+          label: tools[i],
+          color: info.count > 10 ? "#22c55e" : info.count > 3 ? "#3b82f6" : "#94a3b8",
+          metadata: { calls: info.count, agents: [...info.agents].join(", ") },
+        });
+      }
+
+      // Add transition edges with width proportional to frequency
+      const maxCount = Math.max(1, ...[...transitionEdges.values()].map(e => e.count));
+      for (const [, edge] of transitionEdges) {
+        if (!toolNodes.has(edge.from) || !toolNodes.has(edge.to)) continue;
+        edges.push({
+          from: edge.from, to: edge.to,
+          color: edge.count > 5 ? "#22c55e" : "#3b82f6",
+          width: Math.max(0.5, (edge.count / maxCount) * 3),
+        });
+      }
     }
 
     return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.5, 0.3, 0.2] } });
@@ -940,8 +1041,15 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
     const points: any[] = [];
     const edges: any[] = [];
 
-    for (const node of nodes) {
-      const angle = Math.random() * Math.PI * 2;
+    for (let ni = 0; ni < nodes.length; ni++) {
+      const node = nodes[ni];
+      // Deterministic angle from buildId hash — stable across refreshes
+      let hash = 0x811c9dc5;
+      for (let ci = 0; ci < node.agentBuildId.length; ci++) {
+        hash ^= node.agentBuildId.charCodeAt(ci);
+        hash = (hash * 0x01000193) | 0;
+      }
+      const angle = ((hash >>> 0) / 0xffffffff) * Math.PI * 2;
       const dist = node.depth * 3;
       points.push({
         id: node.agentBuildId,
@@ -973,23 +1081,40 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
   if (view === "evolution") {
     // Returns the list of agents for the dropdown + full evolution data for selected agent
     const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
-    if (!vs) return json(res, 200, { view, agents: [], frames: [] });
 
-    const agents = vs.getAllAgentBaselines().map(b => ({
-      buildId: b.agentBuildId,
-      maturity: b.maturity,
-      count: b.count,
-    }));
-
-    // Also resolve labels from agent tracker
+    // Merge agents from vector store baselines AND agent tracker — show all known agents
     const tracker = deps.agentTracker;
-    const agentsWithLabels = agents.map(a => {
-      const session = tracker.getAllSessions().find(s => s.agentBuildId === a.buildId);
-      return { ...a, label: session?.agentLabel || a.buildId.slice(0, 12) };
-    });
+    const agentMap = new Map<string, { buildId: string; label: string; maturity: string; count: number }>();
+
+    // Add agents from vector store (have workflow data)
+    if (vs) {
+      for (const b of vs.getAllAgentBaselines()) {
+        const session = tracker.getAllSessions().find(s => s.agentBuildId === b.agentBuildId);
+        agentMap.set(b.agentBuildId, {
+          buildId: b.agentBuildId,
+          label: session?.agentLabel || b.agentBuildId.slice(0, 12),
+          maturity: b.maturity,
+          count: b.count,
+        });
+      }
+    }
+
+    // Add agents from tracker that aren't in vector store yet (active but no completed sessions)
+    for (const s of tracker.getAllSessions()) {
+      if (!agentMap.has(s.agentBuildId) && s.agentLabel !== "Unknown Agent") {
+        agentMap.set(s.agentBuildId, {
+          buildId: s.agentBuildId,
+          label: s.agentLabel,
+          maturity: "learning",
+          count: 0,
+        });
+      }
+    }
+
+    const agentsWithLabels = [...agentMap.values()];
 
     // If a buildId is specified, return its evolution trajectory
-    if (buildId) {
+    if (buildId && vs) {
       const trajectory = vs.readEvolutionTrajectory(buildId);
       const centroids = trajectory.map(t => t.centroid).filter(c => c.length > 0);
       // Also include cluster centroids from all frames for PCA
@@ -2617,19 +2742,45 @@ function clearScene() {
   pointMeshes = []; edgeMeshes = []; clusterMeshes = [];
 }
 
-// Create text sprite for 3D labels
+// Create text sprite for 3D labels — dynamic canvas width for readability
 function makeLabel(text, color) {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
-  canvas.width = 256; canvas.height = 64;
-  ctx.font = 'bold 24px monospace';
+  if (!ctx) {
+    const mat = new THREE.SpriteMaterial({ color: 0xffffff, transparent: true });
+    return new THREE.Sprite(mat);
+  }
+  const label = (text || '').slice(0, 50);
+  const fontSize = 28;
+  ctx.font = 'bold ' + fontSize + 'px monospace';
+  // Measure text first to size canvas
+  const textWidth = ctx.measureText(label).width;
+  const pad = 20;
+  canvas.width = Math.max(128, Math.ceil(textWidth + pad * 2));
+  canvas.height = 48;
+  // Re-set font after canvas resize (resets context)
+  ctx.font = 'bold ' + fontSize + 'px monospace';
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  // Background pill
+  ctx.fillStyle = 'rgba(10,14,26,0.88)';
+  ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 6);
+  ctx.fill();
+  ctx.strokeStyle = color || '#94a3b8';
+  ctx.lineWidth = 1.5;
+  ctx.roundRect(2, 2, canvas.width - 4, canvas.height - 4, 6);
+  ctx.stroke();
+  // Text
   ctx.fillStyle = color || '#e2e8f0';
   ctx.textAlign = 'center';
-  ctx.fillText(text.slice(0, 20), 128, 40);
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, canvas.width / 2, canvas.height / 2);
   const tex = new THREE.CanvasTexture(canvas);
+  tex.minFilter = THREE.LinearFilter;
   const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
   const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(2, 0.5, 1);
+  // Scale proportional to text length — wider labels get wider sprites
+  const aspect = canvas.width / canvas.height;
+  sprite.scale.set(aspect * 0.7, 0.7, 1);
   return sprite;
 }
 
@@ -2644,7 +2795,7 @@ function renderData(data) {
   if (points.length === 0) {
     const label = makeLabel('No data yet — waiting for agent sessions', '#64748b');
     label.position.set(0, 2, 0);
-    label.scale.set(6, 1.5, 1);
+    label.scale.multiplyScalar(2);
     scene.add(label);
     pointMeshes.push(label);
     return;
@@ -2699,7 +2850,6 @@ function renderData(data) {
     if (cl.label) {
       const sprite = makeLabel(cl.label.toUpperCase(), cl.color || '#3b82f6');
       sprite.position.set(cl.center.x, (cl.center.z || 0) + (cl.radius || 1) + 0.5, cl.center.y);
-      sprite.scale.set(3, 0.75, 1);
       scene.add(sprite);
       clusterMeshes.push(sprite);
     }
@@ -2765,9 +2915,9 @@ function updateLegend(view) {
 function updateInfo(view, data) {
   const el = document.getElementById('info');
   const infos = {
-    trajectory: '<h3>Intent Trajectory</h3><p>User intent at origin. Tool calls plotted by semantic distance. Green = aligned, red = drifted. Sharp angle = injection point.</p>',
+    trajectory: '<h3>Intent Trajectory</h3><p>' + (data.points?.length || 0) + ' points. ' + (data.points?.length > 0 && data.points[0]?.id === 'ref' ? 'Live session — user intent at origin. Tool calls by semantic distance.' : 'Historical workflows by agent. Blue = agent origin, green = healthy, red = flagged.') + '</p>',
     clusters: '<h3>Workflow Clusters</h3><p>' + (data.clusters?.length || 0) + ' clusters, ' + (data.points?.length || 0) + ' workflows. Transparent spheres show cluster boundaries. Red dots = flagged sessions.</p>',
-    coherence: '<h3>Causal Coherence</h3><p>Blue = tool result, orange = next action. Short green lines = coherent pairs. Long red lines = causal breaks (injection fingerprint).</p>',
+    coherence: '<h3>Causal Coherence</h3><p>' + (data.points?.length || 0) + ' nodes. ' + (data.edges?.length > 0 && data.points?.[0]?.metadata?.type === 'result' ? 'Live pairs — blue = result, orange = action. Line length = causal distance.' : 'Tool flow graph — node size = frequency, edges = transitions between tools.') + '</p>',
     delegation: '<h3>Delegation Tree</h3><p>Root agent at center. Sub-agents branch outward. Distance from center = drift from root intent.</p>',
     evolution: '<h3>Agent Evolution</h3><p>Select an agent to watch its behavioral profile develop over time. Trail shows centroid migration. Use slider or Play to scrub through sessions.</p>',
   };
@@ -2797,7 +2947,7 @@ window.switchView = function(view) {
       } else {
         clearScene();
         const label = makeLabel('No agents with evolution data yet', '#64748b');
-        label.position.set(0, 2, 0); label.scale.set(6, 1.5, 1);
+        label.position.set(0, 2, 0); label.scale.multiplyScalar(2);
         scene.add(label); pointMeshes.push(label);
       }
     });
@@ -2912,11 +3062,18 @@ function renderEvolutionFrame(frameIdx) {
   evoTrailMeshes = [];
 
   if (evoFrames.length === 0) {
-    const label = makeLabel('No evolution data — need 5+ sessions', '#64748b');
-    label.position.set(0, 2, 0);
-    label.scale.set(6, 1.5, 1);
+    const select = document.getElementById('agent-select');
+    const agentName = select?.selectedOptions?.[0]?.text || 'agent';
+    const label = makeLabel(agentName + ': no completed sessions yet', '#eab308');
+    label.position.set(0, 2.5, 0);
+    label.scale.multiplyScalar(1.5);
     scene.add(label);
     pointMeshes.push(label);
+    const hint = makeLabel('Sessions record on completion — check back after agent finishes work', '#64748b');
+    hint.position.set(0, 1.2, 0);
+    hint.scale.multiplyScalar(1.5);
+    scene.add(hint);
+    pointMeshes.push(hint);
     updateEvolutionInfo(null);
     return;
   }
@@ -2953,7 +3110,7 @@ function renderEvolutionFrame(frameIdx) {
       const lbl = f.behaviorLabel || ('session ' + f.sessionCount);
       const sprite = makeLabel(isLast ? lbl.toUpperCase() : lbl, matColor);
       sprite.position.set(x, (z || 0) + (isLast ? 0.5 : 0.3), y);
-      sprite.scale.set(isLast ? 3 : 2, isLast ? 0.75 : 0.5, 1);
+      if (isLast) sprite.scale.multiplyScalar(1.3);
       scene.add(sprite);
       pointMeshes.push(sprite);
     }
@@ -2985,7 +3142,6 @@ function renderEvolutionFrame(frameIdx) {
       if (cl.label) {
         const sprite = makeLabel(cl.label.toUpperCase(), '#3b82f6');
         sprite.position.set(cx, (cz || 0) + Math.max(0.3, cl.radius * 3) + 0.4, cy);
-        sprite.scale.set(2.5, 0.6, 1);
         scene.add(sprite);
         clusterMeshes.push(sprite);
       }
@@ -3036,7 +3192,8 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 const tooltip = document.getElementById('tooltip');
 
-renderer?.domElement?.addEventListener('mousemove', (e) => {
+document.addEventListener('mousemove', (e) => {
+  if (!camera || !renderer) return;
   mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
   mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
   raycaster.setFromCamera(mouse, camera);
@@ -3067,8 +3224,10 @@ loadView('trajectory');
 document.getElementById('guide').style.display = 'block';
 updateGuide('trajectory');
 
-// Auto-refresh every 5 seconds
-setInterval(() => loadView(currentView), 5000);
+// Auto-refresh every 5 seconds (skip evolution — it has its own controls)
+setInterval(() => {
+  if (currentView !== 'evolution') loadView(currentView);
+}, 5000);
 </script>
 </body>
 </html>`;

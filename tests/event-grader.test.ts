@@ -36,9 +36,9 @@ describe("EventGrader — bus wiring", () => {
 
     bus.onEvent((event) => grader.addEvent(event));
 
-    bus.emit(makeEvent({ timestamp: 1 }));
-    bus.emit(makeEvent({ timestamp: 2 }));
-    bus.emit(makeEvent({ timestamp: 3 }));
+    bus.emit(makeEvent({ timestamp: 1, matchStart: 0 }));
+    bus.emit(makeEvent({ timestamp: 2, matchStart: 100 }));
+    bus.emit(makeEvent({ timestamp: 3, matchStart: 200 }));
 
     const stats = grader.getStats();
     expect(stats.pending).toBe(3);
@@ -56,9 +56,10 @@ describe("EventGrader — bus wiring", () => {
 
     bus.onEvent((event) => grader.addEvent(event));
 
-    bus.emit(makeEvent({ timestamp: 1 }));
+    bus.emit(makeEvent({ timestamp: 1, matchStart: 0 }));
     bus.emit(makeEvent({
       timestamp: 2,
+      matchStart: 100,
       agentSessionId: "shroud-grading-12345",
     }));
 

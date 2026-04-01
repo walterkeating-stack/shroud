@@ -650,9 +650,71 @@ export class VectorStore {
       for (const [id, bl] of Object.entries(data.agentBaselines || {})) {
         this._agentBaselines.set(id, bl);
       }
+
+      // Migration: if all workflows are unhealthy but baselines have count=0,
+      // the old "any security event = unhealthy" bug left stale data.
+      // Recalculate: mark all workflows as healthy and rebuild baselines.
+      this._migrateStaleHealth();
     } catch {
       // Corrupt file — start fresh
     }
+  }
+
+  /**
+   * Startup migration: re-mark unhealthy workflows as healthy and rebuild
+   * affected baselines. The old code treated any flagged event as unhealthy,
+   * but only BLOCKED events should mark sessions unhealthy.
+   */
+  private _migrateStaleHealth(): void {
+    const unhealthy = this._workflows.filter(w => !w.healthy);
+    if (unhealthy.length === 0) return;
+
+    // Flip all unhealthy workflows to healthy
+    const affectedAgents = new Set<string>();
+    for (const w of unhealthy) {
+      w.healthy = true;
+      affectedAgents.add(w.agentBuildId);
+    }
+
+    // Rebuild baselines for affected agents from scratch
+    for (const agentId of affectedAgents) {
+      this._agentBaselines.delete(agentId);
+      const agentWorkflows = this._workflows.filter(w => w.agentBuildId === agentId);
+      for (const w of agentWorkflows) {
+        this._updateAgentBaseline(agentId, w.vector, w.sequence, true, false);
+      }
+    }
+
+    // Dedup clusters — merge clusters with same label into strongest
+    const clustersByLabel = new Map<string, WorkflowCluster[]>();
+    for (const c of this._clusters) {
+      const arr = clustersByLabel.get(c.label) || [];
+      arr.push(c);
+      clustersByLabel.set(c.label, arr);
+    }
+    const merged: WorkflowCluster[] = [];
+    for (const [, dupes] of clustersByLabel) {
+      // Keep the one with highest count, absorb others
+      dupes.sort((a, b) => b.count - a.count);
+      const primary = dupes[0];
+      for (let i = 1; i < dupes.length; i++) {
+        const n = primary.count;
+        const m = dupes[i].count;
+        primary.centroid = scaleVector(
+          addVectors(scaleVector(primary.centroid, n), scaleVector(dupes[i].centroid, m)),
+          1 / (n + m),
+        );
+        primary.count += m;
+        for (const aid of dupes[i].agentBuildIds) {
+          if (!primary.agentBuildIds.includes(aid)) primary.agentBuildIds.push(aid);
+        }
+        primary.radius = Math.max(primary.radius, dupes[i].radius);
+      }
+      merged.push(primary);
+    }
+    this._clusters = merged;
+
+    this._dirty = true;
   }
 
   flush(): void {
