@@ -938,16 +938,20 @@ export class OpenClawRunner {
         auth: { mode: "token", token: "shroud-test-token" },
       },
       agents: {
+        ...(existing.agents || {}),
         defaults: {
+          ...(existing.agents?.defaults || {}),
           workspace: join(this.stateDir, "workspace"),
           model: { primary: "mock-provider/mock-model" },
           timeoutSeconds: 30,
         },
         list: [
-          { id: "main", name: "main", workspace: join(this.stateDir, "workspace") },
-          { id: "research-agent", name: "Security Research Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Security Research Agent" } },
-          { id: "customer-agent", name: "Customer Support Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Customer Support Agent" } },
-          { id: "devops-agent", name: "DevOps Automation Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "DevOps Automation Agent" } },
+          ...(existing.agents?.list || []),
+          ...([
+            { id: "research-agent", name: "Security Research Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Security Research Agent" } },
+            { id: "customer-agent", name: "Customer Support Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Customer Support Agent" } },
+            { id: "devops-agent", name: "DevOps Automation Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "DevOps Automation Agent" } },
+          ].filter(a => !(existing.agents?.list || []).some(e => e.id === a.id))),
         ],
       },
       // Sandbox exec: run agent tool calls inside containers
