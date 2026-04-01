@@ -226,3 +226,66 @@ describe("No false positives on legitimate workflows", () => {
     expect(checkExfilChain(ctx, "web_fetch")).toBeNull();
   });
 });
+
+// ─── Heuristic 4: Baseline deviation ───
+
+describe("Baseline deviation detection", () => {
+  const matureBaseline = {
+    agentBuildId: "test-agent-123",
+    sessionCount: 10,
+    maturity: "mature" as const,
+    features: {},
+    toolProfile: ["Read", "Write", "exec"],
+    categoryProfile: ["email", "ip_address", "hostname", "person_name"],
+    lastUpdated: Date.now(),
+  };
+
+  test("novel sensitive category not in baseline → flagged", () => {
+    const intent = extractIntentSignals("Check the system");
+    const ctx = createTurnContext(intent, matureBaseline);
+    ctx.pendingToolCall = { toolName: "exec", category: ToolCategory.EXECUTE, timestamp: Date.now() };
+
+    // api_key is not in the baseline's categoryProfile
+    const events = validateToolResult(ctx, new Set(["email", "api_key"]), 500);
+    expect(events.some(e => e.signatureId === "rv_baseline_deviation")).toBe(true);
+  });
+
+  test("known categories from baseline → NOT flagged", () => {
+    const intent = extractIntentSignals("Check the system");
+    const ctx = createTurnContext(intent, matureBaseline);
+    ctx.pendingToolCall = { toolName: "exec", category: ToolCategory.EXECUTE, timestamp: Date.now() };
+
+    // All categories are in the baseline
+    const events = validateToolResult(ctx, new Set(["email", "ip_address"]), 500);
+    expect(events.filter(e => e.signatureId === "rv_baseline_deviation")).toHaveLength(0);
+  });
+
+  test("novel non-sensitive category → NOT flagged", () => {
+    const intent = extractIntentSignals("Check the system");
+    const ctx = createTurnContext(intent, matureBaseline);
+    ctx.pendingToolCall = { toolName: "exec", category: ToolCategory.EXECUTE, timestamp: Date.now() };
+
+    // vlan_id is novel but not in HIGH_SENSITIVITY
+    const events = validateToolResult(ctx, new Set(["email", "vlan_id"]), 500);
+    expect(events.filter(e => e.signatureId === "rv_baseline_deviation")).toHaveLength(0);
+  });
+
+  test("learning baseline → NOT flagged (not enough data)", () => {
+    const learningBaseline = { ...matureBaseline, maturity: "learning" as const, sessionCount: 2 };
+    const intent = extractIntentSignals("Check the system");
+    const ctx = createTurnContext(intent, learningBaseline);
+    ctx.pendingToolCall = { toolName: "exec", category: ToolCategory.EXECUTE, timestamp: Date.now() };
+
+    const events = validateToolResult(ctx, new Set(["api_key", "ssn"]), 500);
+    expect(events.filter(e => e.signatureId === "rv_baseline_deviation")).toHaveLength(0);
+  });
+
+  test("no baseline → NOT flagged", () => {
+    const intent = extractIntentSignals("Check the system");
+    const ctx = createTurnContext(intent, null);
+    ctx.pendingToolCall = { toolName: "exec", category: ToolCategory.EXECUTE, timestamp: Date.now() };
+
+    const events = validateToolResult(ctx, new Set(["api_key"]), 500);
+    expect(events.filter(e => e.signatureId === "rv_baseline_deviation")).toHaveLength(0);
+  });
+});

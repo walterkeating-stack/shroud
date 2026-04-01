@@ -268,6 +268,11 @@ export class BehaviouralProfiler {
     return this._alerts;
   }
 
+  /** Get the baseline store (for result validation integration). */
+  getBaselineStore(): BaselineStore {
+    return this._store;
+  }
+
   /** Get LLM cache usage summary for the current session. */
   getCacheStats(): { totalInput: number; totalOutput: number; totalCacheRead: number; totalCacheWrite: number; hitRatio: number; turns: number } {
     let totalInput = 0, totalOutput = 0, totalCacheRead = 0, totalCacheWrite = 0;

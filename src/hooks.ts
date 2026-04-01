@@ -665,7 +665,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           })()
         : (typeof event?.prompt === "string" ? event.prompt.slice(0, 500) : "");
       _currentIntent = extractIntentSignals(lastUserMsg);
-      _turnContext = createTurnContext(_currentIntent);
+      // Load agent baseline for adaptive result validation
+      const agentSession = agentTracker.getCurrentSession();
+      const agentBaseline = (profiler && agentSession?.agentBuildId)
+        ? profiler.getBaselineStore().load(agentSession.agentBuildId) ?? null
+        : null;
+      _turnContext = createTurnContext(_currentIntent, agentBaseline);
       _toolSequence.reset(); // Reset sequence tracker for each new turn
     }
 

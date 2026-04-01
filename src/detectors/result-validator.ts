@@ -6,10 +6,11 @@
  * sets from the obfuscator — no LLM, no content inspection, just
  * comparing "what categories appeared" vs "what the user asked for".
  *
- * Three heuristics:
+ * Four heuristics:
  * 1. Category escalation: high-sensitivity PII in non-read tool results
  * 2. Exfil chain: PII-containing results followed by communication/network tools
  * 3. Bulk sensitive: large results with many PII categories from exec/network
+ * 4. Baseline deviation: PII categories outside the agent's learned profile
  */
 
 import type { SecurityEvent, SecuritySeverity } from "../security-event.js";
@@ -17,6 +18,7 @@ import { ThreatClass } from "../security-event.js";
 import type { Category } from "../types.js";
 import type { IntentSignals } from "./tool-intent.js";
 import { ToolCategory, TOOL_CATEGORIES } from "./tool-intent.js";
+import type { AgentBaseline } from "../profiler-types.js";
 
 /** High-sensitivity PII categories that warrant extra scrutiny. */
 const HIGH_SENSITIVITY: Set<string> = new Set([
@@ -31,6 +33,8 @@ const _CREDENTIAL_INTENT = /\b(?:credentials?|secrets?|api\s*keys?|passwords?|ce
 export interface TurnContext {
   /** Intent extracted from user message. */
   intent: IntentSignals;
+  /** Agent baseline from profiler (if available). */
+  baseline: AgentBaseline | null;
   /** Pending tool call — set in before_tool_call, consumed in tool_result_persist. */
   pendingToolCall: {
     toolName: string;
@@ -47,8 +51,8 @@ export interface TurnContext {
 }
 
 /** Create a fresh turn context. */
-export function createTurnContext(intent: IntentSignals): TurnContext {
-  return { intent, pendingToolCall: null, toolResults: [] };
+export function createTurnContext(intent: IntentSignals, baseline?: AgentBaseline | null): TurnContext {
+  return { intent, baseline: baseline ?? null, pendingToolCall: null, toolResults: [] };
 }
 
 /**
@@ -90,6 +94,27 @@ export function validateToolResult(
       "medium",
       `Large result (${Math.round(resultSize / 1024)}KB) with ${resultCategories.size} PII categories from "${tool.toolName}"`,
     ));
+  }
+
+  // Heuristic 4: Baseline deviation — PII categories outside agent's learned profile
+  // Only fires when the profiler has a mature baseline (enough session data).
+  if (ctx.baseline && ctx.baseline.maturity !== "learning" && resultCategories.size > 0) {
+    const knownCategories = new Set(ctx.baseline.categoryProfile);
+    const novel = new Set<string>();
+    for (const cat of resultCategories) {
+      if (!knownCategories.has(cat)) novel.add(cat);
+    }
+    // Only flag if novel categories include high-sensitivity ones.
+    // Non-sensitive novel categories (e.g. a new hostname format) are expected as agents evolve.
+    const novelSensitive = intersection(novel, HIGH_SENSITIVITY);
+    if (novelSensitive.size > 0) {
+      events.push(buildEvent(
+        tool.toolName,
+        "baseline_deviation",
+        "medium",
+        `Novel sensitive categories (${[...novelSensitive].join(", ")}) not in agent's ${ctx.baseline.sessionCount}-session baseline`,
+      ));
+    }
   }
 
   return events;
