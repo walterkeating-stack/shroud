@@ -484,13 +484,20 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (_vectorStore && _sessionToolSequence.length > 0) {
         const agentSession = agentTracker.getCurrentSession();
         if (agentSession && agentSession.agentLabel !== "Unknown Agent") {
-          const hadEvents = agentSession.securityEventCount > 0;
+          // Only treat sessions as unhealthy if tool calls were actually BLOCKED.
+          // Flagged events (low/medium severity) are normal noise — the baseline
+          // should learn from them. Only blocked = confirmed attack.
+          const recentEvents = ((globalThis as any).__shroudSecurityBus || securityBus)?.getEvents() as SecurityEvent[] | undefined;
+          const hadBlocks = recentEvents?.some((e: SecurityEvent) =>
+            e.action === "blocked" &&
+            (e.agentBuildId === agentSession.agentBuildId || e.agentSessionId === agentSession.sessionId)
+          ) ?? false;
           _vectorStore.recordWorkflow(
             agentSession.agentBuildId,
             agentSession.sessionId,
             _sessionToolSequence,
             _sessionUrls,
-            !hadEvents, // healthy = no security events
+            !hadBlocks, // healthy = no BLOCKED events (flagged is fine)
           );
 
           // Record URL visits for cross-session correlation
@@ -500,7 +507,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 _sessionToolSequence.indexOf("fetch") + 1 ||
                 _sessionToolSequence.indexOf("browser") + 1;
               const seqAfter = urlIdx > 0 ? _sessionToolSequence.slice(urlIdx) : _sessionToolSequence;
-              _vectorStore.recordUrlVisit(url, agentSession.agentBuildId, agentSession.sessionId, seqAfter, hadEvents);
+              _vectorStore.recordUrlVisit(url, agentSession.agentBuildId, agentSession.sessionId, seqAfter, hadBlocks);
             }
           }
 

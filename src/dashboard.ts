@@ -862,18 +862,25 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
     const workflows = vs.getWorkflows();
     const clusters = vs.getClusters();
 
+    // Resolve agent labels from buildIds
+    const labelMap = new Map<string, string>();
+    for (const s of deps.agentTracker.getAllSessions()) {
+      labelMap.set(s.agentBuildId, s.agentLabel);
+    }
+
     // PCA on all workflow vectors
     const vectors = workflows.map(w => Float64Array.from(w.vector));
     const pcaResult = vectors.length >= 3 ? pca(vectors, 3, 50, "clusters") : null;
 
     const points = workflows.map((w, i) => {
       const [x, y, z] = pcaResult ? pcaResult.project(vectors[i]) : [0, 0, 0];
+      const agentName = labelMap.get(w.agentBuildId) || w.agentBuildId.slice(0, 8);
       return {
         id: w.id,
         x, y, z,
-        label: w.sequence.slice(0, 3).join("→"),
+        label: agentName + ": " + w.sequence.slice(0, 3).join("→"),
         color: w.healthy ? "#22c55e" : "#ef4444",
-        metadata: { agentBuildId: w.agentBuildId, sessionId: w.sessionId, healthy: w.healthy },
+        metadata: { agent: agentName, sequence: w.sequence.join("→"), healthy: w.healthy },
       };
     });
 
