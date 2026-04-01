@@ -1273,6 +1273,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
   <div class="tab" onclick="switchTab('calls')">Detection</div>
+  <div class="tab" onclick="window.open('/viz','_blank')" style="margin-left:auto;border-color:#a855f7;color:#a855f7">Vector Space 3D</div>
 </div>
 <div class="grid" id="content">
   <div class="card"><h2>Initializing...</h2></div>
