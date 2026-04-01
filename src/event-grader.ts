@@ -15,9 +15,9 @@
  */
 
 import { request as httpsRequest } from "node:https";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, appendFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import type { SecurityEvent } from "./security-event.js";
 
 /** Verdict from LLM grading. */
@@ -180,14 +180,18 @@ export class EventGrader {
   private _intervalMs: number;
   private _running = false;
   private _oauthCreds: OAuthCreds | null = null;
+  private _persistPath: string | null = null;
 
   constructor(opts: {
     threshold: number;
     intervalSec: number;
+    persistPath?: string;
   }) {
     this._threshold = opts.threshold;
     this._intervalMs = opts.intervalSec * 1000;
     this._oauthCreds = loadOAuthCreds();
+    this._persistPath = opts.persistPath || null;
+    if (this._persistPath) this._loadGraded();
   }
 
   /** Start the grading timer. */
@@ -235,6 +239,35 @@ export class EventGrader {
 
   getBatchLog(): readonly GradingBatchLog[] {
     return this._batchLog;
+  }
+
+  /** Load graded events from JSONL file (restores state after restart). */
+  private _loadGraded(): void {
+    if (!this._persistPath) return;
+    try {
+      if (!existsSync(this._persistPath)) return;
+      const raw = readFileSync(this._persistPath, "utf-8");
+      const cutoff = Date.now() - 24 * 3_600_000; // last 24h
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try {
+          const g = JSON.parse(line) as GradedEvent;
+          if (g.gradedAt && g.gradedAt > cutoff) {
+            this._graded.set(g.eventTimestamp, g);
+          }
+        } catch { /* skip malformed */ }
+      }
+    } catch { /* file may not exist */ }
+  }
+
+  /** Append newly graded events to JSONL file. */
+  private _persistGraded(events: GradedEvent[]): void {
+    if (!this._persistPath || events.length === 0) return;
+    try {
+      mkdirSync(dirname(this._persistPath), { recursive: true });
+      const lines = events.map(e => JSON.stringify(e)).join("\n") + "\n";
+      appendFileSync(this._persistPath, lines, "utf-8");
+    } catch { /* best-effort */ }
   }
 
   private async _tryGrade(trigger: "threshold" | "timer" = "timer"): Promise<void> {
@@ -291,6 +324,14 @@ export class EventGrader {
 
     this._batchLog.push(log);
     if (this._batchLog.length > 50) this._batchLog.shift();
+    // Persist newly graded events
+    if (log.success) {
+      const newlyGraded = log.verdicts.map(v => {
+        const match = [...this._graded.values()].find(g => g.signatureId === v.signatureId && g.verdict === v.verdict && g.reasoning === v.reasoning);
+        return match;
+      }).filter((g): g is GradedEvent => !!g);
+      this._persistGraded(newlyGraded);
+    }
     this._running = false;
   }
 

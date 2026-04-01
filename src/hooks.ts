@@ -357,6 +357,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const grader = new EventGrader({
         threshold: config.llmGradingThreshold,
         intervalSec: config.llmGradingIntervalSec,
+        persistPath: join(config.profilingProfileDir.startsWith("~")
+          ? join(process.env.HOME || "/tmp", config.profilingProfileDir.slice(1))
+          : config.profilingProfileDir, "graded-events.jsonl"),
       });
       // Feed security events to the grader.
       // Wire to BOTH the local bus AND the globalThis bus — covers all cases.
