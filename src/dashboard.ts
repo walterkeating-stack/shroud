@@ -963,7 +963,70 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
     return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.4, 0.3, 0.3] } });
   }
 
-  json(res, 400, { error: `Unknown view: ${view}`, views: ["trajectory", "clusters", "coherence", "delegation"] });
+  if (view === "evolution") {
+    // Returns the list of agents for the dropdown + full evolution data for selected agent
+    const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+    if (!vs) return json(res, 200, { view, agents: [], frames: [] });
+
+    const agents = vs.getAllAgentBaselines().map(b => ({
+      buildId: b.agentBuildId,
+      maturity: b.maturity,
+      count: b.count,
+    }));
+
+    // Also resolve labels from agent tracker
+    const tracker = deps.agentTracker;
+    const agentsWithLabels = agents.map(a => {
+      const session = tracker.getAllSessions().find(s => s.agentBuildId === a.buildId);
+      return { ...a, label: session?.agentLabel || a.buildId.slice(0, 12) };
+    });
+
+    // If a buildId is specified, return its evolution trajectory
+    if (buildId) {
+      const trajectory = vs.readEvolutionTrajectory(buildId);
+      const centroids = trajectory.map(t => t.centroid).filter(c => c.length > 0);
+      // Also include cluster centroids from all frames for PCA
+      const allVecs = [...centroids];
+      for (const t of trajectory) {
+        for (const c of t.clusters) {
+          if (c.centroid.length > 0) allVecs.push(c.centroid);
+        }
+      }
+      const pcaResult = allVecs.length >= 3
+        ? pca(allVecs.map(c => Float64Array.from(c)), 3, 50, `evo-${buildId}`)
+        : null;
+
+      const frames = trajectory.map(t => ({
+        sessionCount: t.sessionCount,
+        timestamp: t.timestamp,
+        maturity: t.maturity,
+        centroidShift: t.centroidShift,
+        behaviorLabel: t.clusters.length > 0
+          ? t.clusters.sort((a, b) => b.memberCount - a.memberCount)[0].label
+          : "unknown",
+        position: pcaResult && t.centroid.length > 0
+          ? pcaResult.project(Float64Array.from(t.centroid))
+          : [0, 0, 0],
+        clusters: t.clusters.map(c => ({
+          label: c.label,
+          radius: c.radius,
+          memberCount: c.memberCount,
+          position: pcaResult && c.centroid.length > 0
+            ? pcaResult.project(Float64Array.from(c.centroid))
+            : [0, 0, 0],
+        })),
+      }));
+
+      return json(res, 200, {
+        view, agents: agentsWithLabels, buildId, frames,
+        pca: pcaResult ? { varianceExplained: pcaResult.variance } : null,
+      });
+    }
+
+    return json(res, 200, { view, agents: agentsWithLabels, frames: [] });
+  }
+
+  json(res, 400, { error: `Unknown view: ${view}`, views: ["trajectory", "clusters", "coherence", "delegation", "evolution"] });
 }
 
 function serveVizPage(res: ServerResponse) {
@@ -2447,6 +2510,15 @@ const VIZ_HTML = `<!DOCTYPE html>
   .help-btn { padding: 8px 12px; background: rgba(30,41,59,0.9); border: 1px solid #a855f7; border-radius: 6px;
               color: #a855f7; cursor: pointer; font-size: 12px; font-family: inherit; }
   .help-btn:hover { background: rgba(168,85,247,0.15); }
+  #timeline { position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%); z-index: 100;
+              background: rgba(15,23,42,0.95); border: 1px solid #334155; border-radius: 8px;
+              padding: 12px 20px; display: flex; align-items: center; gap: 12px; font-size: 11px; }
+  #timeline select { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;
+                     padding: 4px 8px; font-family: inherit; font-size: 11px; }
+  #timeline input[type=range] { width: 300px; accent-color: #a855f7; }
+  #timeline #time-label { color: #94a3b8; min-width: 120px; }
+  #timeline #play-btn { background: #a855f7; color: #0a0e1a; border: none; border-radius: 4px;
+                        padding: 4px 12px; cursor: pointer; font-family: inherit; font-weight: 600; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -2455,10 +2527,17 @@ const VIZ_HTML = `<!DOCTYPE html>
   <button class="tab" onclick="switchView('clusters')">Workflow Clusters</button>
   <button class="tab" onclick="switchView('coherence')">Causal Coherence</button>
   <button class="tab" onclick="switchView('delegation')">Delegation Tree</button>
+  <button class="tab" onclick="switchView('evolution')">Agent Evolution</button>
   <button class="help-btn" onclick="toggleGuide()">? How to Read</button>
 </div>
 <div id="legend"></div>
 <div id="info"></div>
+<div id="timeline" style="display:none">
+  <select id="agent-select" onchange="loadEvolution()"></select>
+  <input type="range" id="time-slider" min="0" max="0" value="0" oninput="scrubTimeline(this.value)">
+  <span id="time-label">Session 0</span>
+  <button id="play-btn" onclick="togglePlay()">Play</button>
+</div>
 <div id="tooltip"></div>
 <div id="pca-info"></div>
 <div id="guide"></div>
@@ -2663,6 +2742,13 @@ function updateLegend(view) {
       { color: '#3b82f6', label: 'Delegate (depth 1)' },
       { color: '#a855f7', label: 'Sub-delegate (depth 2+)' },
     ],
+    evolution: [
+      { color: '#f97316', label: 'Learning (<5 sessions)' },
+      { color: '#eab308', label: 'Reliable (5-49 sessions)' },
+      { color: '#22c55e', label: 'Mature (50+ sessions)' },
+      { color: '#a855f7', label: 'Trail path' },
+      { color: '#3b82f6', label: 'Cluster boundary' },
+    ],
   };
   el.innerHTML = (legends[view] || []).map(l =>
     '<div class="item"><div class="dot" style="background:' + l.color + '"></div>' + l.label + '</div>'
@@ -2676,6 +2762,7 @@ function updateInfo(view, data) {
     clusters: '<h3>Workflow Clusters</h3><p>' + (data.clusters?.length || 0) + ' clusters, ' + (data.points?.length || 0) + ' workflows. Transparent spheres show cluster boundaries. Red dots = flagged sessions.</p>',
     coherence: '<h3>Causal Coherence</h3><p>Blue = tool result, orange = next action. Short green lines = coherent pairs. Long red lines = causal breaks (injection fingerprint).</p>',
     delegation: '<h3>Delegation Tree</h3><p>Root agent at center. Sub-agents branch outward. Distance from center = drift from root intent.</p>',
+    evolution: '<h3>Agent Evolution</h3><p>Select an agent to watch its behavioral profile develop over time. Trail shows centroid migration. Use slider or Play to scrub through sessions.</p>',
   };
   el.innerHTML = infos[view] || '';
 }
@@ -2685,7 +2772,31 @@ window.switchView = function(view) {
   currentView = view;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector('.tab[onclick*="' + view + '"]')?.classList.add('active');
-  loadView(view);
+
+  // Show/hide timeline controls for evolution view
+  document.getElementById('timeline').style.display = view === 'evolution' ? 'flex' : 'none';
+
+  if (view === 'evolution') {
+    // Populate agent dropdown then load
+    fetch(BASE + '/api/viz/projection?view=evolution').then(r => r.json()).then(data => {
+      const select = document.getElementById('agent-select');
+      select.innerHTML = '<option value="">Select agent...</option>';
+      for (const a of (data.agents || [])) {
+        select.innerHTML += '<option value="' + a.buildId + '">' + a.label + ' (' + a.maturity + ', ' + a.count + ' sessions)</option>';
+      }
+      if (data.agents && data.agents.length > 0) {
+        select.value = data.agents[0].buildId;
+        loadEvolution();
+      } else {
+        clearScene();
+        const label = makeLabel('No agents with evolution data yet', '#64748b');
+        label.position.set(0, 2, 0); label.scale.set(6, 1.5, 1);
+        scene.add(label); pointMeshes.push(label);
+      }
+    });
+  } else {
+    loadView(view);
+  }
   updateGuide(view);
 };
 
@@ -2731,6 +2842,20 @@ const guides = {
     + '- <span class="bad">An arm stretching far out</span> = a sub-agent has been hijacked — it drifted from both its delegation instruction AND the root intent<br>'
     + '- Sub-agents get tighter thresholds (0.10 vs 0.15) because they should be MORE focused, not less</div>'
     + '<div class="muted">Lines show parent to child delegation. Hover nodes to see delegation message and coherence scores.</div>',
+
+  evolution: '<h3>Reading: Agent Evolution</h3>'
+    + '<div class="section"><span class="label">What you see:</span> A trail of connected spheres showing how an agent behavioral centroid migrates through vector space over its lifetime. Each sphere is a snapshot taken every 5 sessions.</div>'
+    + '<div class="section"><span class="label">Colors mean:</span><br>'
+    + '<span style="color:#f97316">Orange</span> = learning phase (&lt;5 sessions) — profile is unstable, boundaries loose<br>'
+    + '<span style="color:#eab308">Yellow</span> = reliable phase (5-49 sessions) — patterns forming, anomaly detection active<br>'
+    + '<span class="good">Green</span> = mature phase (50+ sessions) — stable behavioral fingerprint, tight boundaries</div>'
+    + '<div class="section"><span class="label">What to watch for:</span><br>'
+    + '- <span class="good">Converging trail</span> = agent behavior is stabilizing, immune system maturing<br>'
+    + '- <span class="warn">Wandering trail</span> = agent does different things each session — may need investigation<br>'
+    + '- <span class="label">Behavior labels</span> change along the trail (research → coding → testing) — shows how the agent role evolves<br>'
+    + '- Cluster spheres show what workflow regions the agent inhabits at each point in time</div>'
+    + '<div class="section"><span class="label">Timeline controls:</span> Select an agent from the dropdown. Use the slider or Play button to scrub through time. The trail draws progressively.</div>'
+    + '<div class="muted">Data accumulates as agents complete sessions. Snapshots every 5 sessions.</div>',
 };
 
 function updateGuide(view) {
@@ -2745,6 +2870,157 @@ window.toggleGuide = function() {
   } else {
     el.style.display = 'block';
     updateGuide(currentView);
+  }
+};
+
+// ─── Evolution view state ───
+let evoFrames = [];
+let evoPlaying = false;
+let evoPlayInterval = null;
+let evoTrailMeshes = [];
+
+async function loadEvolution() {
+  const select = document.getElementById('agent-select');
+  const buildId = select.value;
+  if (!buildId) return;
+
+  const resp = await fetch(BASE + '/api/viz/projection?view=evolution&buildId=' + buildId);
+  const data = await resp.json();
+  evoFrames = data.frames || [];
+
+  const slider = document.getElementById('time-slider');
+  slider.max = Math.max(0, evoFrames.length - 1);
+  slider.value = evoFrames.length - 1;
+
+  renderEvolutionFrame(evoFrames.length - 1);
+}
+
+function renderEvolutionFrame(frameIdx) {
+  clearScene();
+  for (const m of evoTrailMeshes) {
+    scene.remove(m);
+    if (m.geometry) m.geometry.dispose();
+    if (m.material) m.material.dispose();
+  }
+  evoTrailMeshes = [];
+
+  if (evoFrames.length === 0) {
+    const label = makeLabel('No evolution data — need 5+ sessions', '#64748b');
+    label.position.set(0, 2, 0);
+    label.scale.set(6, 1.5, 1);
+    scene.add(label);
+    pointMeshes.push(label);
+    updateEvolutionInfo(null);
+    return;
+  }
+
+  const visibleFrames = evoFrames.slice(0, frameIdx + 1);
+
+  // Draw trail — connected spheres with color by maturity
+  const trailPoints = [];
+  for (let i = 0; i < visibleFrames.length; i++) {
+    const f = visibleFrames[i];
+    const [x, y, z] = f.position || [0, 0, 0];
+    const isLast = i === visibleFrames.length - 1;
+    const size = isLast ? 0.25 : 0.12;
+
+    const matColor = f.maturity === 'mature' ? '#22c55e'
+      : f.maturity === 'reliable' ? '#eab308' : '#f97316';
+
+    const geo = new THREE.SphereGeometry(size, 16, 16);
+    const mat = new THREE.MeshPhongMaterial({
+      color: matColor, emissive: matColor, emissiveIntensity: isLast ? 0.5 : 0.2,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(x, z || 0, y);
+    mesh.userData = {
+      label: f.behaviorLabel || 'unknown',
+      metadata: { session: f.sessionCount, maturity: f.maturity, shift: f.centroidShift },
+    };
+    scene.add(mesh);
+    pointMeshes.push(mesh);
+    trailPoints.push(new THREE.Vector3(x, z || 0, y));
+
+    // Label on current frame and every 3rd frame
+    if (isLast || i % 3 === 0) {
+      const lbl = f.behaviorLabel || ('session ' + f.sessionCount);
+      const sprite = makeLabel(isLast ? lbl.toUpperCase() : lbl, matColor);
+      sprite.position.set(x, (z || 0) + (isLast ? 0.5 : 0.3), y);
+      sprite.scale.set(isLast ? 3 : 2, isLast ? 0.75 : 0.5, 1);
+      scene.add(sprite);
+      pointMeshes.push(sprite);
+    }
+  }
+
+  // Trail line
+  if (trailPoints.length >= 2) {
+    const geo = new THREE.BufferGeometry().setFromPoints(trailPoints);
+    const mat = new THREE.LineBasicMaterial({ color: '#a855f7', linewidth: 2 });
+    const line = new THREE.Line(geo, mat);
+    scene.add(line);
+    evoTrailMeshes.push(line);
+  }
+
+  // Draw clusters for the current frame
+  const currentFrame = visibleFrames[visibleFrames.length - 1];
+  if (currentFrame && currentFrame.clusters) {
+    for (const cl of currentFrame.clusters) {
+      const [cx, cy, cz] = cl.position || [0, 0, 0];
+      const geo = new THREE.SphereGeometry(Math.max(0.3, cl.radius * 3), 32, 32);
+      const mat = new THREE.MeshPhongMaterial({
+        color: '#3b82f6', transparent: true, opacity: 0.08, side: THREE.DoubleSide,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(cx, cz || 0, cy);
+      scene.add(mesh);
+      clusterMeshes.push(mesh);
+
+      if (cl.label) {
+        const sprite = makeLabel(cl.label.toUpperCase(), '#3b82f6');
+        sprite.position.set(cx, (cz || 0) + Math.max(0.3, cl.radius * 3) + 0.4, cy);
+        sprite.scale.set(2.5, 0.6, 1);
+        scene.add(sprite);
+        clusterMeshes.push(sprite);
+      }
+    }
+  }
+
+  updateEvolutionInfo(currentFrame);
+}
+
+function updateEvolutionInfo(frame) {
+  const el = document.getElementById('time-label');
+  if (!frame) { el.textContent = 'No data'; return; }
+  const date = new Date(frame.timestamp).toLocaleDateString();
+  el.textContent = 'Session ' + frame.sessionCount + ' | ' + frame.maturity + ' | ' + (frame.behaviorLabel || '?') + ' | ' + date;
+}
+
+function scrubTimeline(val) {
+  renderEvolutionFrame(parseInt(val));
+}
+
+window.togglePlay = function() {
+  if (evoPlaying) {
+    clearInterval(evoPlayInterval);
+    evoPlaying = false;
+    document.getElementById('play-btn').textContent = 'Play';
+  } else {
+    evoPlaying = true;
+    document.getElementById('play-btn').textContent = 'Pause';
+    const slider = document.getElementById('time-slider');
+    slider.value = 0;
+    renderEvolutionFrame(0);
+    evoPlayInterval = setInterval(() => {
+      const v = parseInt(slider.value) + 1;
+      if (v >= evoFrames.length) {
+        clearInterval(evoPlayInterval);
+        evoPlaying = false;
+        document.getElementById('play-btn').textContent = 'Play';
+        return;
+      }
+      slider.value = v;
+      renderEvolutionFrame(v);
+    }, 800);
   }
 };
 
