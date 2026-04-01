@@ -27,6 +27,12 @@ export interface AgentRegistryEntry {
   workspace: string;
   /** Agent config directory path. */
   agentDir: string;
+  /** Tools explicitly allowed for this agent (from openclaw.json tools.allow). */
+  toolsAllow: string[];
+  /** Tools explicitly denied for this agent (from openclaw.json tools.deny). */
+  toolsDeny: string[];
+  /** Whether the agent runs in a sandbox. */
+  sandboxed: boolean;
 }
 
 /**
@@ -70,11 +76,15 @@ export class AgentRegistry {
           name = _readIdentityName(ws) || "PJ";
         }
 
+        const tools = agent?.tools || {};
         const entry: AgentRegistryEntry = {
           id,
           canonicalName: name,
           workspace: agent?.workspace || "",
           agentDir: agent?.agentDir || "",
+          toolsAllow: Array.isArray(tools.allow) ? tools.allow : [],
+          toolsDeny: Array.isArray(tools.deny) ? tools.deny : [],
+          sandboxed: agent?.sandbox?.mode !== "off" && !!agent?.sandbox?.docker,
         };
         this._agents.set(id, entry);
       }
@@ -255,6 +265,43 @@ export class AgentRegistry {
   /** Get registry entry by ID. */
   getAgent(agentId: string): AgentRegistryEntry | undefined {
     return this._agents.get(agentId);
+  }
+
+  /**
+   * Check if a tool call violates the agent's configured sandbox boundary.
+   *
+   * Returns a reason string if violated, null if allowed.
+   * Checks both deny lists and allow lists from openclaw.json.
+   */
+  checkToolBoundary(agentId: string, toolName: string): string | null {
+    const entry = this._agents.get(agentId);
+    if (!entry) return null; // Unknown agent — can't check
+
+    const toolLower = toolName.toLowerCase();
+
+    // Check deny list first — explicitly forbidden tools
+    if (entry.toolsDeny.length > 0) {
+      for (const denied of entry.toolsDeny) {
+        if (denied.toLowerCase() === toolLower) {
+          return `Tool "${toolName}" is in agent "${entry.canonicalName}"'s deny list`;
+        }
+      }
+    }
+
+    // Check allow list — if an allow list exists, only listed tools are permitted
+    if (entry.toolsAllow.length > 0) {
+      const allowed = entry.toolsAllow.some(a => {
+        const al = a.toLowerCase();
+        // Handle group prefixes: "group:fs" allows all filesystem tools
+        if (al.startsWith("group:")) return false; // Can't resolve groups here, skip
+        return al === toolLower;
+      });
+      if (!allowed) {
+        return `Tool "${toolName}" is not in agent "${entry.canonicalName}"'s allow list`;
+      }
+    }
+
+    return null;
   }
 
   /**

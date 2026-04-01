@@ -600,6 +600,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       let resolvedName: string | undefined;
       if (ctx?.agentId) {
         resolvedName = agentRegistry.getCanonicalName(ctx.agentId) || undefined;
+        // Store for tool call boundary checks (before_tool_call doesn't get ctx)
+        (globalThis as any).__shroudCurrentCtxAgentId = ctx.agentId;
       }
       // Tier 1: Registry signal matching from prompt content
       if (!resolvedName) {
@@ -1022,6 +1024,47 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           api.logger?.warn(
             `[shroud] DANGEROUS tool call detected (flagged): ${event.toolName} — ${toolResult.events[0].description}`,
           );
+        }
+      }
+
+      // --- Sandbox boundary check: is this tool outside the agent's configured allowlist? ---
+      {
+        const currentSession = agentTracker.getCurrentSession();
+        const ctxAgentId = (globalThis as any).__shroudCurrentCtxAgentId;
+        const checkAgentId = ctxAgentId || currentSession?.agentLabel;
+        if (checkAgentId && agentRegistry.loaded) {
+          // Try by agent ID first, then by looking up the agent from registry
+          const agentId = agentRegistry.getAgent(ctxAgentId)
+            ? ctxAgentId
+            : (() => { for (const a of agentRegistry.getAllAgents()) { if (a.canonicalName === currentSession?.agentLabel) return a.id; } return null; })();
+          if (agentId) {
+            const violation = agentRegistry.checkToolBoundary(agentId, event.toolName ?? "");
+            if (violation) {
+              const evt: any = {
+                timestamp: Date.now(),
+                eventType: "anomaly_detected",
+                direction: "request",
+                threatClass: "privilege_escalation",
+                signatureId: "sb_tool_boundary",
+                severity: "high" as const,
+                matchedText: `${event.toolName}: ${violation}`,
+                matchStart: 0, matchEnd: 0, textLength: 0,
+                action: config.injectionDetection === "block" ? "blocked" : "flagged",
+                description: violation,
+                agentBuildId: currentSession?.agentBuildId,
+                agentLabel: currentSession?.agentLabel,
+                agentSessionId: currentSession?.sessionId,
+              };
+              ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+              agentTracker.recordSecurityEvent(1);
+
+              if (config.injectionDetection === "block") {
+                api.logger?.warn(`[shroud] BLOCKED sandbox boundary violation: ${violation}`);
+                return { block: true, blockReason: `Shroud security: ${violation}` };
+              }
+              api.logger?.warn(`[shroud] Sandbox boundary violation (flagged): ${violation}`);
+            }
+          }
         }
       }
 
