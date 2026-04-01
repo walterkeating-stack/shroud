@@ -1,6 +1,19 @@
 # Shroud Security Extension
 
-Agent WAF/IDS built into the privacy plugin. Detects prompt injection, data exfiltration, encoding bypass, and privilege escalation across all channels. Zero runtime dependencies.
+A behavioral firewall for AI agents. Built into the Shroud privacy plugin for OpenClaw.
+
+## Why This Exists
+
+AI agents call tools, read files, send messages, and execute code. A prompt injection can hijack any of those capabilities — making the agent exfiltrate data, run destructive commands, or communicate with attacker infrastructure. Traditional content-based injection detection (scanning text for "ignore previous instructions") has fundamental limits: high false positive rates, trivially bypassable, and semantically unsolvable.
+
+Shroud takes a different approach. Instead of trying to detect injection in natural language, it:
+
+1. **Makes exfiltration worthless** — the LLM never sees real sensitive data, only deterministic fakes. Even if injection succeeds, the exfiltrated data is meaningless.
+2. **Plants tripwires** — fake secrets (honeypots) and fake tools (phantom tools) that no legitimate workflow would ever touch. If triggered, it's 100% confirmed injection with zero false positives.
+3. **Watches behavior, not content** — monitors which tools the LLM calls, in what sequence, and whether they match what the user actually asked for. A "summarize this file" request that leads to a `web_fetch` to an unknown domain is suspicious regardless of what the text says.
+4. **Learns per-agent baselines** — each agent builds a behavioral profile over multiple sessions. A coaching bot that suddenly handles API keys, or a research agent that calls `message` for the first time, triggers anomaly detection tuned to that specific agent.
+
+The result: 11 detection layers, zero LLM overhead on the hot path, zero runtime dependencies, and the strongest layer (obfuscation) requires no detection at all.
 
 ## Architecture
 

@@ -111,6 +111,7 @@ if [ -n "${SANDBOX}" ]; then
     --privileged \
     --name "shroud-compat-sandbox-${OC_VERSION}" \
     "${SANDBOX_TAG}"
+  EXIT_CODE=$?
 else
   MEMORY_LIMIT="1g"
   [ -n "${LIFECYCLE}" ] && MEMORY_LIMIT="4g"
@@ -121,7 +122,24 @@ else
     --name "shroud-compat-${OC_VERSION}" \
     ${LIFECYCLE:+-e SHROUD_LIFECYCLE=1} \
     "${TEST_TAG}"
+  EXIT_CODE=$?
 fi
 
+# ── Step 6: Cleanup ──
+# Remove the isolated network (containers already removed by --rm).
+# Remove the test image (base image is cached for reuse).
 echo ""
-echo "OpenClaw ${OC_VERSION}: PASS"
+echo "Cleaning up..."
+docker network rm "${NETWORK}" 2>/dev/null && echo "  Removed network: ${NETWORK}"
+docker rmi "${TEST_TAG}" 2>/dev/null && echo "  Removed test image: ${TEST_TAG}"
+[ -n "${SANDBOX}" ] && docker rmi "${SANDBOX_TAG}" 2>/dev/null && echo "  Removed sandbox image: ${SANDBOX_TAG}"
+# Kill any leftover OpenClaw sandbox containers from this run
+docker ps -a --filter "name=openclaw-sbx-" --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null && echo "  Removed stale OC sandbox containers"
+echo ""
+
+if [ ${EXIT_CODE} -eq 0 ]; then
+  echo "OpenClaw ${OC_VERSION}: PASS"
+else
+  echo "OpenClaw ${OC_VERSION}: FAIL (exit code ${EXIT_CODE})"
+  exit ${EXIT_CODE}
+fi
