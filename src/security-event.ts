@@ -20,6 +20,10 @@ export enum ThreatClass {
   MCP_TOOL_POISONING = "mcp_tool_poisoning",
   SEMANTIC_DRIFT = "semantic_drift",
   SHADOW_EXFIL = "shadow_exfil_detected",
+  CAUSAL_INCOHERENCE = "causal_incoherence",
+  NOVEL_WORKFLOW = "novel_workflow",
+  URL_CORRELATION = "url_correlation",
+  DELEGATION_DRIFT = "delegation_drift",
 }
 
 /** Severity levels for security events. */

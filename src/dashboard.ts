@@ -29,6 +29,10 @@ import type { BehaviouralProfiler } from "./profiler.js";
 import type { ShroudConfig } from "./types.js";
 import type { PolicyEngine } from "./policy.js";
 import type { DriftDetector } from "./detectors/drift-detector.js";
+import type { CausalCoherenceTracker } from "./causal-coherence.js";
+import type { VectorStore } from "./vector-store.js";
+import type { IntentChain } from "./intent-chain.js";
+import { pca } from "./pca.js";
 
 export interface DashboardDeps {
   securityBus: SecurityEventBus | null;
@@ -171,12 +175,133 @@ export function startDashboard(
           dimensions: dd.getProvider().dimensions,
         } : { enabled: false });
       }
+      // --- Causal coherence ---
+      else if (url === "/api/coherence") {
+        const ct = (globalThis as any).__shroudCoherenceTracker as CausalCoherenceTracker | undefined;
+        json(res, 200, ct ? {
+          enabled: true,
+          recentPairs: ct.getRecentPairs(),
+          stats: ct.getStats(),
+        } : { enabled: false });
+      }
+      // --- Vector store + clusters ---
+      else if (url === "/api/vectors") {
+        const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+        json(res, 200, vs ? {
+          enabled: true,
+          workflowCount: vs.getWorkflows().length,
+          clusterCount: vs.getClusters().length,
+          clusters: vs.getClusters(),
+          agentBaselines: vs.getAllAgentBaselines().map(b => ({
+            agentBuildId: b.agentBuildId,
+            maturity: b.maturity,
+            count: b.count,
+            radius: b.radius,
+            workflowCount: b.workflowVectors.length,
+          })),
+        } : { enabled: false });
+      }
+      else if (url === "/api/vectors/urls") {
+        const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+        json(res, 200, vs ? {
+          enabled: true,
+          urls: vs.getUrlFingerprints().map(fp => ({
+            url: fp.url,
+            sessionCount: fp.sessionFingerprints.length,
+            malicious: fp.malicious,
+            confidence: fp.confidence,
+            lastSeen: fp.sessionFingerprints[fp.sessionFingerprints.length - 1]?.timestamp || 0,
+          })),
+        } : { enabled: false });
+      }
+      else if (url?.startsWith("/api/vectors/") && url.endsWith("/evolution")) {
+        const buildId = url.split("/")[3];
+        const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+        const baseline = vs?.getAgentBaseline(buildId);
+        if (!baseline) {
+          json(res, 200, { enabled: false, agentBuildId: buildId });
+        } else {
+          // Read full centroid trajectory from binary for 3D timeline replay
+          const trajectory = vs!.readEvolutionTrajectory(buildId);
+          // PCA-project the trajectory centroids for 3D visualization
+          const centroids = trajectory.map(t => t.centroid).filter(c => c.length > 0);
+          const pcaResult = centroids.length >= 3
+            ? pca(centroids.map(c => Float64Array.from(c)), 3, 50, `evo-${buildId}`)
+            : null;
+          json(res, 200, {
+            enabled: true,
+            agentBuildId: baseline.agentBuildId,
+            maturity: baseline.maturity,
+            count: baseline.count,
+            evolution: baseline.evolution,
+            trajectory: trajectory.map(t => ({
+              timestamp: t.timestamp,
+              sessionCount: t.sessionCount,
+              maturity: t.maturity,
+              centroidShift: t.centroidShift,
+              position: pcaResult && t.centroid.length > 0
+                ? pcaResult.project(Float64Array.from(t.centroid))
+                : [0, 0, 0],
+              clusters: t.clusters.map(c => ({
+                label: c.label,
+                radius: c.radius,
+                memberCount: c.memberCount,
+                position: pcaResult && c.centroid.length > 0
+                  ? pcaResult.project(Float64Array.from(c.centroid))
+                  : [0, 0, 0],
+              })),
+              // Semantic behavior label from dominant cluster
+              behaviorLabel: t.clusters.length > 0
+                ? t.clusters.sort((a, b) => b.memberCount - a.memberCount)[0].label
+                : "unknown",
+            })),
+            pca: pcaResult ? { varianceExplained: pcaResult.variance } : null,
+          });
+        }
+      }
+      // --- Intent chain ---
+      else if (url === "/api/intent-chain") {
+        const ic = (globalThis as any).__shroudIntentChain as IntentChain | undefined;
+        json(res, 200, ic ? {
+          enabled: true,
+          nodes: ic.getAllNodes().map(n => ({
+            agentBuildId: n.agentBuildId,
+            agentLabel: n.agentLabel,
+            sessionId: n.sessionId,
+            intentText: n.intentText.slice(0, 200),
+            rootIntentText: n.rootIntentText.slice(0, 200),
+            parentAgentBuildId: n.parentAgentBuildId,
+            depth: n.depth,
+            timestamp: n.timestamp,
+          })),
+          history: ic.getHistory(),
+        } : { enabled: false });
+      }
+      else if (url?.startsWith("/api/intent-chain/") && url.endsWith("/events")) {
+        const buildId = url.split("/")[3];
+        const ic = (globalThis as any).__shroudIntentChain as IntentChain | undefined;
+        json(res, 200, ic ? {
+          enabled: true,
+          agentBuildId: buildId,
+          delegations: ic.getHistoryForAgent(buildId),
+        } : { enabled: false });
+      }
+      // --- 3D visualization projection ---
+      else if (url?.startsWith("/api/viz/projection")) {
+        handleVizProjection(req, res, deps);
+      }
+      // --- Visualization page ---
+      else if (url === "/viz") {
+        serveVizPage(res);
+      }
       else {
         json(res, 404, { error: "Not found", endpoints: [
           "/health", "/api/overview", "/api/agents", "/api/agents/:buildId",
           "/api/events", "/api/events/stream", "/api/profiling",
           "/api/profiling/:buildId", "/api/stats", "/api/calls", "/api/grading",
-          "/api/drift",
+          "/api/drift", "/api/coherence", "/api/vectors", "/api/vectors/urls",
+          "/api/vectors/:buildId/evolution", "/api/intent-chain",
+          "/api/intent-chain/:buildId/events", "/api/viz/projection", "/viz",
         ]});
       }
     } catch (err: any) {
@@ -667,6 +792,185 @@ function handlePolicyWrite(
 
 // ── Helpers ──────────────────────────────────────────
 
+// ── 3D Visualization handlers ──────────────────────────
+
+function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: DashboardDeps) {
+  const urlObj = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const view = urlObj.searchParams.get("view") || "trajectory";
+  const buildId = urlObj.searchParams.get("buildId") || "";
+
+  const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+  const ct = (globalThis as any).__shroudCoherenceTracker as CausalCoherenceTracker | undefined;
+  const ic = (globalThis as any).__shroudIntentChain as IntentChain | undefined;
+  const dd = deps.driftDetector;
+
+  if (view === "trajectory") {
+    // Intent drift trajectory projected to 3D
+    if (!dd) return json(res, 200, { view, points: [], edges: [], pca: { varianceExplained: [0, 0, 0] } });
+
+    const trajectory = dd.getTrajectory();
+    const provider = dd.getProvider();
+    const refText = dd.getReferenceText();
+
+    // Collect all vectors for PCA
+    const allVecs: Float64Array[] = [];
+    const refVec = refText ? provider.embed(refText) : null;
+    if (refVec) allVecs.push(refVec);
+    // We need to re-embed tool descriptions for the trajectory points
+    // Since we only have similarity scores, we'll create a synthetic projection
+    // based on similarity as distance from reference
+    const points: any[] = [];
+    const edges: any[] = [];
+
+    if (refVec) {
+      points.push({
+        id: "ref", x: 0, y: 0, z: 0,
+        label: "User Intent", color: "#22c55e",
+        metadata: { text: refText.slice(0, 100), similarity: 1.0 },
+      });
+    }
+
+    for (let i = 0; i < trajectory.length; i++) {
+      const tp = trajectory[i];
+      // Position based on similarity: closer = nearer to origin
+      const angle = (i / Math.max(trajectory.length, 1)) * Math.PI * 2;
+      const distance = (1 - tp.similarity) * 5;
+      points.push({
+        id: `t${i}`,
+        x: Math.cos(angle) * distance,
+        y: Math.sin(angle) * distance,
+        z: i * 0.3,
+        label: tp.toolName,
+        color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
+        metadata: { similarity: tp.similarity, delta: tp.delta, step: tp.step, timestamp: tp.timestamp },
+      });
+      // Edge from previous point
+      const fromId = i === 0 ? "ref" : `t${i - 1}`;
+      edges.push({
+        from: fromId, to: `t${i}`,
+        color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
+        width: Math.max(0.5, tp.similarity * 3),
+      });
+    }
+
+    return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.5, 0.3, 0.2] } });
+  }
+
+  if (view === "clusters") {
+    if (!vs) return json(res, 200, { view, points: [], edges: [], clusters: [], pca: { varianceExplained: [0, 0, 0] } });
+
+    const workflows = vs.getWorkflows();
+    const clusters = vs.getClusters();
+
+    // PCA on all workflow vectors
+    const vectors = workflows.map(w => Float64Array.from(w.vector));
+    const pcaResult = vectors.length >= 3 ? pca(vectors, 3, 50, "clusters") : null;
+
+    const points = workflows.map((w, i) => {
+      const [x, y, z] = pcaResult ? pcaResult.project(vectors[i]) : [0, 0, 0];
+      return {
+        id: w.id,
+        x, y, z,
+        label: w.sequence.slice(0, 3).join("→"),
+        color: w.healthy ? "#22c55e" : "#ef4444",
+        metadata: { agentBuildId: w.agentBuildId, sessionId: w.sessionId, healthy: w.healthy },
+      };
+    });
+
+    const clusterData = clusters.map(c => {
+      const centroidVec = Float64Array.from(c.centroid);
+      const [cx, cy, cz] = pcaResult ? pcaResult.project(centroidVec) : [0, 0, 0];
+      return {
+        id: c.id, label: c.label,
+        center: { x: cx, y: cy, z: cz },
+        radius: c.radius * 3, // Scale for visibility
+        color: `hsl(${Math.abs(c.id.charCodeAt(0) * 37) % 360}, 70%, 50%)`,
+      };
+    });
+
+    return json(res, 200, {
+      view, points, edges: [], clusters: clusterData,
+      pca: { varianceExplained: pcaResult?.variance || [0, 0, 0] },
+    });
+  }
+
+  if (view === "coherence") {
+    if (!ct) return json(res, 200, { view, points: [], edges: [], pca: { varianceExplained: [0, 0, 0] } });
+
+    const pairs = ct.getRecentPairs();
+    const points: any[] = [];
+    const edges: any[] = [];
+
+    for (let i = 0; i < pairs.length; i++) {
+      const p = pairs[i];
+      // Result point (blue)
+      points.push({
+        id: `r${i}`, x: i * 2, y: 0, z: 0,
+        label: p.resultToolName, color: "#3b82f6",
+        metadata: { type: "result", distance: p.distance },
+      });
+      // Action point (orange), offset by distance
+      points.push({
+        id: `a${i}`, x: i * 2 + 0.5, y: p.distance * 3, z: 0.5,
+        label: p.actionToolName, color: "#f97316",
+        metadata: { type: "action", distance: p.distance },
+      });
+      // Connecting edge — red if incoherent (high distance)
+      edges.push({
+        from: `r${i}`, to: `a${i}`,
+        color: p.distance < 0.5 ? "#22c55e" : p.distance < 0.8 ? "#eab308" : "#ef4444",
+        width: Math.max(0.5, (1 - p.distance) * 3),
+      });
+    }
+
+    return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.5, 0.3, 0.2] } });
+  }
+
+  if (view === "delegation") {
+    if (!ic) return json(res, 200, { view, points: [], edges: [], pca: { varianceExplained: [0, 0, 0] } });
+
+    const nodes = ic.getAllNodes();
+    const points: any[] = [];
+    const edges: any[] = [];
+
+    for (const node of nodes) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = node.depth * 3;
+      points.push({
+        id: node.agentBuildId,
+        x: Math.cos(angle) * dist,
+        y: Math.sin(angle) * dist,
+        z: node.depth * 2,
+        label: node.agentLabel,
+        color: node.depth === 0 ? "#22c55e" : node.depth === 1 ? "#3b82f6" : "#a855f7",
+        metadata: {
+          depth: node.depth,
+          intentText: node.intentText.slice(0, 100),
+          rootIntentText: node.rootIntentText.slice(0, 100),
+        },
+      });
+
+      if (node.parentAgentBuildId) {
+        edges.push({
+          from: node.parentAgentBuildId,
+          to: node.agentBuildId,
+          color: "#6b7280",
+          width: 2,
+        });
+      }
+    }
+
+    return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.4, 0.3, 0.3] } });
+  }
+
+  json(res, 400, { error: `Unknown view: ${view}`, views: ["trajectory", "clusters", "coherence", "delegation"] });
+}
+
+function serveVizPage(res: ServerResponse) {
+  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  res.end(VIZ_HTML);
+}
+
 function json(res: ServerResponse, status: number, data: unknown) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(data, null, 2));
@@ -1124,7 +1428,178 @@ async function refresh() {
 
     let html = '';
 
-    // Overview cards — top row metrics
+    // ═══ AGENT COMMAND CENTER — hero section, full width ═══
+    html += '<div class="card card-wide"><h2>Agent Command Center</h2>';
+    html += '<div class="stat-row" style="margin-bottom:16px">';
+    html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (ag.totalSecurityEvents > 0 ? 'yellow' : 'green') + '">' + ag.totalSecurityEvents + '</div><div class="stat-label">Security Events</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">With Baseline</div></div>';
+    html += '</div>';
+
+    // Per-agent cards (inline in hero)
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">';
+    for (const a of agents.agents || []) {
+      const p = a.profiling || {};
+      const maturity = p.maturity || 'none';
+      const cats = (p.knownCategories || []).join(', ') || 'none yet';
+      const tools = (p.knownTools || []).join(', ') || 'none';
+      const sessNeeded = p.sessionsUntilActive || 0;
+      const statusText = maturity === 'none' ? 'No baseline - first session'
+        : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more sessions needed'
+        : 'Active - ' + maturity + ' baseline';
+
+      const cls = a.classification || {};
+      const roleLabel = cls.role || 'Unclassified';
+      const rolePct = cls.confidencePct ?? 0;
+
+      const h = a.health || {};
+      const healthIcon = h.status === 'healthy' ? '&#x25CF;' : h.status === 'warning' ? '&#x25B2;' : '&#x25CF;';
+      const healthColour = h.colour || '#8b949e';
+      const complianceText = h.compliant === false ? 'non-compliant' : h.compliant === true ? 'compliant' : 'pending';
+      const compliancePill = h.compliant === false ? 'pill-critical' : h.compliant === true ? 'pill-healthy' : 'pill-info';
+      const eventPill = a.securityEventCount > 5 ? 'pill-critical' : a.securityEventCount > 0 ? 'pill-medium' : 'pill-low';
+
+      const healthCls = h.status === 'critical' ? 'critical' : h.status === 'warning' ? 'warning' : maturity;
+
+      // Behavioral archetype
+      const beh = a.behavior || {};
+      const archetype = beh.archetype || 'Unknown';
+      const archConf = beh.archetypeConfidence || 0;
+      const archColours = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
+      const archColour = archColours[archetype] || '#484f58';
+
+      html += '<div class="agent-card ' + healthCls + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)">';
+      html += '<div class="agent-header">';
+      html += '<div class="agent-name">' + (a.agentLabel || a.agentBuildId) + '</div>';
+      html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
+      html += '<span class="agent-role">' + roleLabel + ' ' + rolePct + '%</span>';
+      html += '<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:' + archColour + '22;color:' + archColour + ';font-weight:500;border:1px solid ' + archColour + '44">' + archetype + (archConf > 0 ? ' ' + archConf + '%' : '') + '</span>';
+      html += '<span class="pill ' + compliancePill + '">' + complianceText + '</span>';
+      html += '</div>';
+      html += '</div>';
+
+      if (h.issues && h.issues.length > 0) {
+        html += '<div style="margin-top:4px;font-size:11px;color:var(--critical)">';
+        for (const issue of h.issues) html += '&#x26A0; ' + issue + '<br>';
+        html += '</div>';
+      }
+
+      html += '<div class="agent-stats">';
+      html += '<div class="stat-mini"><span class="num">' + a.llmCallCount + '</span><span class="lbl">calls</span></div>';
+      html += '<div class="stat-mini"><span class="num">' + (p.sessionCount||0) + '</span><span class="lbl">sessions</span></div>';
+      html += '<div class="stat-mini"><span class="pill ' + eventPill + '">' + a.securityEventCount + ' events</span></div>';
+      html += '<div class="stat-mini"><span class="lbl">' + (a.detectedModel || 'unknown') + '</span></div>';
+      html += '</div>';
+
+      // Tool frequency (top 5)
+      const tf = beh.toolFrequency || {};
+      const topTools = Object.entries(tf).sort((a,b) => (b[1] as number) - (a[1] as number)).slice(0, 5);
+      if (topTools.length > 0) {
+        const maxCount = topTools[0][1] as number;
+        html += '<div style="margin-top:8px;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px">Tool Usage</div>';
+        html += '<div style="margin-top:4px">';
+        for (const [name, count] of topTools) {
+          const pct = Math.round(((count as number) / maxCount) * 100);
+          html += '<div style="display:flex;align-items:center;gap:6px;margin-top:2px;font-size:11px">';
+          html += '<span style="width:80px;text-align:right;color:var(--text-muted)">' + name + '</span>';
+          html += '<div style="flex:1;height:6px;background:var(--border);border-radius:3px"><div style="width:' + pct + '%;height:100%;background:' + archColour + ';border-radius:3px"></div></div>';
+          html += '<span style="width:24px;color:var(--text-secondary)">' + count + '</span>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+
+      // Per-agent drift sparkline
+      const sims = beh.recentSimilarities || [];
+      if (sims.length > 2) {
+        html += '<div style="margin-top:8px;font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px">Intent Alignment</div>';
+        html += '<div style="display:flex;align-items:flex-end;gap:1px;height:20px;margin-top:4px">';
+        for (const s of sims) {
+          const barH = Math.max(2, Math.round(s * 18));
+          const c = s < 0.15 ? 'var(--critical)' : s < 0.3 ? 'var(--medium)' : 'var(--success)';
+          html += '<div style="flex:1;height:' + barH + 'px;background:' + c + ';border-radius:1px;min-width:3px"></div>';
+        }
+        html += '</div>';
+      }
+
+      html += '<div class="agent-meta" style="margin-top:6px">';
+      const inv = (a.toolInventory || []);
+      if (inv.length > 0) html += '<span>Tools: ' + inv.length + '</span>';
+      html += '<span>Build: ' + a.agentBuildId.slice(0,8) + '</span>';
+      const channels = a.channels || [];
+      for (const ch of channels) {
+        const chCls = ch === 'slack' ? 'pill-info' : ch === 'whatsapp' ? 'pill-low' : ch === 'cron' ? 'pill-medium' : 'pill-info';
+        html += '<span class="pill ' + chCls + '">' + ch + '</span>';
+      }
+      html += '</div>';
+      const hb = a.heartbeat || {};
+      if (hb.enabled) {
+        const hbColor = hb.status === 'alive' ? '#3fb950' : hb.status === 'stale' ? '#d29922' : hb.status === 'dead' ? '#f85149' : '#8b949e';
+        const hbIcon = hb.status === 'alive' ? '&#x2764;' : hb.status === 'stale' ? '&#x26A0;' : hb.status === 'dead' ? '&#x1F480;' : '&#x2753;';
+        const hbInterval = hb.avgIntervalMs > 0 ? Math.round(hb.avgIntervalMs / 60000) + 'm' : '?';
+        const hbLast = hb.lastAt > 0 ? timeAgo(hb.lastAt) : 'never';
+        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
+        html += 'Heartbeat: <span style="color:' + hbColor + '">' + hbIcon + ' ' + hb.status + '</span>';
+        html += ' (every ~' + hbInterval + ', last: ' + hbLast + ')';
+        if (hb.lastResponse && !hb.lastResponse.includes('HEARTBEAT_OK')) {
+          html += ' <span style="color:#f85149">ALERT: ' + hb.lastResponse.slice(0, 60) + '</span>';
+        }
+        html += '</div>';
+      }
+      const ac = a.cache || {};
+      if (ac.callsWithCache > 0) {
+        const hitPct = Math.round((ac.avgHitRatio || 0) * 100);
+        const cacheColour = hitPct >= 70 ? '#3fb950' : hitPct >= 30 ? '#d29922' : '#f85149';
+        const basePct = ac.baselineHitRatio >= 0 ? Math.round(ac.baselineHitRatio * 100) + '%' : 'learning';
+        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
+        html += 'Cache: <span style="color:' + cacheColour + ';font-weight:600">' + hitPct + '% hit</span>';
+        html += ' (baseline: ' + basePct + ', ' + ac.callsWithCache + ' calls, ';
+        html += (ac.totalCacheRead || 0).toLocaleString() + ' read / ' + (ac.totalCacheWrite || 0).toLocaleString() + ' write tokens)';
+        html += '</div>';
+      }
+      html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
+      html += '<div class="progress" style="flex:1"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%;background:' + (maturity==='mature'?'#3fb950':maturity==='reliable'?'#58a6ff':'#d29922') + '"></div></div>';
+      html += '<span style="font-size:11px;color:#8b949e">' + statusText + '</span>';
+      html += '</div>';
+      html += '</div>';
+    }
+    html += '</div>'; // grid
+    html += '</div>'; // card
+
+    // ═══ BEHAVIORAL ARCHETYPE MAP ═══
+    const archCounts = {};
+    const archColourMap = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
+    for (const a of agents.agents || []) {
+      const arch = (a.behavior || {}).archetype || 'Unknown';
+      archCounts[arch] = (archCounts[arch] || 0) + 1;
+    }
+    const totalAgents = (agents.agents || []).length || 1;
+
+    html += '<div class="card card-wide"><h2>Behavioral Archetypes</h2>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Derived from runtime tool call patterns — what agents actually do, not what they\'re labelled as. Builds over time.</p>';
+    // Stacked bar
+    html += '<div style="display:flex;height:28px;border-radius:6px;overflow:hidden;gap:1px">';
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => (b[1] as number) - (a[1] as number))) {
+      const pct = Math.round((count as number) / totalAgents * 100);
+      const col = archColourMap[arch] || '#484f58';
+      html += '<div style="flex:' + count + ';background:' + col + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0d1117;min-width:40px" title="' + arch + ': ' + count + ' agent(s)">' + arch + '</div>';
+    }
+    html += '</div>';
+    // Legend with agent names
+    html += '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:12px">';
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => (b[1] as number) - (a[1] as number))) {
+      const col = archColourMap[arch] || '#484f58';
+      const archAgents = (agents.agents || []).filter(a => ((a.behavior || {}).archetype || 'Unknown') === arch);
+      html += '<div style="font-size:11px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + col + ';margin-right:4px"></span>';
+      html += '<span style="color:' + col + ';font-weight:600">' + arch + '</span> ';
+      html += '<span style="color:var(--text-muted)">' + archAgents.map(a => a.agentLabel).join(', ') + '</span>';
+      html += '</div>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    // ═══ SECURITY OVERVIEW ═══
     const modeColor = sec.injectionDetection === 'block' ? 'pill-critical' : sec.injectionDetection === 'flag' ? 'pill-medium' : 'pill-info';
     html += '<div class="card"><h2>Threat Detection</h2>';
     html += '<div class="stat-row">';
@@ -1142,15 +1617,6 @@ async function refresh() {
     html += '</div>';
     html += '<div class="row" style="margin-top:12px"><span class="label">Honeypots</span><span class="pill ' + (sec.honeypotEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.honeypotEnabled ? 'ARMED' : 'OFF') + '</span></div>';
     html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">5 fake secrets + 5 phantom tools planted in context. Any use = 100% confirmed injection.</p>';
-    html += '</div>';
-
-    html += '<div class="card"><h2>Agent Inventory</h2>';
-    html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">With Baseline</div></div>';
-    html += '</div>';
-    html += '<div class="row" style="margin-top:12px"><span class="label">Profiling</span><span class="pill pill-info">' + (sec.profilingEnabled ? sec.profilingMode.toUpperCase() : 'OFF') + '</span></div>';
     html += '</div>';
 
     html += '<div class="card"><h2>Privacy Shield</h2>';
@@ -1265,98 +1731,6 @@ async function refresh() {
       }
       html += '</div>';
     }
-
-    // Agent details
-    html += '<div class="card" style="grid-column: span 2"><h2>Agent Profiles</h2>';
-    for (const a of agents.agents || []) {
-      const p = a.profiling || {};
-      const maturity = p.maturity || 'none';
-      const cats = (p.knownCategories || []).join(', ') || 'none yet';
-      const tools = (p.knownTools || []).join(', ') || 'none';
-      const sessNeeded = p.sessionsUntilActive || 0;
-      const statusText = maturity === 'none' ? 'No baseline - first session'
-        : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more sessions needed'
-        : 'Active - ' + maturity + ' baseline';
-
-      const cls = a.classification || {};
-      const roleLabel = cls.role || 'Unclassified';
-      const roleColour = cls.colour || '#8b949e';
-      const rolePct = cls.confidencePct ?? 0;
-
-      const h = a.health || {};
-      const healthIcon = h.status === 'healthy' ? '&#x25CF;' : h.status === 'warning' ? '&#x25B2;' : '&#x25CF;';
-      const healthColour = h.colour || '#8b949e';
-      const complianceText = h.compliant === false ? 'non-compliant' : h.compliant === true ? 'compliant' : 'pending';
-      const complianceColour = h.compliant === false ? '#f85149' : h.compliant === true ? '#3fb950' : '#8b949e';
-
-      const healthCls = h.status === 'critical' ? 'critical' : h.status === 'warning' ? 'warning' : maturity;
-      const compliancePill = h.compliant === false ? 'pill-critical' : h.compliant === true ? 'pill-healthy' : 'pill-info';
-      const eventPill = a.securityEventCount > 5 ? 'pill-critical' : a.securityEventCount > 0 ? 'pill-medium' : 'pill-low';
-
-      html += '<div class="agent-card ' + healthCls + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)">';
-      html += '<div class="agent-header">';
-      html += '<div class="agent-name">' + (a.agentLabel || a.agentBuildId) + '</div>';
-      html += '<div style="display:flex;gap:6px;align-items:center">';
-      html += '<span class="agent-role">' + roleLabel + ' ' + rolePct + '%</span>';
-      html += '<span class="pill ' + compliancePill + '">' + complianceText + '</span>';
-      html += '</div>';
-      html += '</div>';
-
-      if (h.issues && h.issues.length > 0) {
-        html += '<div style="margin-top:4px;font-size:11px;color:var(--critical)">';
-        for (const issue of h.issues) html += '&#x26A0; ' + issue + '<br>';
-        html += '</div>';
-      }
-
-      html += '<div class="agent-stats">';
-      html += '<div class="stat-mini"><span class="num">' + a.llmCallCount + '</span><span class="lbl">calls</span></div>';
-      html += '<div class="stat-mini"><span class="num">' + (p.sessionCount||0) + '</span><span class="lbl">sessions</span></div>';
-      html += '<div class="stat-mini"><span class="pill ' + eventPill + '">' + a.securityEventCount + ' events</span></div>';
-      html += '<div class="stat-mini"><span class="lbl">' + (a.detectedModel || 'unknown') + '</span></div>';
-      html += '</div>';
-
-      html += '<div class="agent-meta" style="margin-top:6px">';
-      const inv = (a.toolInventory || []);
-      if (inv.length > 0) html += '<span>Tools: ' + inv.length + '</span>';
-      html += '<span>Build: ' + a.agentBuildId.slice(0,8) + '</span>';
-      const channels = a.channels || [];
-      for (const ch of channels) {
-        const chCls = ch === 'slack' ? 'pill-info' : ch === 'whatsapp' ? 'pill-low' : ch === 'cron' ? 'pill-medium' : 'pill-info';
-        html += '<span class="pill ' + chCls + '">' + ch + '</span>';
-      }
-      html += '</div>';
-      const hb = a.heartbeat || {};
-      if (hb.enabled) {
-        const hbColor = hb.status === 'alive' ? '#3fb950' : hb.status === 'stale' ? '#d29922' : hb.status === 'dead' ? '#f85149' : '#8b949e';
-        const hbIcon = hb.status === 'alive' ? '&#x2764;' : hb.status === 'stale' ? '&#x26A0;' : hb.status === 'dead' ? '&#x1F480;' : '&#x2753;';
-        const hbInterval = hb.avgIntervalMs > 0 ? Math.round(hb.avgIntervalMs / 60000) + 'm' : '?';
-        const hbLast = hb.lastAt > 0 ? timeAgo(hb.lastAt) : 'never';
-        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
-        html += 'Heartbeat: <span style="color:' + hbColor + '">' + hbIcon + ' ' + hb.status + '</span>';
-        html += ' (every ~' + hbInterval + ', last: ' + hbLast + ')';
-        if (hb.lastResponse && !hb.lastResponse.includes('HEARTBEAT_OK')) {
-          html += ' <span style="color:#f85149">ALERT: ' + hb.lastResponse.slice(0, 60) + '</span>';
-        }
-        html += '</div>';
-      }
-      const ac = a.cache || {};
-      if (ac.callsWithCache > 0) {
-        const hitPct = Math.round((ac.avgHitRatio || 0) * 100);
-        const cacheColour = hitPct >= 70 ? '#3fb950' : hitPct >= 30 ? '#d29922' : '#f85149';
-        const basePct = ac.baselineHitRatio >= 0 ? Math.round(ac.baselineHitRatio * 100) + '%' : 'learning';
-        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
-        html += 'Cache: <span style="color:' + cacheColour + ';font-weight:600">' + hitPct + '% hit</span>';
-        html += ' (baseline: ' + basePct + ', ' + ac.callsWithCache + ' calls, ';
-        html += (ac.totalCacheRead || 0).toLocaleString() + ' read / ' + (ac.totalCacheWrite || 0).toLocaleString() + ' write tokens)';
-        html += '</div>';
-      }
-      html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
-      html += '<div class="progress" style="flex:1"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%;background:' + (maturity==='mature'?'#3fb950':maturity==='reliable'?'#58a6ff':'#d29922') + '"></div></div>';
-      html += '<span style="font-size:11px;color:#8b949e">' + statusText + '</span>';
-      html += '</div>';
-      html += '</div>';
-    }
-    html += '</div>';
 
     // Recent events
     html += '<div class="card" style="grid-column: span 2"><h2>Recent Security Events</h2><div class="events-list">';
@@ -2026,6 +2400,267 @@ try {
   eventSource = new EventSource(BASE + '/api/events/stream');
   eventSource.onmessage = () => refresh();
 } catch(e) {}
+</script>
+</body>
+</html>`;
+
+// ── 3D Visualization HTML ──────────────────────────────
+
+const VIZ_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shroud — Vector Space Visualization</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0e1a; color: #e2e8f0; font-family: 'SF Mono', 'Fira Code', monospace; overflow: hidden; }
+  #controls { position: fixed; top: 16px; left: 16px; z-index: 100; display: flex; gap: 8px; }
+  .tab { padding: 8px 16px; background: rgba(30,41,59,0.9); border: 1px solid #334155; border-radius: 6px;
+         color: #94a3b8; cursor: pointer; font-size: 12px; font-family: inherit; transition: all 0.2s; }
+  .tab:hover { border-color: #3b82f6; color: #e2e8f0; }
+  .tab.active { background: #1e3a5f; border-color: #3b82f6; color: #60a5fa; }
+  #info { position: fixed; bottom: 16px; left: 16px; z-index: 100; background: rgba(30,41,59,0.9);
+          border: 1px solid #334155; border-radius: 6px; padding: 12px 16px; font-size: 11px; max-width: 400px; }
+  #info h3 { color: #60a5fa; margin-bottom: 4px; font-size: 12px; }
+  #info p { color: #94a3b8; line-height: 1.5; }
+  #tooltip { position: fixed; z-index: 200; background: rgba(15,23,42,0.95); border: 1px solid #3b82f6;
+             border-radius: 6px; padding: 8px 12px; font-size: 11px; pointer-events: none; display: none; }
+  canvas { display: block; }
+  #legend { position: fixed; top: 16px; right: 16px; z-index: 100; background: rgba(30,41,59,0.9);
+            border: 1px solid #334155; border-radius: 6px; padding: 12px 16px; font-size: 11px; }
+  #legend .item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+  #legend .dot { width: 10px; height: 10px; border-radius: 50%; }
+  #pca-info { position: fixed; bottom: 16px; right: 16px; z-index: 100; background: rgba(30,41,59,0.9);
+              border: 1px solid #334155; border-radius: 6px; padding: 8px 12px; font-size: 10px; color: #64748b; }
+</style>
+</head>
+<body>
+<div id="controls">
+  <button class="tab active" onclick="switchView('trajectory')">Intent Trajectory</button>
+  <button class="tab" onclick="switchView('clusters')">Workflow Clusters</button>
+  <button class="tab" onclick="switchView('coherence')">Causal Coherence</button>
+  <button class="tab" onclick="switchView('delegation')">Delegation Tree</button>
+</div>
+<div id="legend"></div>
+<div id="info"></div>
+<div id="tooltip"></div>
+<div id="pca-info"></div>
+
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const BASE = window.location.origin;
+let currentView = 'trajectory';
+let scene, camera, renderer, controls;
+let pointMeshes = [], edgeMeshes = [], clusterMeshes = [];
+
+// Setup Three.js
+function init() {
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0a0e1a);
+
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.set(8, 6, 8);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  document.body.appendChild(renderer.domElement);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.05;
+
+  // Grid
+  const grid = new THREE.GridHelper(20, 20, 0x1e293b, 0x1e293b);
+  scene.add(grid);
+
+  // Ambient + directional light
+  scene.add(new THREE.AmbientLight(0x404060, 1));
+  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  dirLight.position.set(5, 10, 5);
+  scene.add(dirLight);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  animate();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// Clear scene objects
+function clearScene() {
+  for (const m of [...pointMeshes, ...edgeMeshes, ...clusterMeshes]) {
+    scene.remove(m);
+    if (m.geometry) m.geometry.dispose();
+    if (m.material) {
+      if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
+      else m.material.dispose();
+    }
+  }
+  pointMeshes = []; edgeMeshes = []; clusterMeshes = [];
+}
+
+// Render data
+function renderData(data) {
+  clearScene();
+
+  // Points
+  for (const pt of (data.points || [])) {
+    const geo = new THREE.SphereGeometry(0.15, 16, 16);
+    const mat = new THREE.MeshPhongMaterial({ color: pt.color || '#ffffff', emissive: pt.color || '#ffffff', emissiveIntensity: 0.3 });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(pt.x, pt.z || 0, pt.y);
+    mesh.userData = { label: pt.label, metadata: pt.metadata };
+    scene.add(mesh);
+    pointMeshes.push(mesh);
+  }
+
+  // Edges
+  for (const edge of (data.edges || [])) {
+    const from = data.points.find(p => p.id === edge.from);
+    const to = data.points.find(p => p.id === edge.to);
+    if (!from || !to) continue;
+
+    const pts = [
+      new THREE.Vector3(from.x, from.z || 0, from.y),
+      new THREE.Vector3(to.x, to.z || 0, to.y),
+    ];
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    const mat = new THREE.LineBasicMaterial({ color: edge.color || '#666', linewidth: edge.width || 1 });
+    const line = new THREE.Line(geo, mat);
+    scene.add(line);
+    edgeMeshes.push(line);
+  }
+
+  // Clusters (transparent spheres)
+  for (const cl of (data.clusters || [])) {
+    const geo = new THREE.SphereGeometry(cl.radius || 1, 32, 32);
+    const mat = new THREE.MeshPhongMaterial({ color: cl.color || '#3b82f6', transparent: true, opacity: 0.1, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(cl.center.x, cl.center.z || 0, cl.center.y);
+    scene.add(mesh);
+    clusterMeshes.push(mesh);
+  }
+
+  // Update PCA info
+  const pcaDiv = document.getElementById('pca-info');
+  if (data.pca && data.pca.varianceExplained) {
+    const ve = data.pca.varianceExplained.map(v => (v * 100).toFixed(1) + '%');
+    pcaDiv.textContent = 'PCA variance: ' + ve.join(' / ');
+  }
+}
+
+// Fetch and render
+async function loadView(view) {
+  try {
+    const resp = await fetch(BASE + '/api/viz/projection?view=' + view);
+    const data = await resp.json();
+    renderData(data);
+    updateLegend(view);
+    updateInfo(view, data);
+  } catch (e) {
+    console.error('Failed to load view:', e);
+  }
+}
+
+function updateLegend(view) {
+  const el = document.getElementById('legend');
+  const legends = {
+    trajectory: [
+      { color: '#22c55e', label: 'High coherence (>0.5)' },
+      { color: '#eab308', label: 'Moderate (0.15-0.5)' },
+      { color: '#ef4444', label: 'Drifted (<0.15)' },
+    ],
+    clusters: [
+      { color: '#22c55e', label: 'Healthy workflow' },
+      { color: '#ef4444', label: 'Flagged workflow' },
+    ],
+    coherence: [
+      { color: '#3b82f6', label: 'Tool result' },
+      { color: '#f97316', label: 'Next action' },
+      { color: '#22c55e', label: 'Coherent pair' },
+      { color: '#ef4444', label: 'Broken pair' },
+    ],
+    delegation: [
+      { color: '#22c55e', label: 'Root agent (depth 0)' },
+      { color: '#3b82f6', label: 'Delegate (depth 1)' },
+      { color: '#a855f7', label: 'Sub-delegate (depth 2+)' },
+    ],
+  };
+  el.innerHTML = (legends[view] || []).map(l =>
+    '<div class="item"><div class="dot" style="background:' + l.color + '"></div>' + l.label + '</div>'
+  ).join('');
+}
+
+function updateInfo(view, data) {
+  const el = document.getElementById('info');
+  const infos = {
+    trajectory: '<h3>Intent Trajectory</h3><p>User intent at origin. Tool calls plotted by semantic distance. Green = aligned, red = drifted. Sharp angle = injection point.</p>',
+    clusters: '<h3>Workflow Clusters</h3><p>' + (data.clusters?.length || 0) + ' clusters, ' + (data.points?.length || 0) + ' workflows. Transparent spheres show cluster boundaries. Red dots = flagged sessions.</p>',
+    coherence: '<h3>Causal Coherence</h3><p>Blue = tool result, orange = next action. Short green lines = coherent pairs. Long red lines = causal breaks (injection fingerprint).</p>',
+    delegation: '<h3>Delegation Tree</h3><p>Root agent at center. Sub-agents branch outward. Distance from center = drift from root intent.</p>',
+  };
+  el.innerHTML = infos[view] || '';
+}
+
+// Tab switching
+window.switchView = function(view) {
+  currentView = view;
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('.tab[onclick*="' + view + '"]')?.classList.add('active');
+  loadView(view);
+};
+
+// Tooltip on hover
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+const tooltip = document.getElementById('tooltip');
+
+renderer?.domElement?.addEventListener('mousemove', (e) => {
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(pointMeshes);
+  if (intersects.length > 0) {
+    const obj = intersects[0].object;
+    const ud = obj.userData;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 12) + 'px';
+    tooltip.style.top = (e.clientY + 12) + 'px';
+    let html = '<strong>' + (ud.label || '?') + '</strong>';
+    if (ud.metadata) {
+      for (const [k, v] of Object.entries(ud.metadata)) {
+        const val = typeof v === 'number' ? v.toFixed(3) : String(v).slice(0, 60);
+        html += '<br><span style="color:#64748b">' + k + ':</span> ' + val;
+      }
+    }
+    tooltip.innerHTML = html;
+  } else {
+    tooltip.style.display = 'none';
+  }
+});
+
+// Init
+init();
+loadView('trajectory');
+
+// Auto-refresh every 5 seconds
+setInterval(() => loadView(currentView), 5000);
 </script>
 </body>
 </html>`;

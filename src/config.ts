@@ -247,7 +247,11 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       const env = process.env.SHROUD_DRIFT_ENABLED;
       if (env === "true") return true;
       if (env === "false") return false;
-      return typeof raw.driftEnabled === "boolean" ? raw.driftEnabled : false;
+      if (typeof raw.driftEnabled === "boolean") return raw.driftEnabled;
+      // Auto-enable when dashboard is active
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboard === "boolean" ? raw.dashboard : false;
     })(),
     driftThreshold: (() => {
       const env = process.env.SHROUD_DRIFT_THRESHOLD;
@@ -265,7 +269,10 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       const env = process.env.SHROUD_SHADOW_EXECUTION;
       if (env === "true") return true;
       if (env === "false") return false;
-      return typeof raw.shadowExecutionEnabled === "boolean" ? raw.shadowExecutionEnabled : false;
+      if (typeof raw.shadowExecutionEnabled === "boolean") return raw.shadowExecutionEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboard === "boolean" ? raw.dashboard : false;
     })(),
     shadowExecutionMaxSteps: (() => {
       const env = process.env.SHROUD_SHADOW_MAX_STEPS;
@@ -291,6 +298,77 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       const env = process.env.SHROUD_DASHBOARD_PORT;
       if (env) return parseInt(env, 10) || 9380;
       return typeof raw.dashboardPort === "number" ? raw.dashboardPort : 9380;
+    })(),
+
+    // --- Causal coherence tracking ---
+    coherenceEnabled: (() => {
+      const env = process.env.SHROUD_COHERENCE_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.coherenceEnabled === "boolean") return raw.coherenceEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    coherenceZScore: (() => {
+      const env = process.env.SHROUD_COHERENCE_ZSCORE;
+      if (env) return parseFloat(env) || 3.0;
+      return typeof raw.coherenceZScore === "number" ? raw.coherenceZScore : 3.0;
+    })(),
+    coherenceResultLimit: (() => {
+      const env = process.env.SHROUD_COHERENCE_RESULT_LIMIT;
+      if (env) return parseInt(env, 10) || 500;
+      return typeof raw.coherenceResultLimit === "number" ? raw.coherenceResultLimit : 500;
+    })(),
+
+    // --- Vector store + clustering ---
+    vectorStoreEnabled: (() => {
+      const env = process.env.SHROUD_VECTOR_STORE_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.vectorStoreEnabled === "boolean") return raw.vectorStoreEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    vectorStoreMax: (() => {
+      const env = process.env.SHROUD_VECTOR_STORE_MAX;
+      if (env) return parseInt(env, 10) || 10000;
+      return typeof raw.vectorStoreMax === "number" ? raw.vectorStoreMax : 10000;
+    })(),
+    clusteringEnabled: (() => {
+      const env = process.env.SHROUD_CLUSTERING_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.clusteringEnabled === "boolean") return raw.clusteringEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    urlCorrelationEnabled: (() => {
+      const env = process.env.SHROUD_URL_CORRELATION_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.urlCorrelationEnabled === "boolean") return raw.urlCorrelationEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+
+    // --- Multi-agent intent chain ---
+    intentChainEnabled: (() => {
+      const env = process.env.SHROUD_INTENT_CHAIN_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.intentChainEnabled === "boolean") return raw.intentChainEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    delegationDriftThreshold: (() => {
+      const env = process.env.SHROUD_DELEGATION_DRIFT_THRESHOLD;
+      if (env) return parseFloat(env) || 0.10;
+      return typeof raw.delegationDriftThreshold === "number" ? raw.delegationDriftThreshold : 0.10;
     })(),
   };
 

@@ -193,4 +193,31 @@ export interface ShroudConfig {
   dashboardEnabled: boolean;
   /** Dashboard port (default: 9380). Binds to 127.0.0.1 only. */
   dashboardPort: number;
+
+  // --- Causal coherence tracking ---
+
+  /** Enable causal coherence tracking (result→action pair analysis). */
+  coherenceEnabled: boolean;
+  /** Z-score threshold for causal incoherence flagging (default: 3.0). */
+  coherenceZScore: number;
+  /** Max chars of tool result text to embed for coherence (default: 500). */
+  coherenceResultLimit: number;
+
+  // --- Vector store + clustering ---
+
+  /** Enable persisted vector store for workflow fingerprinting. */
+  vectorStoreEnabled: boolean;
+  /** Max total stored workflow vectors (LRU eviction, default: 10000). */
+  vectorStoreMax: number;
+  /** Enable workflow clustering (incremental centroid-based). */
+  clusteringEnabled: boolean;
+  /** Enable cross-session URL correlation for malicious payload detection. */
+  urlCorrelationEnabled: boolean;
+
+  // --- Multi-agent intent chain ---
+
+  /** Enable multi-agent intent chain tracking (delegation coherence). */
+  intentChainEnabled: boolean;
+  /** Drift threshold for delegated sub-agents (tighter than root, default: 0.10). */
+  delegationDriftThreshold: number;
 }

@@ -48,6 +48,9 @@ import * as sigLoaderMod from "./signature-loader.js";
 import { EventGrader, GRADING_SESSION_PREFIX, GRADING_AGENT_LABEL, captureModel } from "./event-grader.js";
 import { DriftDetector, buildDriftEvent } from "./detectors/drift-detector.js";
 import { ShadowExecutor, buildShadowEvent } from "./shadow-executor.js";
+import { CausalCoherenceTracker, buildCoherenceEvent } from "./causal-coherence.js";
+import { VectorStore, buildNovelWorkflowEvent, buildUrlCorrelationEvent } from "./vector-store.js";
+import { IntentChain, buildDelegationDriftEvent } from "./intent-chain.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -477,6 +480,38 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     try {
       if (profiler) profiler.finalizeSession();
 
+      // --- Vector store: record completed workflow + persist ---
+      if (_vectorStore && _sessionToolSequence.length > 0) {
+        const agentSession = agentTracker.getCurrentSession();
+        if (agentSession && agentSession.agentLabel !== "Unknown Agent") {
+          const hadEvents = agentSession.securityEventCount > 0;
+          _vectorStore.recordWorkflow(
+            agentSession.agentBuildId,
+            agentSession.sessionId,
+            _sessionToolSequence,
+            _sessionUrls,
+            !hadEvents, // healthy = no security events
+          );
+
+          // Record URL visits for cross-session correlation
+          if (config.urlCorrelationEnabled) {
+            for (const url of _sessionUrls) {
+              const urlIdx = _sessionToolSequence.indexOf("web_fetch") + 1 ||
+                _sessionToolSequence.indexOf("fetch") + 1 ||
+                _sessionToolSequence.indexOf("browser") + 1;
+              const seqAfter = urlIdx > 0 ? _sessionToolSequence.slice(urlIdx) : _sessionToolSequence;
+              _vectorStore.recordUrlVisit(url, agentSession.agentBuildId, agentSession.sessionId, seqAfter, hadEvents);
+            }
+          }
+
+          // Save transition stats from coherence tracker
+          if (_coherenceTracker) {
+            _vectorStore.setTransitionStats(agentSession.agentBuildId, _coherenceTracker.getStats());
+          }
+        }
+        _vectorStore.flush();
+      }
+
       const inMemory = agentTracker.getAllSessions().filter(_isCleanLabel);
 
       // Merge with existing file — don't overwrite agents that aren't in memory
@@ -598,6 +633,25 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   if (_driftDetector) (globalThis as any).__shroudDriftDetector = _driftDetector;
   // Shadow executor — runs suspicious tool calls against fake sandbox
   const _shadowExecutor = config.shadowExecutionEnabled ? new ShadowExecutor() : null;
+  // Causal coherence tracker — monitors result→action pair distances
+  const _coherenceTracker = config.coherenceEnabled ? new CausalCoherenceTracker({
+    zScoreThreshold: config.coherenceZScore,
+    resultLimit: config.coherenceResultLimit,
+  }) : null;
+  if (_coherenceTracker) (globalThis as any).__shroudCoherenceTracker = _coherenceTracker;
+  // Vector store — persisted workflow fingerprints, clustering, URL correlation
+  const _vectorStore = config.vectorStoreEnabled
+    ? new VectorStore(config.profilingProfileDir, config.vectorStoreMax)
+    : null;
+  if (_vectorStore) (globalThis as any).__shroudVectorStore = _vectorStore;
+  // Intent chain — multi-agent delegation coherence
+  const _intentChain = config.intentChainEnabled ? new IntentChain({
+    delegationDriftThreshold: config.delegationDriftThreshold,
+  }) : null;
+  if (_intentChain) (globalThis as any).__shroudIntentChain = _intentChain;
+  // Session tool sequence accumulator for vector store workflow recording
+  let _sessionToolSequence: string[] = [];
+  let _sessionUrls: string[] = [];
 
   // Phantom tools — canary tool definitions that catch injection through action.
   // Only register once per process (the tools persist across plugin reloads).
@@ -716,6 +770,30 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         : null;
       _turnContext = createTurnContext(_currentIntent, agentBaseline);
       _toolSequence.reset(); // Reset sequence tracker for each new turn
+
+      // --- Causal coherence: reset for new turn ---
+      if (_coherenceTracker) {
+        _coherenceTracker.resetTurn();
+        // Load transition stats from vector store for this agent
+        if (_vectorStore && agentSession?.agentBuildId) {
+          const stats = _vectorStore.getTransitionStats(agentSession.agentBuildId);
+          if (Object.keys(stats).length > 0) _coherenceTracker.loadStats(stats);
+        }
+      }
+
+      // --- Intent chain: consume delegation or create root node ---
+      if (_intentChain && agentSession) {
+        _intentChain.consumeDelegation(
+          agentSession.agentBuildId,
+          agentSession.agentLabel,
+          agentSession.sessionId,
+          lastUserMsg,
+        );
+      }
+
+      // --- Reset session sequence accumulators ---
+      _sessionToolSequence = [];
+      _sessionUrls = [];
     }
 
     // ── DNS cache warming ──
@@ -1233,9 +1311,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
       }
 
-      // --- Semantic drift detection ---
+      // --- Behavioral archetype tracking (always, even without drift) ---
+      if (!_driftDetector) {
+        agentTracker.recordToolCall(event.toolName ?? "unknown");
+      }
+
+      // --- Semantic drift detection + behavioral archetype tracking ---
       if (_driftDetector && _currentIntent) {
         const drift = _driftDetector.checkDrift(event.toolName ?? "unknown", event.params);
+        // Record tool call for per-agent behavioral archetype mapping
+        agentTracker.recordToolCall(event.toolName ?? "unknown", drift.similarity);
         if (drift.drifted || drift.suddenTurn) {
           const evt = buildDriftEvent(event.toolName ?? "unknown", drift,
             config.injectionDetection === "block" ? "blocked" : "flagged");
@@ -1251,6 +1336,106 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             return { block: true, blockReason: `Shroud security: ${drift.reason}` };
           }
           api.logger?.info(`[shroud] Semantic drift (flagged): ${drift.reason}`);
+        }
+      }
+
+      // --- Causal coherence: check result→action pair distance ---
+      if (_coherenceTracker && _currentIntent) {
+        const coherence = _coherenceTracker.checkCoherence(event.toolName ?? "unknown", event.params);
+        if (coherence && !coherence.coherent) {
+          const evt = buildCoherenceEvent(coherence,
+            config.injectionDetection === "block" ? "blocked" : "flagged");
+          const agentSession = agentTracker.getCurrentSession();
+          evt.agentBuildId = agentSession?.agentBuildId;
+          evt.agentLabel = agentSession?.agentLabel;
+          evt.agentSessionId = agentSession?.sessionId;
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+          agentTracker.recordSecurityEvent(1);
+          if (config.injectionDetection === "block" && coherence.severity === "high") {
+            api.logger?.warn(`[shroud] BLOCKED causal incoherence: ${coherence.reason}`);
+            return { block: true, blockReason: `Shroud security: ${coherence.reason}` };
+          }
+          api.logger?.info(`[shroud] Causal incoherence (flagged): ${coherence.reason}`);
+        }
+      }
+
+      // --- Multi-agent intent chain: capture delegation + check drift ---
+      if (_intentChain) {
+        const toolNameLower = (event.toolName ?? "").toLowerCase();
+        // Capture delegation when agent spawns/sends to another agent
+        if (toolNameLower === "sessions_send" || toolNameLower === "sessions_spawn") {
+          const agentSession = agentTracker.getCurrentSession();
+          if (agentSession) {
+            _intentChain.captureDelegation(
+              agentSession.agentBuildId,
+              agentSession.agentLabel,
+              agentSession.sessionId,
+              event.params,
+            );
+          }
+        }
+
+        // Check delegation drift for sub-agents (depth >= 1)
+        const agentSession = agentTracker.getCurrentSession();
+        if (agentSession) {
+          const delegDrift = _intentChain.checkDelegationDrift(
+            agentSession.agentBuildId,
+            event.toolName ?? "unknown",
+            event.params,
+          );
+          if (delegDrift && delegDrift.drifted) {
+            const evt = buildDelegationDriftEvent(
+              agentSession.agentLabel,
+              delegDrift,
+              config.injectionDetection === "block" ? "blocked" : "flagged",
+            );
+            evt.agentBuildId = agentSession.agentBuildId;
+            evt.agentLabel = agentSession.agentLabel;
+            evt.agentSessionId = agentSession.sessionId;
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+            agentTracker.recordSecurityEvent(1);
+            if (config.injectionDetection === "block" && delegDrift.severity === "high") {
+              api.logger?.warn(`[shroud] BLOCKED delegation drift: ${delegDrift.reason}`);
+              return { block: true, blockReason: `Shroud security: ${delegDrift.reason}` };
+            }
+            api.logger?.info(`[shroud] Delegation drift (flagged): ${delegDrift.reason}`);
+          }
+        }
+      }
+
+      // --- Vector store: accumulate tool sequence + track URLs ---
+      {
+        const tn = event.toolName ?? "unknown";
+        _sessionToolSequence.push(tn);
+        // Track URLs for cross-session correlation
+        const toolNameLower = tn.toLowerCase();
+        if (toolNameLower === "web_fetch" || toolNameLower === "fetch" || toolNameLower === "browser") {
+          const p = (typeof event.params === "object" && event.params !== null)
+            ? event.params as Record<string, unknown>
+            : {};
+          const url = String(p.url || p.uri || "");
+          if (url) {
+            _sessionUrls.push(url);
+            // Check if URL is already known malicious
+            if (_vectorStore && config.urlCorrelationEnabled) {
+              const urlStatus = _vectorStore.isUrlMalicious(url);
+              if (urlStatus.malicious) {
+                const evt = buildUrlCorrelationEvent(url, urlStatus.confidence,
+                  config.injectionDetection === "block" ? "blocked" : "flagged");
+                const agentSession = agentTracker.getCurrentSession();
+                evt.agentBuildId = agentSession?.agentBuildId;
+                evt.agentLabel = agentSession?.agentLabel;
+                evt.agentSessionId = agentSession?.sessionId;
+                ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+                agentTracker.recordSecurityEvent(1);
+                if (config.injectionDetection === "block") {
+                  api.logger?.warn(`[shroud] BLOCKED malicious URL: ${url} (confidence=${urlStatus.confidence.toFixed(2)})`);
+                  return { block: true, blockReason: `Shroud security: known malicious URL ${url}` };
+                }
+                api.logger?.warn(`[shroud] Malicious URL (flagged): ${url}`);
+              }
+            }
+          }
         }
       }
 
@@ -1361,6 +1546,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         resultCategories,
         resultSize: totalResultSize,
       });
+
+      // --- Causal coherence: feed result text for next pair check ---
+      if (_coherenceTracker && _turnContext.pendingToolCall) {
+        // Extract text from the obfuscated result for embedding
+        const resultText = typeof event.message === "string"
+          ? event.message
+          : JSON.stringify(event.message);
+        _coherenceTracker.feedResult(_turnContext.pendingToolCall.toolName, resultText);
+      }
+
       _turnContext.pendingToolCall = null;
     }
 
