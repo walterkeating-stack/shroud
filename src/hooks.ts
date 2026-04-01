@@ -39,6 +39,7 @@ import { scanToolCall } from "./detectors/tool-guard.js";
 import { extractIntentSignals, checkToolAlignment, checkEgressAttempt, ToolSequenceTracker, buildToolIntentEvent, TOOL_CATEGORIES } from "./detectors/tool-intent.js";
 import type { IntentSignals } from "./detectors/tool-intent.js";
 import { createTurnContext, validateToolResult, checkExfilChain, checkNovelToolUsage } from "./detectors/result-validator.js";
+import { HoneypotManager } from "./detectors/honeypot.js";
 import type { TurnContext } from "./detectors/result-validator.js";
 import { PolicyEngine } from "./policy.js";
 import { AgentRegistry } from "./agent-registry.js";
@@ -575,6 +576,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   let _currentIntent: IntentSignals | null = null;
   let _turnContext: TurnContext | null = null;
   const _toolSequence = new ToolSequenceTracker();
+  // Honeypot manager — injects fake secrets as tripwires
+  const _honeypot = new HoneypotManager();
 
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
@@ -760,7 +763,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
     }
 
-    if (totalEntities === 0) return;
+    if (totalEntities === 0 && !config.honeypotEnabled) return;
+
+    // --- Honeypot injection: plant fake secrets as tripwires ---
+    if (config.honeypotEnabled && obfuscatedPrompt) {
+      const agentSession = agentTracker.getCurrentSession();
+      const seed = (agentSession?.agentLabel || "default") + ":" + (agentSession?.sessionId || "0");
+      _honeypot.generate(seed, config.secretKey);
+      const honeypotBlock = _honeypot.buildContextBlock();
+      if (honeypotBlock) {
+        obfuscatedPrompt = obfuscatedPrompt + honeypotBlock;
+      }
+    }
 
     dumpStatsFile(obfuscator);
     api.logger?.info(
@@ -980,6 +994,22 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
     }
 
+
+    // --- HONEYPOT CHECK (first — 100% certainty, always block) ---
+    if (config.honeypotEnabled && _honeypot.getTokens().length > 0) {
+      const honeypotHit = _honeypot.checkToolCall(event.toolName ?? "unknown", event.params);
+      if (honeypotHit) {
+        const agentSession = agentTracker.getCurrentSession();
+        honeypotHit.agentBuildId = agentSession?.agentBuildId;
+        honeypotHit.agentLabel = agentSession?.agentLabel;
+        honeypotHit.agentSessionId = agentSession?.sessionId;
+        ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(honeypotHit);
+        agentTracker.recordSecurityEvent(1);
+        api.logger?.warn(`[shroud] HONEYPOT TRIPPED: ${honeypotHit.description}`);
+        // Always block — honeypot trips are 100% injection, no false positives possible
+        return { block: true, blockReason: `Shroud security: honeypot triggered — confirmed injection attempt` };
+      }
+    }
 
     // Tool chain depth tracking
     const depth = ob().enterToolCall();

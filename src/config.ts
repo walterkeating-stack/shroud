@@ -74,6 +74,12 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (env === "false") return false;
       return typeof raw.canaryEnabled === "boolean" ? raw.canaryEnabled : false;
     })(),
+    honeypotEnabled: (() => {
+      const env = process.env.SHROUD_HONEYPOT_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.honeypotEnabled === "boolean" ? raw.honeypotEnabled : false;
+    })(),
     canaryPrefix:
       typeof raw.canaryPrefix === "string"
         ? raw.canaryPrefix

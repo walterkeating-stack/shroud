@@ -82,6 +82,7 @@ export interface ShroudConfig {
   denylist: string[];
   canaryEnabled: boolean;
   canaryPrefix: string;
+  honeypotEnabled: boolean;
   auditEnabled: boolean;
   logMappings: boolean;
   customPatterns: Array<{ name: string; pattern: string; category?: string }>;
