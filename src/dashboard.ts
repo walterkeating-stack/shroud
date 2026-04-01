@@ -1473,6 +1473,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
   <div class="tab" onclick="switchTab('calls')">Detection</div>
+  <div class="tab" onclick="switchTab('transformer')">Transformer</div>
   <div class="tab" onclick="window.open('/viz','_blank')" style="margin-left:auto;border-color:#a855f7;color:#a855f7">Vector Space 3D</div>
 </div>
 <div class="grid" id="content">
@@ -1481,6 +1482,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <div id="rulesContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
 <div id="callsContent" style="display:none"></div>
+<div id="transformerContent" style="display:none"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -2058,10 +2060,12 @@ function switchTab(tab) {
   document.getElementById('rulesContent').style.display = tab === 'rules' ? 'block' : 'none';
   document.getElementById('sigContent').style.display = tab === 'signatures' ? 'block' : 'none';
   document.getElementById('callsContent').style.display = tab === 'calls' ? 'block' : 'none';
+  document.getElementById('transformerContent').style.display = tab === 'transformer' ? 'block' : 'none';
   if (tab === 'overview') refresh();
   else if (tab === 'rules') refreshRules();
   else if (tab === 'signatures') renderSignatures();
   else if (tab === 'calls') renderCalls();
+  else if (tab === 'transformer') renderTransformer();
 }
 
 function showToast(msg, isError) {
@@ -2591,6 +2595,96 @@ async function renderCalls() {
     document.getElementById('callsContent').innerHTML = html;
   } catch(err) {
     document.getElementById('callsContent').innerHTML = '<div class="card"><p style="color:#f85149">Error: ' + err.message + '</p></div>';
+  }
+}
+
+// ─── Transformer tab ───
+async function renderTransformer() {
+  const el = document.getElementById('transformerContent');
+  try {
+    const data = await fetchJson('/api/transformer');
+    let html = '<div style="padding:20px 28px">';
+
+    if (!data.enabled) {
+      html += '<div class="card"><h2>Transformer Disabled</h2>';
+      html += '<p style="color:var(--text-muted)">Enable with <code>SHROUD_TRANSFORMER_ENABLED=true</code> or <code>SHROUD_DASHBOARD=true</code></p>';
+      html += '</div>';
+    } else {
+      // Status header
+      const statusColor = data.modelLoaded ? 'var(--success)' : 'var(--medium)';
+      const statusText = data.modelLoaded ? 'Trained' : 'Cold Start';
+      html += '<div class="card" style="margin-bottom:16px">';
+      html += '<h2>Next-Tool Predictor</h2>';
+      html += '<div style="display:flex;gap:32px;flex-wrap:wrap;margin-bottom:16px">';
+      html += '<div><span class="stat" style="color:' + statusColor + '">' + statusText + '</span><div class="stat-label">Model Status</div></div>';
+      html += '<div><span class="stat accent">' + data.totalParams.toLocaleString() + '</span><div class="stat-label">Parameters</div></div>';
+      html += '<div><span class="stat">' + data.vocabSize + '</span><div class="stat-label">Tool Vocabulary</div></div>';
+      html += '<div><span class="stat">' + data.inferenceCount + '</span><div class="stat-label">Inferences</div></div>';
+      html += '<div><span class="stat">' + (data.avgInferenceMs > 0 ? data.avgInferenceMs.toFixed(1) + 'ms' : '-') + '</span><div class="stat-label">Avg Latency</div></div>';
+      html += '</div>';
+
+      // Training info
+      html += '<div style="display:flex;gap:24px;flex-wrap:wrap;font-size:12px;color:var(--text-muted)">';
+      html += '<span>Sessions trained on: <strong style="color:var(--text-primary)">' + data.trainingSessions + '</strong></span>';
+      if (data.lastLoss !== null) {
+        html += '<span>Last loss: <strong style="color:var(--text-primary)">' + data.lastLoss.toFixed(4) + '</strong></span>';
+      }
+      if (data.lastTrainedAt) {
+        html += '<span>Last trained: <strong style="color:var(--text-primary)">' + new Date(data.lastTrainedAt).toLocaleString() + '</strong></span>';
+      }
+      html += '</div>';
+      html += '</div>';
+
+      // Architecture card
+      html += '<div class="card" style="margin-bottom:16px">';
+      html += '<h2>Architecture</h2>';
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">';
+      html += '<div class="row"><span class="label">Type</span><span class="value">Decoder-only (GPT-2 style)</span></div>';
+      html += '<div class="row"><span class="label">Layers</span><span class="value">2</span></div>';
+      html += '<div class="row"><span class="label">Attention Heads</span><span class="value">4</span></div>';
+      html += '<div class="row"><span class="label">Hidden Dim</span><span class="value">64</span></div>';
+      html += '<div class="row"><span class="label">FFN Dim</span><span class="value">256</span></div>';
+      html += '<div class="row"><span class="label">Max Sequence</span><span class="value">128 tools</span></div>';
+      html += '</div>';
+      html += '</div>';
+
+      // Recent surprises chart
+      if (data.recentSurprises && data.recentSurprises.length > 0) {
+        html += '<div class="card" style="margin-bottom:16px">';
+        html += '<h2>Recent Surprise Scores</h2>';
+        html += '<div style="display:flex;align-items:flex-end;gap:3px;height:120px;padding:8px 0">';
+        for (const s of data.recentSurprises) {
+          const pct = Math.min(s * 100, 100);
+          const color = s > 0.85 ? 'var(--critical)' : s > 0.5 ? 'var(--medium)' : 'var(--success)';
+          html += '<div style="flex:1;background:' + color + ';height:' + pct + '%;min-width:8px;border-radius:2px 2px 0 0" title="surprise=' + s.toFixed(3) + '"></div>';
+        }
+        html += '</div>';
+        html += '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:4px">';
+        html += '<span>Oldest</span><span>Most Recent</span>';
+        html += '</div>';
+        html += '</div>';
+      }
+
+      // How it works
+      html += '<div class="card">';
+      html += '<h2>How It Works</h2>';
+      html += '<div style="color:var(--text-muted);font-size:12px;line-height:1.8">';
+      html += '<p>The transformer learns the <strong style="color:var(--text-primary)">grammar of normal tool-call sequences</strong> from completed sessions. For each tool call, it predicts what tool should come next based on the session so far.</p>';
+      html += '<p style="margin-top:8px"><strong style="color:var(--text-primary)">Surprise score</strong> = 1 - P(actual tool). High surprise means the agent did something the model has never learned to expect — a signal of injection or hijacking.</p>';
+      html += '<p style="margin-top:8px"><span style="color:var(--success)">Green</span> = expected (surprise &lt; 0.5) &nbsp; ';
+      html += '<span style="color:var(--medium)">Yellow</span> = unusual (0.5-0.85) &nbsp; ';
+      html += '<span style="color:var(--critical)">Red</span> = anomalous (&gt; 0.85 = event fired)</p>';
+      if (!data.modelLoaded) {
+        html += '<p style="margin-top:12px;color:var(--medium)">Model is in <strong>cold start</strong> — accumulating session data. Training activates automatically after 30 completed sessions.</p>';
+      }
+      html += '</div>';
+      html += '</div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
   }
 }
 
