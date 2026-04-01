@@ -28,6 +28,7 @@ import type { Obfuscator } from "./obfuscator.js";
 import type { BehaviouralProfiler } from "./profiler.js";
 import type { ShroudConfig } from "./types.js";
 import type { PolicyEngine } from "./policy.js";
+import type { DriftDetector } from "./detectors/drift-detector.js";
 
 export interface DashboardDeps {
   securityBus: SecurityEventBus | null;
@@ -39,6 +40,8 @@ export interface DashboardDeps {
   policyEngine: PolicyEngine | null;
   /** Path to persisted agent-sessions.json (for cross-process agent visibility). */
   agentSessionFile?: string;
+  /** Drift detector instance for trajectory visualization. */
+  driftDetector?: DriftDetector | null;
 }
 
 /**
@@ -159,11 +162,21 @@ export function startDashboard(
           batchLog: grader.getBatchLog(),
         } : { enabled: false });
       }
+      else if (url === "/api/drift") {
+        const dd = deps.driftDetector;
+        json(res, 200, dd ? {
+          enabled: true,
+          reference: dd.getReferenceText(),
+          trajectory: dd.getTrajectory(),
+          dimensions: dd.getProvider().dimensions,
+        } : { enabled: false });
+      }
       else {
         json(res, 404, { error: "Not found", endpoints: [
           "/health", "/api/overview", "/api/agents", "/api/agents/:buildId",
           "/api/events", "/api/events/stream", "/api/profiling",
           "/api/profiling/:buildId", "/api/stats", "/api/calls", "/api/grading",
+          "/api/drift",
         ]});
       }
     } catch (err: any) {
@@ -204,6 +217,19 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
   const secStats = deps.securityBus?.getStats();
   const profiler = deps.profiler;
 
+  // Count honeypot/phantom tripwire hits from security events
+  const allEvents = deps.securityBus?.getEvents() ?? [];
+  const honeypotTrips = allEvents.filter(e => e.description?.startsWith("HONEYPOT TRIPPED:")).length;
+  const phantomTrips = allEvents.filter(e => e.description?.startsWith("PHANTOM TOOL TRIPPED:")).length;
+
+  // Drift detection stats
+  const driftEvents = allEvents.filter(e => e.threatClass === ("semantic_drift" as any));
+  const driftTrajectory = deps.driftDetector?.getTrajectory() ?? [];
+
+  // Shadow execution stats
+  const shadowEvents = allEvents.filter(e => e.threatClass === ("shadow_exfil_detected" as any));
+  const shadowBlocked = shadowEvents.filter(e => e.action === "blocked").length;
+
   json(res, 200, {
     timestamp: new Date().toISOString(),
     security: {
@@ -213,6 +239,9 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
       totalEvents: secStats?.totalEvents ?? 0,
       blockedCount: secStats?.blockedCount ?? 0,
       flaggedCount: secStats?.flaggedCount ?? 0,
+      honeypotTrips,
+      phantomTrips,
+      honeypotEnabled: deps.config.honeypotEnabled,
     },
     agents: {
       total: agentCount,
@@ -239,6 +268,22 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
     grading: (globalThis as any).__shroudEventGrader
       ? (globalThis as any).__shroudEventGrader.getStats()
       : null,
+    drift: {
+      enabled: deps.config.driftEnabled,
+      threshold: deps.config.driftThreshold,
+      events: driftEvents.length,
+      trajectoryLength: driftTrajectory.length,
+      reference: deps.driftDetector?.getReferenceText()?.slice(0, 100) || null,
+      trajectory: driftTrajectory.slice(-20),
+    },
+    shadow: {
+      enabled: deps.config.shadowExecutionEnabled,
+      maxSteps: deps.config.shadowExecutionMaxSteps,
+      timeoutMs: deps.config.shadowExecutionTimeoutMs,
+      executions: shadowEvents.length,
+      blocked: shadowBlocked,
+      allowed: shadowEvents.length - shadowBlocked,
+    },
   });
 }
 
@@ -757,6 +802,40 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .threat-bar { display: flex; gap: 3px; margin-top: 10px; border-radius: 4px; overflow: hidden; }
   .threat-bar .bar { height: 22px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; letter-spacing: 0.3px; color: rgba(255,255,255,0.9); transition: flex 0.3s; }
 
+  /* ── Detection call log ── */
+  .detection-pre { background: var(--bg-primary); padding: 18px 20px; border-radius: 8px; color: var(--text-primary); white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7; border: 1px solid var(--border); max-height: none; overflow: visible; font-family: 'JetBrains Mono', 'SF Mono', 'Cascadia Code', monospace; margin-top: 8px; }
+  .detection-label { color: var(--accent); font-size: 14px; font-weight: 600; display: block; margin-bottom: 4px; }
+  .batch-entry { cursor: pointer; margin-bottom: 8px; }
+  .batch-detail { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .batch-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+  .batch-header .time { font-size: 12px; }
+  .batch-header .status { font-weight: 600; }
+  .batch-header .verdicts { display: flex; gap: 8px; }
+
+  /* ── Signature catalog ── */
+  .sig-grid { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
+  .sig-chip { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; min-width: 150px; flex: 1; cursor: pointer; transition: border-color 0.15s; }
+  .sig-chip:hover { border-color: var(--border-light); }
+  .sig-chip .icon { font-size: 20px; margin-bottom: 4px; }
+  .sig-chip .name { font-size: 13px; font-weight: 600; }
+  .sig-chip .count { font-size: 12px; color: var(--text-muted); }
+  .sig-group { margin-bottom: 14px; }
+  .sig-group summary { cursor: pointer; padding: 14px 18px; background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; list-style: none; display: flex; justify-content: space-between; align-items: center; transition: background 0.15s; }
+  .sig-group summary:hover { background: var(--bg-card-hover); }
+  .sig-group[open] summary { border-radius: 8px 8px 0 0; }
+  .sig-body { border: 1px solid var(--border); border-top: none; border-radius: 0 0 8px 8px; padding: 16px 20px; background: var(--bg-primary); }
+  .sig-body p { color: var(--text-muted); font-size: 13px; margin-bottom: 14px; }
+  .sig-entry { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(30,41,59,0.3); }
+  .sig-entry:last-child { border-bottom: none; }
+  .sig-sev { min-width: 60px; }
+  .sig-sev span { font-weight: 600; font-size: 10px; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; }
+  .sig-detail { flex: 1; }
+  .sig-detail code { color: var(--accent); font-size: 12px; }
+  .sig-detail .desc { color: var(--text-primary); font-size: 13px; margin-top: 3px; }
+  .sig-detail .example { margin-top: 6px; }
+  .sig-detail .example code { background: var(--bg-card); padding: 4px 10px; border-radius: 4px; color: var(--text-muted); font-size: 11px; display: inline-block; max-width: 100%; word-break: break-all; }
+  .sig-blocks-badge { color: var(--critical); font-size: 10px; border: 1px solid var(--critical); padding: 1px 6px; border-radius: 3px; margin-left: 6px; }
+
   /* ── Tables ── */
   .data-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .data-table th { text-align: left; padding: 8px 12px; color: var(--text-muted); font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; border-bottom: 1px solid var(--border); }
@@ -836,6 +915,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .pill { font-size: 9px; padding: 1px 6px; }
 
     .toast { bottom: 12px; right: 12px; left: 12px; text-align: center; }
+
+    .detection-pre { font-size: 12px; padding: 14px; line-height: 1.6; }
+    .detection-label { font-size: 13px; }
+    .batch-header { font-size: 12px; }
+
+    .sig-grid { gap: 8px; }
+    .sig-chip { min-width: 120px; padding: 10px 12px; }
+    .sig-chip .name { font-size: 12px; }
+    .sig-group summary { padding: 12px 14px; font-size: 13px; }
+    .sig-body { padding: 12px 14px; }
+    .sig-entry { gap: 8px; padding: 8px 0; }
+    .sig-detail .desc { font-size: 12px; }
   }
 
   /* ── Small mobile: < 480px ── */
@@ -1003,6 +1094,14 @@ const SIG_HELP = {
   canary_marker_exact: 'System prompt canary token found in LLM response (exact match) — proves context was leaked.',
   canary_marker_near: 'System prompt canary token found with slight mutation — partial leak detected.',
   canary_behavioural_exact: 'LLM followed a planted false instruction — confirms injection succeeded.',
+
+  // Semantic Drift
+  drift_threshold: 'Tool call has low cosine similarity to user intent — agent trajectory veered away from the original goal.',
+  drift_sudden_turn: 'Sharp similarity drop from previous step — agent suddenly changed direction (possible injection point).',
+
+  // Shadow Execution
+  shadow_block: 'Shadow execution observed exfiltration trajectory — tool call blocked before real execution.',
+  shadow_allow: 'Shadow execution found benign trajectory — tool call allowed through.',
 };
 
 function sigTooltip(sigId) {
@@ -1034,6 +1133,15 @@ async function refresh() {
     html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div></div>';
     html += '</div>';
     html += '<div class="row" style="margin-top:12px"><span class="label">Firewall Mode</span><span class="pill ' + modeColor + '">' + sec.injectionDetection.toUpperCase() + '</span></div>';
+    html += '</div>';
+
+    html += '<div class="card"><h2>Zero-FP Tripwires</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat ' + (sec.honeypotTrips > 0 ? 'red' : 'green') + '">' + (sec.honeypotTrips||0) + '</div><div class="stat-label">Honeypot Trips</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (sec.phantomTrips > 0 ? 'red' : 'green') + '">' + (sec.phantomTrips||0) + '</div><div class="stat-label">Phantom Tool Trips</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Honeypots</span><span class="pill ' + (sec.honeypotEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.honeypotEnabled ? 'ARMED' : 'OFF') + '</span></div>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">5 fake secrets + 5 phantom tools planted in context. Any use = 100% confirmed injection.</p>';
     html += '</div>';
 
     html += '<div class="card"><h2>Agent Inventory</h2>';
@@ -1096,10 +1204,61 @@ async function refresh() {
       html += '</div>';
     }
 
+    // Semantic Drift Detection
+    const drift = overview.drift;
+    html += '<div class="card"><h2>Semantic Drift</h2>';
+    if (drift.enabled) {
+      html += '<div class="stat-row">';
+      html += '<div class="stat-group"><div class="stat ' + (drift.events > 0 ? 'yellow' : 'green') + '">' + drift.events + '</div><div class="stat-label">Drift Events</div></div>';
+      html += '<div class="stat-group"><div class="stat accent">' + drift.trajectoryLength + '</div><div class="stat-label">Steps Tracked</div></div>';
+      html += '</div>';
+      html += '<div class="row" style="margin-top:12px"><span class="label">Threshold</span><span class="value">' + drift.threshold + '</span></div>';
+      if (drift.reference) {
+        html += '<div class="row"><span class="label">Current Intent</span><span class="value" style="font-size:11px">' + truncate(drift.reference, 60) + '</span></div>';
+      }
+      // Trajectory sparkline
+      if (drift.trajectory && drift.trajectory.length > 0) {
+        html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border)">';
+        html += '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Trajectory</div>';
+        html += '<div style="display:flex;align-items:flex-end;gap:2px;height:40px">';
+        for (const p of drift.trajectory) {
+          const h = Math.max(2, Math.round(p.similarity * 38));
+          const c = p.similarity < 0.15 ? 'var(--critical)' : p.similarity < 0.3 ? 'var(--medium)' : 'var(--success)';
+          html += '<div title="Step ' + p.step + ': ' + p.toolName + ' (' + p.similarity.toFixed(2) + ')" style="flex:1;height:' + h + 'px;background:' + c + ';border-radius:2px 2px 0 0;min-width:4px"></div>';
+        }
+        html += '</div>';
+        html += '<div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:2px"><span>Step 1</span><span>Step ' + drift.trajectory.length + '</span></div>';
+        html += '</div>';
+      }
+      html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">TF-IDF cosine similarity tracks agent trajectory vs user intent. Cliff = injection point.</p>';
+    } else {
+      html += '<div class="stat" style="color:var(--text-muted)">&mdash;</div>';
+      html += '<div class="stat-label">Disabled &mdash; set SHROUD_DRIFT_ENABLED=true</div>';
+    }
+    html += '</div>';
+
+    // Shadow Execution
+    const shadow = overview.shadow;
+    html += '<div class="card"><h2>Shadow Execution</h2>';
+    if (shadow.enabled) {
+      html += '<div class="stat-row">';
+      html += '<div class="stat-group"><div class="stat ' + (shadow.blocked > 0 ? 'red' : 'green') + '">' + shadow.blocked + '</div><div class="stat-label">Blocked</div></div>';
+      html += '<div class="stat-group"><div class="stat green">' + shadow.allowed + '</div><div class="stat-label">Allowed</div></div>';
+      html += '<div class="stat-group"><div class="stat accent">' + shadow.executions + '</div><div class="stat-label">Total Runs</div></div>';
+      html += '</div>';
+      html += '<div class="row" style="margin-top:12px"><span class="label">Max Steps</span><span class="value">' + shadow.maxSteps + '</span></div>';
+      html += '<div class="row"><span class="label">Timeout</span><span class="value">' + (shadow.timeoutMs / 1000) + 's</span></div>';
+      html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">Suspicious tool calls run on a treadmill &mdash; fake results, real LLM, observe the attack chain before any damage.</p>';
+    } else {
+      html += '<div class="stat" style="color:var(--text-muted)">&mdash;</div>';
+      html += '<div class="stat-label">Disabled &mdash; set SHROUD_SHADOW_EXECUTION=true</div>';
+    }
+    html += '</div>';
+
     // Threat breakdown
     if (events.stats && Object.keys(events.stats.byThreatClass || {}).length > 0) {
       html += '<div class="card"><h2>Threats by Class</h2>';
-      const colors = { instruction_override: '#f85149', role_switch: '#da3633', prompt_extraction: '#d29922', conversation_mockup: '#d29922', encoding_bypass: '#58a6ff', data_exfiltration: '#f85149', privilege_escalation: '#da3633', mcp_tool_poisoning: '#bc4c00' };
+      const colors = { instruction_override: '#f85149', role_switch: '#da3633', prompt_extraction: '#d29922', conversation_mockup: '#d29922', encoding_bypass: '#58a6ff', data_exfiltration: '#f85149', privilege_escalation: '#da3633', mcp_tool_poisoning: '#bc4c00', semantic_drift: '#a78bfa', shadow_exfil_detected: '#f472b6' };
       for (const [cls, count] of Object.entries(events.stats.byThreatClass)) {
         const pct = Math.round(count / events.stats.totalEvents * 100);
         html += '<div class="row"><span class="label">' + cls.replace(/_/g, ' ') + '</span><span class="value" style="color:' + (colors[cls]||'#c9d1d9') + '">' + count + ' (' + pct + '%)</span></div>';
@@ -1696,46 +1855,46 @@ function renderSignatures() {
   ];
 
   let html = '<div class="policy-section">';
-  html += '<h2 style="color:#c9d1d9;font-size:16px;margin-bottom:4px">Signature Catalog</h2>';
+  html += '<h2 style="color:var(--text-primary);font-size:18px;margin-bottom:6px">Signature Catalog</h2>';
   let totalSigs = 0;
   for (const g of groups) totalSigs += g.sigs.length;
 
-  html += '<p style="color:#484f58;font-size:12px;margin-bottom:24px">' + totalSigs + ' built-in signatures across ' + groups.length + ' groups. Use signature IDs in Firewall Rules exceptions to disable specific patterns per agent.</p>';
+  html += '<p style="color:var(--text-muted);font-size:13px;margin-bottom:24px">' + totalSigs + ' built-in signatures across ' + groups.length + ' threat categories. Reference signature IDs in Firewall Rules to tune detection per agent.</p>';
 
-  // Summary bar
-  html += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px">';
+  // Summary chips
+  html += '<div class="sig-grid">';
   for (const g of groups) {
     const highCount = g.sigs.filter(s => s.sev === 'high').length;
-    html += '<div style="background:#161b22;border:1px solid #30363d;border-radius:8px;padding:10px 14px;min-width:140px;cursor:pointer" onclick="var el=document.getElementById(\\'sig-' + g.id + '\\');el.open=!el.open">';
-    html += '<div style="font-size:18px;margin-bottom:2px">' + g.icon + '</div>';
-    html += '<div style="font-size:12px;color:' + g.color + ';font-weight:600">' + g.name + '</div>';
-    html += '<div style="font-size:11px;color:#8b949e">' + g.sigs.length + ' sigs';
-    if (highCount) html += ' <span style="color:#f85149">(' + highCount + ' high)</span>';
+    html += '<div class="sig-chip" onclick="var el=document.getElementById(\\'sig-' + g.id + '\\');el.open=!el.open">';
+    html += '<div class="icon">' + g.icon + '</div>';
+    html += '<div class="name" style="color:' + g.color + '">' + g.name + '</div>';
+    html += '<div class="count">' + g.sigs.length + ' signatures';
+    if (highCount) html += ' <span style="color:var(--critical)">(' + highCount + ' high)</span>';
     html += '</div></div>';
   }
   html += '</div>';
 
   // Collapsible groups
-  const sevColors = { high: '#f85149', medium: '#d29922', low: '#3fb950' };
+  const sevColors = { high: 'var(--critical)', medium: 'var(--medium)', low: 'var(--success)' };
   for (const g of groups) {
-    html += '<details id="sig-' + g.id + '" style="margin-bottom:12px">';
-    html += '<summary style="cursor:pointer;padding:12px 16px;background:#161b22;border:1px solid #30363d;border-radius:8px;list-style:none;display:flex;justify-content:space-between;align-items:center">';
-    html += '<div><span style="font-size:16px;margin-right:8px">' + g.icon + '</span>';
-    html += '<span style="color:' + g.color + ';font-weight:600;font-size:14px">' + g.name + '</span>';
-    html += ' <span style="color:#484f58;font-size:12px">(' + g.sigs.length + ')</span></div>';
-    html += '<span style="color:#484f58;font-size:11px">click to expand</span>';
+    html += '<details id="sig-' + g.id + '" class="sig-group">';
+    html += '<summary>';
+    html += '<div><span style="font-size:18px;margin-right:10px">' + g.icon + '</span>';
+    html += '<span style="color:' + g.color + ';font-weight:600;font-size:15px">' + g.name + '</span>';
+    html += ' <span style="color:var(--text-muted);font-size:13px">(' + g.sigs.length + ')</span></div>';
+    html += '<span style="color:var(--text-muted);font-size:12px">expand</span>';
     html += '</summary>';
-    html += '<div style="border:1px solid #30363d;border-top:none;border-radius:0 0 8px 8px;padding:12px 16px;background:#0d1117">';
-    html += '<p style="color:#8b949e;font-size:12px;margin-bottom:12px">' + g.desc + '</p>';
+    html += '<div class="sig-body">';
+    html += '<p>' + g.desc + '</p>';
 
     for (const s of g.sigs) {
-      html += '<div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid #21262d">';
-      html += '<div style="min-width:60px"><span style="color:' + sevColors[s.sev] + ';font-weight:600;font-size:10px;padding:2px 6px;border:1px solid ' + sevColors[s.sev] + ';border-radius:4px">' + s.sev.toUpperCase() + '</span></div>';
-      html += '<div style="flex:1">';
-      html += '<code style="color:#58a6ff;font-size:11px">' + s.id + '</code>';
-      if (g.id === 'tool_guard' && s.block) html += ' <span style="color:#f85149;font-size:10px;border:1px solid #f85149;padding:1px 4px;border-radius:3px">BLOCKS</span>';
-      html += '<div style="color:#c9d1d9;font-size:12px;margin-top:2px">' + s.desc + '</div>';
-      html += '<div style="margin-top:4px"><code style="background:#161b22;padding:3px 8px;border-radius:4px;color:#8b949e;font-size:10px;display:inline-block;max-width:100%;word-break:break-all">' + s.example + '</code></div>';
+      html += '<div class="sig-entry">';
+      html += '<div class="sig-sev"><span style="color:' + sevColors[s.sev] + ';border:1px solid ' + sevColors[s.sev] + '">' + s.sev.toUpperCase() + '</span></div>';
+      html += '<div class="sig-detail">';
+      html += '<code>' + s.id + '</code>';
+      if (g.id === 'tool_guard' && s.block) html += ' <span class="sig-blocks-badge">BLOCKS</span>';
+      html += '<div class="desc">' + s.desc + '</div>';
+      html += '<div class="example"><code>' + s.example + '</code></div>';
       html += '</div></div>';
     }
     html += '</div></details>';
@@ -1777,22 +1936,22 @@ async function renderCalls() {
 
       // Verdicts table
       if (gradingData.graded && gradingData.graded.length > 0) {
-        html += '<h3 style="color:#8b949e;font-size:13px;margin-bottom:8px">Recent Verdicts</h3>';
-        html += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid #30363d">';
-        html += '<th style="padding:6px;text-align:left;color:#484f58">Agent</th>';
-        html += '<th style="padding:6px;text-align:left;color:#484f58">Signature</th>';
-        html += '<th style="padding:6px;text-align:left;color:#484f58">Matched Text</th>';
-        html += '<th style="padding:6px;text-align:left;color:#484f58">Verdict</th>';
-        html += '<th style="padding:6px;text-align:left;color:#484f58">LLM Reasoning</th>';
+        html += '<h3 style="color:var(--text-muted);font-size:13px;margin-bottom:8px">Recent Verdicts</h3>';
+        html += '<table class="data-table"><thead><tr>';
+        html += '<th>Agent</th>';
+        html += '<th>Signature</th>';
+        html += '<th>Matched Text</th>';
+        html += '<th>Verdict</th>';
+        html += '<th>LLM Reasoning</th>';
         html += '</tr></thead><tbody>';
         for (const g of gradingData.graded.slice(-30).reverse()) {
-          const vc = g.verdict === 'FALSE_POSITIVE' ? '#3fb950' : g.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
-          html += '<tr style="border-bottom:1px solid #21262d">';
-          html += '<td style="padding:6px;color:#c9d1d9">' + g.agentLabel + '</td>';
-          html += '<td style="padding:6px"><code style="color:#58a6ff;font-size:11px">' + g.signatureId + '</code></td>';
-          html += '<td style="padding:6px;color:#8b949e;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + (g.matchedText || '').replace(/</g, '&lt;') + '</td>';
-          html += '<td style="padding:6px;color:' + vc + ';font-weight:600">' + g.verdict.replace(/_/g,' ') + '</td>';
-          html += '<td style="padding:6px;color:#8b949e;font-size:11px">' + (g.reasoning || '') + '</td>';
+          const vc = g.verdict === 'FALSE_POSITIVE' ? 'var(--success)' : g.verdict === 'TRUE_POSITIVE' ? 'var(--critical)' : 'var(--medium)';
+          html += '<tr>';
+          html += '<td>' + g.agentLabel + '</td>';
+          html += '<td><code>' + g.signatureId + '</code></td>';
+          html += '<td class="match" style="max-width:250px">' + (g.matchedText || '').replace(/</g, '&lt;') + '</td>';
+          html += '<td style="color:' + vc + ';font-weight:600">' + g.verdict.replace(/_/g,' ') + '</td>';
+          html += '<td style="color:var(--text-muted);font-size:11px">' + (g.reasoning || '') + '</td>';
           html += '</tr>';
         }
         html += '</tbody></table>';
@@ -1803,39 +1962,41 @@ async function renderCalls() {
       const batches = gradingData.batchLog || [];
       html += '<div class="card"><h2>Detection Call Log</h2>';
       if (batches.length > 0) {
-        html += '<p style="color:#484f58;font-size:12px;margin-bottom:12px">Click a batch to see the prompt sent to the LLM, its response, and the decisions made.</p>';
+        html += '<p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Click a batch to see the prompt sent to the LLM, its response, and the decisions made.</p>';
         for (const b of [...batches].reverse().slice(0, 20)) {
-          const statusColor = b.success ? '#3fb950' : '#f85149';
+          const statusColor = b.success ? 'var(--success)' : 'var(--critical)';
           const bid = 'gbatch-' + b.timestamp;
-          html += '<div class="event ' + (b.success ? 'low' : 'high') + '" style="cursor:pointer;margin-bottom:4px" onclick="var d=document.getElementById(\\'' + bid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
+          html += '<div class="event batch-entry ' + (b.success ? 'low' : 'high') + '" onclick="var d=document.getElementById(\\'' + bid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
+          html += '<div class="batch-header">';
           html += '<span class="time">' + timeAgo(b.timestamp) + '</span>';
-          html += '<span style="color:' + statusColor + ';font-weight:600;margin-left:8px">' + (b.success ? 'OK' : 'FAILED') + '</span>';
-          html += ' <span style="color:#c9d1d9">' + b.eventCount + ' events graded</span>';
-          html += ' <span style="color:#8b949e">(' + b.trigger + ', ' + (b.responseTimeMs/1000).toFixed(1) + 's)</span>';
+          html += '<span class="status" style="color:' + statusColor + '">' + (b.success ? 'OK' : 'FAILED') + '</span>';
+          html += '<span>' + b.eventCount + ' events graded</span>';
+          html += '<span style="color:var(--text-muted)">(' + b.trigger + ', ' + (b.responseTimeMs/1000).toFixed(1) + 's)</span>';
           if (b.verdicts && b.verdicts.length > 0) {
             const tp = b.verdicts.filter(v => v.verdict === 'TRUE_POSITIVE').length;
             const fp = b.verdicts.filter(v => v.verdict === 'FALSE_POSITIVE').length;
             const nr = b.verdicts.filter(v => v.verdict === 'NEEDS_REVIEW').length;
-            html += ' <span style="color:#f85149">' + tp + ' TP</span> <span style="color:#3fb950">' + fp + ' FP</span> <span style="color:#d29922">' + nr + ' REV</span>';
+            html += '<div class="verdicts"><span style="color:var(--critical)">' + tp + ' TP</span> <span style="color:var(--success)">' + fp + ' FP</span> <span style="color:var(--medium)">' + nr + ' REV</span></div>';
           }
-          html += '<div id="' + bid + '" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">';
-          html += '<div style="margin-bottom:12px"><strong style="color:#58a6ff">Question sent to LLM:</strong><pre style="background:#0d1117;padding:10px;border-radius:4px;color:#c9d1d9;max-height:250px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;border:1px solid #30363d">' + (b.prompt || '').replace(/</g, '&lt;') + '</pre></div>';
-          html += '<div style="margin-bottom:12px"><strong style="color:#58a6ff">LLM Response:</strong><pre style="background:#0d1117;padding:10px;border-radius:4px;color:#c9d1d9;max-height:250px;overflow:auto;white-space:pre-wrap;font-size:11px;line-height:1.5;border:1px solid #30363d">' + (b.rawResponse || b.error || 'No response').replace(/</g, '&lt;') + '</pre></div>';
+          html += '</div>';
+          html += '<div id="' + bid + '" class="batch-detail">';
+          html += '<div style="margin-bottom:16px"><span class="detection-label">Question sent to LLM</span><pre class="detection-pre">' + (b.prompt || '').replace(/</g, '&lt;') + '</pre></div>';
+          html += '<div style="margin-bottom:16px"><span class="detection-label">LLM Response</span><pre class="detection-pre">' + (b.rawResponse || b.error || 'No response').replace(/</g, '&lt;') + '</pre></div>';
           if (b.verdicts && b.verdicts.length > 0) {
-            html += '<div><strong style="color:#58a6ff">Decisions / Actions:</strong>';
-            html += '<table style="width:100%;margin-top:6px;border-collapse:collapse;font-size:12px"><thead><tr style="border-bottom:1px solid #30363d">';
-            html += '<th style="padding:4px;text-align:left;color:#484f58">Agent</th>';
-            html += '<th style="padding:4px;text-align:left;color:#484f58">Signature</th>';
-            html += '<th style="padding:4px;text-align:left;color:#484f58">Verdict</th>';
-            html += '<th style="padding:4px;text-align:left;color:#484f58">Reasoning</th>';
+            html += '<div style="margin-top:12px"><span class="detection-label">Decisions / Actions</span>';
+            html += '<table class="data-table" style="margin-top:8px"><thead><tr>';
+            html += '<th>Agent</th>';
+            html += '<th>Signature</th>';
+            html += '<th>Verdict</th>';
+            html += '<th>Reasoning</th>';
             html += '</tr></thead><tbody>';
             for (const v of b.verdicts) {
-              const vc = v.verdict === 'FALSE_POSITIVE' ? '#3fb950' : v.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
-              html += '<tr style="border-bottom:1px solid #21262d">';
-              html += '<td style="padding:4px;color:#c9d1d9">' + v.agentLabel + '</td>';
-              html += '<td style="padding:4px"><code style="color:#58a6ff">' + v.signatureId + '</code></td>';
-              html += '<td style="padding:4px;color:' + vc + ';font-weight:600">' + v.verdict.replace(/_/g,' ') + '</td>';
-              html += '<td style="padding:4px;color:#8b949e">' + v.reasoning + '</td>';
+              const vc = v.verdict === 'FALSE_POSITIVE' ? 'var(--success)' : v.verdict === 'TRUE_POSITIVE' ? 'var(--critical)' : 'var(--medium)';
+              html += '<tr>';
+              html += '<td>' + v.agentLabel + '</td>';
+              html += '<td><code>' + v.signatureId + '</code></td>';
+              html += '<td style="color:' + vc + ';font-weight:600">' + v.verdict.replace(/_/g,' ') + '</td>';
+              html += '<td>' + v.reasoning + '</td>';
               html += '</tr>';
             }
             html += '</tbody></table></div>';

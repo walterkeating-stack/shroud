@@ -169,6 +169,24 @@ export interface ShroudConfig {
   /** Batch size for SIEM shipping (1 = immediate). */
   siemBatchSize: number;
 
+  // --- Semantic drift detection ---
+
+  /** Enable semantic drift detection (default: false). */
+  driftEnabled: boolean;
+  /** Cosine similarity threshold below which drift is flagged (default: 0.15). */
+  driftThreshold: number;
+  /** Sudden turn detection: similarity drop from previous step (default: 0.3). */
+  driftSuddenTurnDelta: number;
+
+  // --- Shadow execution ---
+
+  /** Enable shadow execution for medium-severity tool calls (default: false). */
+  shadowExecutionEnabled: boolean;
+  /** Max shadow steps (1 or 2) before rendering verdict (default: 2). */
+  shadowExecutionMaxSteps: 1 | 2;
+  /** Timeout in ms for entire shadow execution (default: 15000). */
+  shadowExecutionTimeoutMs: number;
+
   // --- Dashboard ---
 
   /** Enable the real-time security dashboard HTTP endpoint. */

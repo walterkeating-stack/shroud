@@ -46,6 +46,8 @@ import { PolicyEngine } from "./policy.js";
 import { AgentRegistry } from "./agent-registry.js";
 import * as sigLoaderMod from "./signature-loader.js";
 import { EventGrader, GRADING_SESSION_PREFIX, GRADING_AGENT_LABEL, captureModel } from "./event-grader.js";
+import { DriftDetector, buildDriftEvent } from "./detectors/drift-detector.js";
+import { ShadowExecutor, buildShadowEvent } from "./shadow-executor.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -588,6 +590,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const _toolSequence = new ToolSequenceTracker();
   // Honeypot manager — injects fake secrets as tripwires
   const _honeypot = new HoneypotManager();
+  // Semantic drift detector — tracks trajectory vs user intent
+  const _driftDetector = config.driftEnabled ? new DriftDetector({
+    driftThreshold: config.driftThreshold,
+    suddenTurnDelta: config.driftSuddenTurnDelta,
+  }) : null;
+  if (_driftDetector) (globalThis as any).__shroudDriftDetector = _driftDetector;
+  // Shadow executor — runs suspicious tool calls against fake sandbox
+  const _shadowExecutor = config.shadowExecutionEnabled ? new ShadowExecutor() : null;
 
   // Phantom tools — canary tool definitions that catch injection through action.
   // Only register once per process (the tools persist across plugin reloads).
@@ -695,6 +705,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           })()
         : (typeof event?.prompt === "string" ? event.prompt.slice(0, 500) : "");
       _currentIntent = extractIntentSignals(lastUserMsg);
+      // Set drift detector reference from user's message
+      if (_driftDetector && lastUserMsg) {
+        _driftDetector.setReference(lastUserMsg);
+      }
       // Load agent baseline for adaptive result validation
       const agentSession = agentTracker.getCurrentSession();
       const agentBaseline = (profiler && agentSession?.agentBuildId)
@@ -1218,6 +1232,74 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           };
         }
       }
+
+      // --- Semantic drift detection ---
+      if (_driftDetector && _currentIntent) {
+        const drift = _driftDetector.checkDrift(event.toolName ?? "unknown", event.params);
+        if (drift.drifted || drift.suddenTurn) {
+          const evt = buildDriftEvent(event.toolName ?? "unknown", drift,
+            config.injectionDetection === "block" ? "blocked" : "flagged");
+          const agentSession = agentTracker.getCurrentSession();
+          evt.agentBuildId = agentSession?.agentBuildId;
+          evt.agentLabel = agentSession?.agentLabel;
+          evt.agentSessionId = agentSession?.sessionId;
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+          agentTracker.recordSecurityEvent(1);
+
+          if (config.injectionDetection === "block" && drift.severity === "high") {
+            api.logger?.warn(`[shroud] BLOCKED semantic drift: ${drift.reason}`);
+            return { block: true, blockReason: `Shroud security: ${drift.reason}` };
+          }
+          api.logger?.info(`[shroud] Semantic drift (flagged): ${drift.reason}`);
+        }
+      }
+
+      // --- Shadow execution: deferred judgment for medium-severity events ---
+      // When shadow is enabled and we have medium+ severity events that didn't
+      // trigger an immediate block (high-severity checks above already returned),
+      // run the tool call through the shadow treadmill before allowing it.
+      if (_shadowExecutor && config.injectionDetection === "block" && _currentIntent) {
+        // Check if any recent events from this tool call were medium+ severity
+        const recentEvents = ((globalThis as any).__shroudSecurityBus || securityBus)?.getEvents() as SecurityEvent[] | undefined;
+        const now = Date.now();
+        const recentMedium = recentEvents?.filter((e: SecurityEvent) =>
+          e.timestamp > now - 2000 && (e.severity === "medium" || e.severity === "high") &&
+          e.matchedText?.startsWith(event.toolName ?? "")
+        );
+
+        if (recentMedium && recentMedium.length > 0) {
+          api.logger?.info(`[shroud] Shadow execution triggered for "${event.toolName}" (${recentMedium.length} medium+ events)`);
+          try {
+            const shadowResult = await _shadowExecutor.execute({
+              toolName: event.toolName ?? "unknown",
+              params: event.params,
+              intent: _currentIntent,
+              honeypot: config.honeypotEnabled ? _honeypot : null,
+              model: (globalThis as any).__shroudGradingModel || null,
+              maxSteps: config.shadowExecutionMaxSteps,
+              timeoutMs: config.shadowExecutionTimeoutMs,
+              lastLlmBody: (globalThis as any).__shroudLastLlmBody || null,
+            });
+
+            // Emit shadow execution event for audit trail
+            const shadowEvt = buildShadowEvent(shadowResult, shadowResult.verdict === "block" ? "blocked" : "flagged");
+            const agentSession = agentTracker.getCurrentSession();
+            shadowEvt.agentBuildId = agentSession?.agentBuildId;
+            shadowEvt.agentLabel = agentSession?.agentLabel;
+            shadowEvt.agentSessionId = agentSession?.sessionId;
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(shadowEvt);
+
+            if (shadowResult.verdict === "block") {
+              agentTracker.recordSecurityEvent(1);
+              api.logger?.warn(`[shroud] BLOCKED by shadow execution: ${shadowResult.verdictReason}`);
+              return { block: true, blockReason: `Shroud shadow execution: ${shadowResult.verdictReason}` };
+            }
+            api.logger?.info(`[shroud] Shadow execution allowed: ${shadowResult.verdictReason}`);
+          } catch (err: any) {
+            api.logger?.warn(`[shroud] Shadow execution error: ${err?.message}`);
+          }
+        }
+      }
     }
 
     const serialized = JSON.stringify(event.params);
@@ -1552,6 +1634,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // Capture model ID for the event grader (once — first LLM call)
         if (typeof body.model === "string") {
           captureModel(body.model);
+        }
+
+        // Capture last LLM request body for shadow execution
+        if (_shadowExecutor) {
+          (globalThis as any).__shroudLastLlmBody = body;
         }
 
         // --- Agent identity from the STABLE system prompt ---

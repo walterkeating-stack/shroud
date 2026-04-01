@@ -78,7 +78,7 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       const env = process.env.SHROUD_HONEYPOT_ENABLED;
       if (env === "true") return true;
       if (env === "false") return false;
-      return typeof raw.honeypotEnabled === "boolean" ? raw.honeypotEnabled : false;
+      return typeof raw.honeypotEnabled === "boolean" ? raw.honeypotEnabled : true;
     })(),
     canaryPrefix:
       typeof raw.canaryPrefix === "string"
@@ -241,6 +241,44 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     })(),
     siemBatchSize:
       typeof raw.siemBatchSize === "number" ? raw.siemBatchSize : 10,
+
+    // --- Semantic drift detection ---
+    driftEnabled: (() => {
+      const env = process.env.SHROUD_DRIFT_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.driftEnabled === "boolean" ? raw.driftEnabled : false;
+    })(),
+    driftThreshold: (() => {
+      const env = process.env.SHROUD_DRIFT_THRESHOLD;
+      if (env) return parseFloat(env) || 0.15;
+      return typeof raw.driftThreshold === "number" ? raw.driftThreshold : 0.15;
+    })(),
+    driftSuddenTurnDelta: (() => {
+      const env = process.env.SHROUD_DRIFT_SUDDEN_TURN;
+      if (env) return parseFloat(env) || 0.3;
+      return typeof raw.driftSuddenTurnDelta === "number" ? raw.driftSuddenTurnDelta : 0.3;
+    })(),
+
+    // --- Shadow execution ---
+    shadowExecutionEnabled: (() => {
+      const env = process.env.SHROUD_SHADOW_EXECUTION;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      return typeof raw.shadowExecutionEnabled === "boolean" ? raw.shadowExecutionEnabled : false;
+    })(),
+    shadowExecutionMaxSteps: (() => {
+      const env = process.env.SHROUD_SHADOW_MAX_STEPS;
+      if (env === "1") return 1 as const;
+      if (env === "2") return 2 as const;
+      return (raw.shadowExecutionMaxSteps === 1 || raw.shadowExecutionMaxSteps === 2)
+        ? raw.shadowExecutionMaxSteps as 1 | 2 : 2 as const;
+    })(),
+    shadowExecutionTimeoutMs: (() => {
+      const env = process.env.SHROUD_SHADOW_TIMEOUT;
+      if (env) return parseInt(env, 10) || 15000;
+      return typeof raw.shadowExecutionTimeoutMs === "number" ? raw.shadowExecutionTimeoutMs : 15000;
+    })(),
 
     // --- Dashboard ---
     dashboardEnabled: (() => {

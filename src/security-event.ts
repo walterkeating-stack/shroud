@@ -18,6 +18,8 @@ export enum ThreatClass {
   DATA_EXFILTRATION = "data_exfiltration",
   PRIVILEGE_ESCALATION = "privilege_escalation",
   MCP_TOOL_POISONING = "mcp_tool_poisoning",
+  SEMANTIC_DRIFT = "semantic_drift",
+  SHADOW_EXFIL = "shadow_exfil_detected",
 }
 
 /** Severity levels for security events. */
