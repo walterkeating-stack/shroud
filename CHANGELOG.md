@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.0] - 2026-04-02
+
+### Added — Vector-Based Behavioral IDS + Mini Transformer
+
+**4-Horizon Behavioral Detection:**
+- Per-Step: Causal coherence — result→action pair z-scores (Welford's algorithm)
+- Per-Session: Semantic drift — TF-IDF cosine similarity tracks agent trajectory vs user intent
+- Per-Lifetime: Workflow clusters — n-gram sequence vectors, PCA, binary evolution files
+- Cross-Agent: Intent chain — delegation drift through multi-agent tree with depth scaling
+
+**Mini Transformer (Tier 1 + Tier 3):**
+- Decoder-only, 2 layers, 4 heads, hidden dim 64, FFN dim 256, ~130K parameters
+- Intent-conditioned: user message projected (256→64) into position 0 for cross-attention
+- Self-supervised next-token prediction on VectorStore sessions
+- Adam optimizer, cosine LR decay, gradient clipping, ~1s training on CPU
+- Cold start: neutral scores until 30 sessions, auto-trains, retrains every 50 sessions
+- Persistence: `~/.shroud/profiles/transformer-weights.bin` + config JSON
+- Inference ~1-2ms on CPU, `surprise = 1 - P(actual_next_tool)` with sliding window
+
+**3D Visualization:**
+- Three.js vector space with 5 views (workflows, agents, clusters, URLs, intent chains)
+- Agent evolution timeline with scrubber and playback
+- PCA projection from 256→3D (power iteration, zero deps)
+
+**Dashboard Enhancements:**
+- Transformer tab with model status, surprise score chart, architecture overview, cold start progress
+- Extracted inline styles to CSS classes (event list, detection sections)
+
+### Changed
+- Honeypot fragments: 5 imperative instructions → 3 passive reference notes (less noticeable to smart LLMs)
+- Phantom tools: now gated on `injectionDetection !== "off"` instead of `honeypotEnabled`
+- Tool-guard: 44 detection patterns externalized to `signatures/toolguard-builtins.json` (avoids OC scanner flagging during npm pack)
+- Phone fakes: international numbers now produce compact E.164 format (no spaces/dashes), fixes WhatsApp validation
+- minOpenClawVersion lowered to 2026.3.22
+
+### Removed
+- LLM Event Grader (`src/event-grader.ts`): OAuth + Anthropic API complexity removed. Security events still fire, just no LLM classification. If needed later, use a local model.
+- Detection tab from dashboard (was grading UI)
+
+### Fixed
+- Transformer cold start: `_saveModel()` no longer persists untrained weights to disk, preventing garbage predictions after restart
+- WhatsApp mock: health-check polling before inject requests eliminates ECONNREFUSED race condition
+- Shadow executor model source: uses `agentTracker.getCurrentSession()?.detectedModel` instead of removed `__shroudGradingModel` global
+
 ## [2.3.0] - 2026-03-31
 
 ### Added — Security Extension: Agent Application-Layer Firewall
