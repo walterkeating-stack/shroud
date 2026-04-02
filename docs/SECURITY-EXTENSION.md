@@ -59,13 +59,13 @@ If a tool call contains a honeypot value: **100% confirmed injection. Zero false
 
 | Honeypot Type | Format | What It Catches |
 |---------------|--------|-----------------|
-| API Key | `sk-hp-{40 hex}` | Authentication/exfil attempt |
-| Webhook URL | `https://hp-{8 hex}.internal.monitoring/v1/ingest` | Data exfiltration |
-| Hostname | `hp-{8 hex}.internal.monitoring` | Lateral movement |
-| Email | `hp-alerts-{6 hex}@security-notifications.internal` | Email exfiltration |
-| Credential | `postgresql://hp_readonly:{16 hex}@db-hp-{6 hex}.internal:5432/audit_logs` | Credential reuse |
+| API Key | `sk-proj-{48 alphanum}` | Authentication/exfil attempt |
+| Webhook URL | `https://hooks.slack.com/services/{T}/{B}/{key}` | Data exfiltration |
+| Email | `{role}-{4 hex}@{domain}` (internal ops addresses) | Email exfiltration |
+| AWS Key | `AKIA{16 uppercase}` | Credential reuse |
+| Credential | `postgresql://{user}:{pass}@db-{hex}.us-east-1.rds.amazonaws.com:5432/production` | Connection string reuse |
 
-Tokens are deterministic per agent session (seeded from HMAC key + agent label).
+Tokens are deterministic per agent session (seeded from HMAC key + agent label). Injected as 3 passive reference fragments scattered across the system prompt — designed to blend with normal agent context.
 
 **Config:** `SHROUD_HONEYPOT_ENABLED=true`
 
@@ -83,7 +83,7 @@ Registers 5 fake tools with the LLM that look useful for exfiltration but aren't
 
 When triggered: **100% confirmed injection.** Event emitted, logged, handler returns error to prevent LLM retry.
 
-**Config:** `SHROUD_HONEYPOT_ENABLED=true` (controls both honeypots and phantom tools)
+**Config:** Enabled when `SHROUD_INJECTION_DETECTION` is `flag` or `block`.
 
 ### 4. Tool Intent Guardrails
 
@@ -321,7 +321,7 @@ Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + ag
 
 | Layer | Tests | Description |
 |-------|-------|-------------|
-| Unit (Vitest) | 1,473 | All detectors, profiler, store, config, security |
+| Unit (Vitest) | 1,594 | All detectors, profiler, store, config, security, transformer |
 | APP Harness | 359 | Mock LLM integration scenarios |
 | Docker E2E | 223 | Real OpenClaw gateway, all channels |
 | Agent Identity | 9 | Dashboard verification in Docker |
