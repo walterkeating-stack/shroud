@@ -20,7 +20,7 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import type { SecurityEventBus, SecurityEvent } from "./security-event.js";
 import type { AgentSessionTracker } from "./agent-session.js";
 import type { BaselineStore } from "./profiler-store.js";
@@ -48,6 +48,10 @@ export interface DashboardDeps {
   agentSessionFile?: string;
   /** Drift detector instance for trajectory visualization. */
   driftDetector?: DriftDetector | null;
+  /** JSONL file written by APP server for security events (dashboard bridge). */
+  appEventsFile?: string;
+  /** JSON file written by APP server for agent session state. */
+  appSessionsFile?: string;
 }
 
 /**
@@ -73,6 +77,43 @@ export function startDashboard(
         }
       }
     });
+  }
+
+  // ── APP event bridge: poll JSONL file for events from APP server processes ──
+  let appEventsOffset = 0;
+  let appSession: Record<string, unknown> | null = null;
+  if (deps.appEventsFile || deps.appSessionsFile) {
+    const pollInterval = setInterval(() => {
+      // Read new events from APP JSONL file
+      if (deps.appEventsFile && deps.securityBus) {
+        try {
+          if (existsSync(deps.appEventsFile)) {
+            const content = readFileSync(deps.appEventsFile, "utf-8");
+            const lines = content.split("\n").filter(Boolean);
+            if (lines.length > appEventsOffset) {
+              for (let i = appEventsOffset; i < lines.length; i++) {
+                try {
+                  const event = JSON.parse(lines[i]);
+                  event._fromApp = true; // mark as APP-sourced to avoid re-writing
+                  deps.securityBus!.emit(event);
+                } catch { /* skip malformed lines */ }
+              }
+              appEventsOffset = lines.length;
+            }
+          }
+        } catch { /* best-effort */ }
+      }
+
+      // Read APP agent session state
+      if (deps.appSessionsFile) {
+        try {
+          if (existsSync(deps.appSessionsFile)) {
+            appSession = JSON.parse(readFileSync(deps.appSessionsFile, "utf-8"));
+          }
+        } catch { appSession = null; }
+      }
+    }, 5_000);
+    pollInterval.unref();
   }
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
@@ -156,7 +197,7 @@ export function startDashboard(
         handleOverview(res, deps);
       }
       else if (url === "/api/agents") {
-        handleAgents(res, deps);
+        handleAgents(res, deps, appSession);
       }
       else if (url?.startsWith("/api/agents/")) {
         const buildId = url.slice("/api/agents/".length);
@@ -525,7 +566,7 @@ function computeAgentHealth(
   return { status, colour, compliant, issues, lastActiveAgo, eventRate };
 }
 
-function handleAgents(res: ServerResponse, deps: DashboardDeps) {
+function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
   // OpenClaw runs multiple gateway processes — each one has its own agent tracker.
   // The dashboard lives in one process but needs to show ALL agents.
   // Strategy: disk-persisted sessions are the primary source (written by all processes),
@@ -554,6 +595,25 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps) {
       }
     } catch { /* file may not exist or be malformed */ }
   }
+
+  // Merge APP server agent session (if available)
+  if (appSession && typeof appSession === "object" && (appSession as any).agentLabel) {
+    const app = appSession as any;
+    const appLabel = (app.agentLabel as string || "").toLowerCase().trim();
+    if (appLabel && !inMemoryMap.has(appLabel)) {
+      agents.push({
+        agentLabel: app.agentLabel, agentBuildId: app.agentBuildId || "",
+        sessionId: "", llmCallCount: app.requestCount || 0,
+        channels: [app.channel || "app"], classification: { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+        toolInventory: [], startedAt: Date.now() - (app.uptimeMs || 0),
+        lastCallAt: Date.now(), securityEventCount: app.securityEvents || 0, detectedModel: "app-server",
+        channelSource: "app-server", soulExtract: "",
+        cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
+        heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+      });
+    }
+  }
+
   const allEvents = deps.securityBus?.getEvents() ?? [];
 
   const enriched = agents.map(agent => {
