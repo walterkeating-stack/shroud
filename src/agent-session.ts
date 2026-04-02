@@ -480,6 +480,17 @@ export class AgentSessionTracker {
     b.archetypeConfidence = result.confidence;
   }
 
+  /** Recompute archetypes for all sessions (e.g. after seeding behavior from baselines). */
+  recomputeArchetypes(): void {
+    for (const session of this._sessions.values()) {
+      if (session.behavior.totalToolCalls >= 3) {
+        const result = computeArchetype(session.behavior);
+        session.behavior.archetype = result.name;
+        session.behavior.archetypeConfidence = result.confidence;
+      }
+    }
+  }
+
   /** Update SOUL extract from early messages. Only sets once. Skips framework preamble. */
   updateSoul(soul: string): void {
     const session = this._sessions.get(this._currentLabel);

@@ -569,6 +569,28 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
   } catch {}
 
+  // Seed behavior profiles from profiler baselines (historical tool data).
+  // This gives agents their archetype immediately on startup instead of
+  // waiting for tool calls to accumulate post-restart.
+  if (config.profilingEnabled) {
+    const seedStore = new BaselineStore(
+      config.profilingProfileDir.replace("~", process.env.HOME || "/root"),
+    );
+    for (const session of agentTracker.getAllSessions()) {
+      if (session.behavior.totalToolCalls > 0) continue; // already has data
+      const baseline = seedStore.load(session.agentBuildId);
+      if (baseline?.toolProfile && baseline.toolProfile.length > 0) {
+        const freq: Record<string, number> = {};
+        for (const tool of baseline.toolProfile) {
+          freq[tool] = (freq[tool] || 0) + baseline.sessionCount;
+        }
+        session.behavior.toolFrequency = freq;
+        session.behavior.totalToolCalls = Object.values(freq).reduce((a, b) => a + b, 0);
+      }
+    }
+    agentTracker.recomputeArchetypes();
+  }
+
   // Purge stale baseline files from old unstable build ID scheme.
   // Now that build IDs are derived from labels, orphaned files are garbage.
   if (config.profilingEnabled) {
