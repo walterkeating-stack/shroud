@@ -1695,8 +1695,10 @@ async function refresh() {
     html += '<div class="stat-row" style="margin-bottom:16px">';
     html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
     html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
-    html += '<div class="stat-group"><div class="stat ' + ((ag.eventsLastHour||0) > 0 ? 'yellow' : 'green') + '">' + (ag.eventsLastHour||0) + '</div><div class="stat-label">Events (1h)</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">' + (ag.eventsLastDay||0) + ' today &middot; ' + (ag.eventsLastWeek||0) + ' week</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">With Baseline</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + ((ag.eventsLastHour||0) > 0 ? 'yellow' : 'green') + '">' + (ag.eventsLastHour||0) + '</div><div class="stat-label">Events (1h)</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (ag.eventsLastDay||0) + '</div><div class="stat-label">Today</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (ag.eventsLastWeek||0) + '</div><div class="stat-label">This Week</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">Baselined</div></div>';
     html += '</div>';
     // Per-agent cards (inline in hero)
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">';
