@@ -1558,7 +1558,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .pill-healthy { background: var(--low-bg); color: var(--success); }
 
   /* ── Agent cards ── */
-  .agent-card { margin-bottom: 8px; padding: 14px 16px; background: var(--bg-input); border-radius: 6px; border-left: 3px solid var(--border); cursor: pointer; transition: background 0.15s; }
+  .agent-card { margin-bottom: 8px; padding: 14px 16px; background: var(--bg-input); border-radius: 6px; border-left: 3px solid var(--border); cursor: pointer; transition: background 0.15s; overflow: hidden; }
   .agent-card:hover { background: var(--bg-card-hover); }
   .agent-card.mature { border-left-color: var(--success); }
   .agent-card.reliable { border-left-color: var(--accent); }
@@ -1571,7 +1571,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .agent-role { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(59,130,246,0.15); color: var(--accent); font-weight: 500; }
   .agent-meta { font-size: 11px; color: var(--text-muted); display: flex; gap: 12px; flex-wrap: wrap; }
   .agent-meta span { display: flex; align-items: center; gap: 3px; }
-  .agent-stats { display: flex; gap: 16px; margin-top: 8px; font-size: 11px; }
+  .agent-stats { display: flex; gap: 12px; margin-top: 8px; font-size: 11px; flex-wrap: wrap; }
   .agent-stats .stat-mini { }
   .agent-stats .stat-mini .num { font-weight: 600; color: var(--text-primary); }
   .agent-stats .stat-mini .lbl { color: var(--text-muted); margin-left: 3px; }
@@ -1582,7 +1582,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .events-list { max-height: 420px; overflow-y: auto; }
   .events-list::-webkit-scrollbar { width: 4px; }
   .events-list::-webkit-scrollbar-thumb { background: var(--border-light); border-radius: 2px; }
-  .event { padding: 10px 12px; margin-bottom: 4px; background: var(--bg-input); border-radius: 5px; font-size: 12px; border-left: 3px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+  .event { padding: 10px 12px; margin-bottom: 4px; background: var(--bg-input); border-radius: 5px; font-size: 12px; border-left: 3px solid var(--border); display: flex; flex-direction: column; gap: 4px; overflow: hidden; min-width: 0; }
   .event.high { border-left-color: var(--critical); }
   .event.medium { border-left-color: var(--high); }
   .event.low { border-left-color: var(--success); }
@@ -1590,11 +1590,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .event .sig { color: var(--accent); font-weight: 600; font-size: 11px; }
   .event .agent { color: var(--text-muted); font-size: 11px; }
   .event .time { color: var(--text-muted); font-size: 10px; }
-  .event .match { color: var(--text-secondary); font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 11px; padding: 4px 8px; background: rgba(15,22,41,0.6); border-radius: 3px; word-break: break-all; }
+  .event .match { color: var(--text-secondary); font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 11px; padding: 4px 8px; background: rgba(15,22,41,0.6); border-radius: 3px; word-break: break-all; overflow: hidden; text-overflow: ellipsis; }
   .event .verdict { font-size: 10px; font-weight: 600; }
   .event-clickable { cursor: pointer; }
   .event-detail { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #30363d; font-size: 11px; }
-  .event-detail-table { width: 100%; color: #8b949e; }
+  .event-detail-table { width: 100%; color: #8b949e; table-layout: fixed; }
+  .event-detail-table td { overflow: hidden; text-overflow: ellipsis; word-break: break-all; }
   .event-detail-table td.detail-label { width: 120px; }
   .event-detail-table .detail-accent { color: #58a6ff; }
   .event-detail-table .detail-text { color: #c9d1d9; }
@@ -2006,7 +2007,9 @@ async function refresh() {
       html += '<div class="stat-mini"><span class="num">' + (p.sessionCount||0) + '</span><span class="lbl">sessions</span></div>';
       html += '<div class="stat-mini"><span class="num green">' + (priv.entitiesObfuscated||0) + '</span><span class="lbl">obfuscated</span></div>';
       html += '<div class="stat-mini"><span class="num">' + (priv.replacementsDeobfuscated||0) + '</span><span class="lbl">deobfuscated</span></div>';
-      html += '<div class="stat-mini"><span class="pill ' + eventPill + '">' + a.securityEventCount + ' events</span></div>';
+      const evtN = a.securityEventCount;
+      const evtLabel = evtN >= 10000 ? (evtN/1000).toFixed(1).replace(/\.0$/,'') + 'k' : evtN >= 1000 ? (evtN/1000).toFixed(1).replace(/\.0$/,'') + 'k' : evtN;
+      html += '<div class="stat-mini"><span class="pill ' + eventPill + '" style="white-space:nowrap">' + evtLabel + ' evt</span></div>';
       html += '</div>';
 
       // Tool frequency (top 5)
