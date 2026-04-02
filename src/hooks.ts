@@ -569,26 +569,41 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
   } catch {}
 
-  // Seed behavior profiles from profiler baselines (historical tool data).
-  // This gives agents their archetype immediately on startup instead of
-  // waiting for tool calls to accumulate post-restart.
-  if (config.profilingEnabled) {
-    const seedStore = new BaselineStore(
-      config.profilingProfileDir.replace("~", process.env.HOME || "/root"),
-    );
+  // Seed archetypes from role classification when behavior data is empty.
+  // Real archetypes build from tool call patterns over time; this provides
+  // a reasonable default until enough calls accumulate.
+  {
+    const ROLE_TO_ARCHETYPE: Record<string, string> = {
+      "Security Research": "Deep Researcher",
+      "DevOps / SRE": "Operator",
+      "System Admin": "Operator",
+      "Network Engineering": "Operator",
+      "Software Engineering": "Builder",
+      "Data / Analytics": "Deep Researcher",
+      "Customer Support": "Conversationalist",
+      "Sales / Outreach": "Conversationalist",
+      "Research": "Deep Researcher",
+      "Coaching / Training": "Conversationalist",
+      "Writing / Content": "Builder",
+      "Legal / Compliance": "Deep Researcher",
+      "Finance": "Deep Researcher",
+      "Healthcare / Therapy": "Conversationalist",
+      "Education / Tutoring": "Conversationalist",
+      "E-commerce": "Conversationalist",
+      "Entertainment / Adult": "Conversationalist",
+      "Gaming": "Explorer",
+      "Chatbot / Conversational": "Conversationalist",
+      "Personal Assistant": "Explorer",
+    };
     for (const session of agentTracker.getAllSessions()) {
-      if (session.behavior.totalToolCalls > 0) continue; // already has data
-      const baseline = seedStore.load(session.agentBuildId);
-      if (baseline?.toolProfile && baseline.toolProfile.length > 0) {
-        const freq: Record<string, number> = {};
-        for (const tool of baseline.toolProfile) {
-          freq[tool] = (freq[tool] || 0) + baseline.sessionCount;
-        }
-        session.behavior.toolFrequency = freq;
-        session.behavior.totalToolCalls = Object.values(freq).reduce((a, b) => a + b, 0);
+      if (session.behavior.totalToolCalls > 0) continue;
+      const role = session.classification?.role;
+      const mapped = role ? ROLE_TO_ARCHETYPE[role] : undefined;
+      if (mapped) {
+        session.behavior.archetype = mapped;
+        session.behavior.archetypeConfidence = Math.min(40, session.classification.confidencePct / 2);
       }
     }
-    agentTracker.recomputeArchetypes();
   }
 
   // Purge stale baseline files from old unstable build ID scheme.
