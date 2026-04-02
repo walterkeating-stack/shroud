@@ -31,7 +31,7 @@ import type { PolicyEngine } from "./policy.js";
 import type { DriftDetector } from "./detectors/drift-detector.js";
 import type { CausalCoherenceTracker } from "./causal-coherence.js";
 import type { VectorStore } from "./vector-store.js";
-import type { IntentChain, DelegationRecord } from "./intent-chain.js";
+import type { IntentChain } from "./intent-chain.js";
 import { pca } from "./pca.js";
 
 export interface DashboardDeps {
@@ -282,13 +282,17 @@ export function startDashboard(
         const scorer = (globalThis as any).__shroudTransformerScorer;
         json(res, 200, scorer ? scorer.getStats() : { enabled: false });
       }
-      // --- 3D visualization projection ---
-      else if (url?.startsWith("/api/viz/projection")) {
-        handleVizProjection(req, res, deps);
+      // --- Agent behavioral space ---
+      else if (url === "/api/agent-space") {
+        handleAgentSpace(res, deps);
       }
-      // --- Visualization page ---
-      else if (url === "/viz") {
-        serveVizPage(res);
+      // --- Timeline API ---
+      else if (url === "/api/timeline") {
+        handleTimeline(res, deps);
+      }
+      // --- Tripwires API (honeypots + phantoms + flywheel) ---
+      else if (url === "/api/tripwires") {
+        handleTripwires(res, deps);
       }
       else {
         json(res, 404, { error: "Not found", endpoints: [
@@ -297,7 +301,8 @@ export function startDashboard(
           "/api/profiling/:buildId", "/api/stats", "/api/calls",
           "/api/drift", "/api/coherence", "/api/vectors", "/api/vectors/urls",
           "/api/vectors/:buildId/evolution", "/api/intent-chain",
-          "/api/intent-chain/:buildId/events", "/api/viz/projection", "/viz",
+          "/api/intent-chain/:buildId/events", "/api/agent-space", "/api/timeline",
+          "/api/tripwires",
         ]});
       }
     } catch (err: any) {
@@ -340,6 +345,7 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
 
   // Count honeypot/phantom tripwire hits from security events
   const allEvents = deps.securityBus?.getEvents() ?? [];
+  const now = Date.now();
   const honeypotTrips = allEvents.filter(e => e.description?.startsWith("HONEYPOT TRIPPED:")).length;
   const phantomTrips = allEvents.filter(e => e.description?.startsWith("PHANTOM TOOL TRIPPED:")).length;
 
@@ -368,6 +374,9 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
       total: agentCount,
       totalLlmCalls: totalCalls,
       totalSecurityEvents: agents.reduce((sum, a) => sum + a.securityEventCount, 0),
+      eventsLastHour: allEvents.filter(e => e.timestamp > now - 3_600_000).length,
+      eventsLastDay: allEvents.filter(e => e.timestamp > now - 86_400_000).length,
+      eventsLastWeek: allEvents.filter(e => e.timestamp > now - 604_800_000).length,
       withBaseline: deps.baselineStore
         ? agents.filter(a => deps.baselineStore!.exists(a.agentBuildId)).length
         : 0,
@@ -778,459 +787,429 @@ function handlePolicyWrite(
 
 // ── Helpers ──────────────────────────────────────────
 
-// ── 3D Visualization handlers ──────────────────────────
+// ── Agent Behavioral Space API handler ──────────────
 
-function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: DashboardDeps) {
-  const urlObj = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const view = urlObj.searchParams.get("view") || "trajectory";
-  const buildId = urlObj.searchParams.get("buildId") || "";
-
+function handleAgentSpace(res: ServerResponse, deps: DashboardDeps) {
   const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
-  const ct = (globalThis as any).__shroudCoherenceTracker as CausalCoherenceTracker | undefined;
-  const ic = (globalThis as any).__shroudIntentChain as IntentChain | undefined;
-  const dd = deps.driftDetector;
+  const allSessions = deps.agentTracker.getAllSessions();
+  const allEvents = deps.securityBus?.getEvents() ?? [];
 
-  if (view === "trajectory") {
-    // Intent drift trajectory projected to 3D
-    // First try live drift trajectory, then fall back to persisted workflow data
-    const trajectory = dd ? dd.getTrajectory() : [];
-    const refText = dd ? dd.getReferenceText() : "";
+  // Classify tools into write/exec vs read-only
+  const WRITE_EXEC_PATTERNS = [
+    /^(write|edit|create|delete|remove|update|patch|put|post|send|exec|run|deploy|push|commit|merge|publish|npm|bash|shell|command|terminal|message|reply|respond|notify|alert|email|slack|whatsapp)/i,
+    /^(WebFetch|RemoteTrigger|CronCreate|CronDelete|TaskCreate|TaskUpdate|NotebookEdit|EnterWorktree|ExitWorktree)/,
+    /_write|_create|_delete|_update|_send|_exec|_run|_deploy|_push/i,
+  ];
+  function isWriteExecTool(name: string): boolean {
+    return WRITE_EXEC_PATTERNS.some(p => p.test(name));
+  }
 
-    const points: any[] = [];
-    const edges: any[] = [];
+  interface AgentSpaceEntry {
+    label: string;
+    buildId: string;
+    x: number;
+    y: number;
+    maturity: string;
+    sessions: number;
+    securityEvents: number;
+    topTools: string[];
+    role: string;
+    trajectory: Array<{ x: number; y: number; time: number }>;
+  }
 
-    if (trajectory.length > 0) {
-      // Live drift data — show active session trajectory
-      const provider = dd!.getProvider();
-      const refVec = refText ? provider.embed(refText) : null;
-      if (refVec) {
-        points.push({
-          id: "ref", x: 0, y: 0, z: 0,
-          label: "User Intent", color: "#22c55e",
-          metadata: { text: refText.slice(0, 100), similarity: 1.0 },
-        });
+  const agents: AgentSpaceEntry[] = [];
+
+  // Collect raw values for normalization
+  const rawX: number[] = [];
+  const rawY: number[] = [];
+
+  interface RawAgent {
+    label: string;
+    buildId: string;
+    rawX: number;
+    rawY: number;
+    maturity: string;
+    sessions: number;
+    securityEvents: number;
+    topTools: string[];
+    role: string;
+    trajectoryRawX: number[];
+    trajectoryRawY: number[];
+    trajectoryTimes: number[];
+  }
+  const rawAgents: RawAgent[] = [];
+
+  for (const agent of allSessions) {
+    const baseline = deps.baselineStore?.load(agent.agentBuildId);
+    const agentEvents = allEvents.filter(e => e.agentBuildId === agent.agentBuildId);
+
+    // Compute activity profile (X axis): ratio of write/exec tools
+    // Fallback chain: agent.behavior.toolFrequency -> profiler baseline toolProfile -> VectorStore workflows
+    let toolFreq: Record<string, number> = agent.behavior?.toolFrequency || {};
+    if (Object.keys(toolFreq).length === 0 && baseline?.toolProfile) {
+      // Build synthetic frequency from baseline tool profile (uniform weight)
+      for (const t of baseline.toolProfile) {
+        toolFreq[t] = 1;
       }
-
-      for (let i = 0; i < trajectory.length; i++) {
-        const tp = trajectory[i];
-        const angle = (i / Math.max(trajectory.length, 1)) * Math.PI * 2;
-        const distance = (1 - tp.similarity) * 5;
-        points.push({
-          id: `t${i}`,
-          x: Math.cos(angle) * distance,
-          y: Math.sin(angle) * distance,
-          z: i * 0.3,
-          label: tp.toolName,
-          color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
-          metadata: { similarity: tp.similarity, delta: tp.delta, step: tp.step, timestamp: tp.timestamp },
-        });
-        const fromId = i === 0 ? "ref" : `t${i - 1}`;
-        edges.push({
-          from: fromId, to: `t${i}`,
-          color: tp.similarity > 0.5 ? "#22c55e" : tp.similarity > 0.15 ? "#eab308" : "#ef4444",
-          width: Math.max(0.5, tp.similarity * 3),
-        });
-      }
-    } else if (vs) {
-      // No live data — show recent workflows from vector store as a tool sequence map.
-      // Each workflow becomes a trajectory from origin, colored by health status.
-      const workflows = vs.getWorkflows().slice(-20);
-      const labelMap = new Map<string, string>();
-      for (const s of deps.agentTracker.getAllSessions()) {
-        labelMap.set(s.agentBuildId, s.agentLabel);
-      }
-
-      // Group workflows by agent and show sequences radiating from center
-      const agents = [...new Set(workflows.map(w => w.agentBuildId))];
-      for (let a = 0; a < agents.length; a++) {
-        const agentId = agents[a];
-        const agentName = labelMap.get(agentId) || agentId.slice(0, 8);
-        const agentWorkflows = workflows.filter(w => w.agentBuildId === agentId);
-        const baseAngle = (a / agents.length) * Math.PI * 2;
-
-        // Agent origin node
-        points.push({
-          id: `agent-${a}`, x: Math.cos(baseAngle) * 2, y: Math.sin(baseAngle) * 2, z: 0,
-          label: agentName, color: "#3b82f6",
-          metadata: { type: "agent", workflows: agentWorkflows.length },
-        });
-
-        for (let w = 0; w < agentWorkflows.length; w++) {
-          const wf = agentWorkflows[w];
-          const seq = wf.sequence.slice(0, 8);
-          for (let s = 0; s < seq.length; s++) {
-            const dist = (s + 1) * 0.8;
-            const spread = ((w - agentWorkflows.length / 2) * 0.3);
-            points.push({
-              id: `w${a}-${w}-${s}`,
-              x: Math.cos(baseAngle + spread * 0.1) * (2 + dist),
-              y: Math.sin(baseAngle + spread * 0.1) * (2 + dist),
-              z: w * 0.5 + s * 0.1,
-              label: seq[s],
-              color: wf.healthy ? "#22c55e" : "#ef4444",
-              metadata: { agent: agentName, session: wf.sessionId.slice(0, 8), step: s + 1 },
-            });
-            const fromId = s === 0 ? `agent-${a}` : `w${a}-${w}-${s - 1}`;
-            edges.push({
-              from: fromId, to: `w${a}-${w}-${s}`,
-              color: wf.healthy ? "#22c55e44" : "#ef444444",
-              width: 1,
-            });
-          }
+    }
+    if (Object.keys(toolFreq).length === 0 && vs) {
+      // Compute from VectorStore workflows for this agent
+      const agentWorkflows = vs.getWorkflows().filter(w => w.agentBuildId === agent.agentBuildId);
+      for (const wf of agentWorkflows) {
+        for (const t of wf.sequence) {
+          toolFreq[t] = (toolFreq[t] || 0) + 1;
         }
       }
     }
-
-    return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.5, 0.3, 0.2] } });
-  }
-
-  if (view === "clusters") {
-    if (!vs) return json(res, 200, { view, points: [], edges: [], clusters: [], pca: { varianceExplained: [0, 0, 0] } });
-
-    const workflows = vs.getWorkflows();
-    const clusters = vs.getClusters();
-
-    // Resolve agent labels from buildIds
-    const labelMap = new Map<string, string>();
-    for (const s of deps.agentTracker.getAllSessions()) {
-      labelMap.set(s.agentBuildId, s.agentLabel);
-    }
-
-    // PCA on all workflow vectors
-    const vectors = workflows.map(w => Float64Array.from(w.vector));
-    const pcaResult = vectors.length >= 3 ? pca(vectors, 3, 50, "clusters") : null;
-
-    const points = workflows.map((w, i) => {
-      const [x, y, z] = pcaResult ? pcaResult.project(vectors[i]) : [0, 0, 0];
-      const agentName = labelMap.get(w.agentBuildId) || w.agentBuildId.slice(0, 8);
-      // Show unique tools in sequence, not repeated names
-      const uniqueTools = [...new Set(w.sequence)];
-      const seqLabel = uniqueTools.length <= 4
-        ? uniqueTools.join("→")
-        : uniqueTools.slice(0, 3).join("→") + " +" + (uniqueTools.length - 3);
-      return {
-        id: w.id,
-        x, y, z,
-        label: agentName + ": " + seqLabel,
-        color: w.healthy ? "#22c55e" : "#ef4444",
-        metadata: { agent: agentName, tools: uniqueTools.join(", "), calls: w.sequence.length, healthy: w.healthy },
-      };
-    });
-
-    const clusterData = clusters.map(c => {
-      const centroidVec = Float64Array.from(c.centroid);
-      const [cx, cy, cz] = pcaResult ? pcaResult.project(centroidVec) : [0, 0, 0];
-      return {
-        id: c.id, label: c.label,
-        center: { x: cx, y: cy, z: cz },
-        radius: c.radius * 3, // Scale for visibility
-        color: `hsl(${Math.abs(c.id.charCodeAt(0) * 37) % 360}, 70%, 50%)`,
-      };
-    });
-
-    return json(res, 200, {
-      view, points, edges: [], clusters: clusterData,
-      pca: { varianceExplained: pcaResult?.variance || [0, 0, 0] },
-    });
-  }
-
-  if (view === "coherence") {
-    const pairs = ct ? ct.getRecentPairs() : [];
-    const points: any[] = [];
-    const edges: any[] = [];
-    let message: string | undefined;
-
-    if (pairs.length > 0) {
-      // Live coherence pairs — arrange in 3D helix so pairs are visually distinct.
-      // X-axis: time progression, Y-axis: causal distance, Z-axis: alternating
-      // result/action depth so pairs don't overlap.
-      const timeSpan = pairs.length > 1
-        ? Math.max(1, pairs[pairs.length - 1].timestamp - pairs[0].timestamp)
-        : 1;
-      for (let i = 0; i < pairs.length; i++) {
-        const p = pairs[i];
-        const t = pairs.length > 1
-          ? (p.timestamp - pairs[0].timestamp) / timeSpan
-          : i / Math.max(pairs.length, 1);
-        // Spiral layout: angle from time, radius from distance
-        const angle = t * Math.PI * 3;
-        const radius = 2 + p.distance * 3;
-        const rx = Math.cos(angle) * 2;
-        const ry = Math.sin(angle) * 2;
-        const zBase = t * 8; // vertical progression over time
-        points.push({
-          id: `r${i}`,
-          x: rx, y: ry, z: zBase,
-          label: p.resultToolName, color: "#3b82f6",
-          metadata: { type: "result", distance: p.distance, pair: i + 1 },
-        });
-        points.push({
-          id: `a${i}`,
-          x: rx + Math.cos(angle + 0.5) * p.distance * 3,
-          y: ry + Math.sin(angle + 0.5) * p.distance * 3,
-          z: zBase + 0.4,
-          label: p.actionToolName, color: "#f97316",
-          metadata: { type: "action", distance: p.distance, pair: i + 1 },
-        });
-        edges.push({
-          from: `r${i}`, to: `a${i}`,
-          color: p.distance < 0.5 ? "#22c55e" : p.distance < 0.8 ? "#eab308" : "#ef4444",
-          width: Math.max(0.5, (1 - p.distance) * 3),
-        });
-        // Chain results together to show temporal flow
-        if (i > 0) {
-          edges.push({
-            from: `r${i - 1}`, to: `r${i}`,
-            color: "#1e293b",
-            width: 0.5,
-          });
-        }
-      }
-    } else if (vs) {
-      // No live data — show persisted transition stats as a tool-flow graph
-      const labelMap = new Map<string, string>();
-      for (const s of deps.agentTracker.getAllSessions()) {
-        labelMap.set(s.agentBuildId, s.agentLabel);
-      }
-
-      // Build flow graph from all agents' workflows
-      const toolNodes = new Map<string, { count: number; agents: Set<string> }>();
-      const transitionEdges = new Map<string, { from: string; to: string; count: number }>();
-
-      for (const w of vs.getWorkflows().slice(-30)) {
-        const agentName = labelMap.get(w.agentBuildId) || w.agentBuildId.slice(0, 8);
-        for (let i = 0; i < w.sequence.length; i++) {
-          const tool = w.sequence[i];
-          const existing = toolNodes.get(tool) || { count: 0, agents: new Set() };
-          existing.count++;
-          existing.agents.add(agentName);
-          toolNodes.set(tool, existing);
-
-          if (i > 0) {
-            const edgeKey = `${w.sequence[i - 1]}→${tool}`;
-            const ex = transitionEdges.get(edgeKey) || { from: w.sequence[i - 1], to: tool, count: 0 };
-            ex.count++;
-            transitionEdges.set(edgeKey, ex);
-          }
-        }
-      }
-
-      const tools = [...toolNodes.keys()];
-      if (tools.length === 0) {
-        message = "No coherence data — waiting for agent tool calls to build transition pairs";
+    let writeExecCount = 0;
+    let readOnlyCount = 0;
+    for (const [toolName, count] of Object.entries(toolFreq)) {
+      if (isWriteExecTool(toolName)) {
+        writeExecCount += count;
       } else {
-        // Position tool nodes in a circle with z-axis variation by frequency
-        const maxCalls = Math.max(1, ...([...toolNodes.values()].map(n => n.count)));
-        for (let i = 0; i < tools.length; i++) {
-          const angle = (i / tools.length) * Math.PI * 2;
-          const radius = 4;
-          const info = toolNodes.get(tools[i])!;
-          // Z proportional to log frequency — frequent tools rise above the ring
-          const zPos = Math.log2(1 + info.count) * 0.8;
-          points.push({
-            id: tools[i],
-            x: Math.cos(angle) * radius,
-            y: Math.sin(angle) * radius,
-            z: zPos,
-            label: tools[i],
-            color: info.count > 10 ? "#22c55e" : info.count > 3 ? "#3b82f6" : "#94a3b8",
-            metadata: { calls: info.count, agents: [...info.agents].join(", ") },
-          });
-        }
-
-        // Add transition edges with width proportional to frequency
-        const maxCount = Math.max(1, ...[...transitionEdges.values()].map(e => e.count));
-        for (const [, edge] of transitionEdges) {
-          if (!toolNodes.has(edge.from) || !toolNodes.has(edge.to)) continue;
-          edges.push({
-            from: edge.from, to: edge.to,
-            color: edge.count > 5 ? "#22c55e" : "#3b82f6",
-            width: Math.max(0.5, (edge.count / maxCount) * 3),
-          });
-        }
-      }
-    } else {
-      message = "Causal coherence tracker not active — enable dashboard and drift detection";
-    }
-
-    return json(res, 200, { view, points, edges, message, pca: { varianceExplained: points.length > 0 ? [0.5, 0.3, 0.2] : [0, 0, 0] } });
-  }
-
-  if (view === "delegation") {
-    if (!ic) return json(res, 200, { view, points: [], edges: [], message: "Intent chain not active — enable dashboard to track multi-agent delegations", pca: { varianceExplained: [0, 0, 0] } });
-
-    const nodes = ic.getAllNodes();
-    const delegationHistory = ic.getHistory();
-    const points: any[] = [];
-    const edges: any[] = [];
-    let message: string | undefined;
-
-    if (nodes.length === 0) {
-      message = "No agents observed yet — waiting for agent sessions";
-    } else if (nodes.length === 1) {
-      // Single agent, no delegations — show it clearly, not as a dot at origin
-      const node = nodes[0];
-      points.push({
-        id: node.agentBuildId,
-        x: 0, y: 0, z: 0,
-        label: node.agentLabel,
-        color: "#22c55e",
-        metadata: {
-          depth: 0,
-          intentText: node.intentText.slice(0, 100),
-          status: "Root agent — no delegations observed yet",
-        },
-      });
-      message = "Single root agent active. Delegation tree will populate when agents delegate to sub-agents via sessions_send/sessions_spawn.";
-    } else {
-      // Multiple agents — build the tree with drift-aware positioning
-      // Look up coherence scores from delegation history for edge coloring
-      const coherenceMap = new Map<string, DelegationRecord>();
-      for (const rec of delegationHistory) {
-        coherenceMap.set(`${rec.parentBuildId}→${rec.childBuildId}`, rec);
-      }
-
-      for (let ni = 0; ni < nodes.length; ni++) {
-        const node = nodes[ni];
-        // Deterministic angle from buildId hash — stable across refreshes
-        let hash = 0x811c9dc5;
-        for (let ci = 0; ci < node.agentBuildId.length; ci++) {
-          hash ^= node.agentBuildId.charCodeAt(ci);
-          hash = (hash * 0x01000193) | 0;
-        }
-        const angle = ((hash >>> 0) / 0xffffffff) * Math.PI * 2;
-
-        // Distance from center encodes drift: root at origin, children
-        // pushed outward by depth AND how much they've drifted from root intent.
-        // Look up coherence from delegation history to modulate radius.
-        let driftFactor = 1.0;
-        if (node.parentAgentBuildId) {
-          const rec = coherenceMap.get(`${node.parentAgentBuildId}→${node.agentBuildId}`);
-          if (rec) {
-            // Lower coherence = more drift = farther from center
-            driftFactor = 1 + (1 - rec.rootCoherence) * 3;
-          }
-        }
-        const dist = node.depth === 0 ? 0 : node.depth * 3 * driftFactor;
-
-        points.push({
-          id: node.agentBuildId,
-          x: Math.cos(angle) * dist,
-          y: Math.sin(angle) * dist,
-          z: node.depth * 2,
-          label: node.agentLabel,
-          color: node.depth === 0 ? "#22c55e" : node.depth === 1 ? "#3b82f6" : "#a855f7",
-          metadata: {
-            depth: node.depth,
-            intentText: node.intentText.slice(0, 100),
-            rootIntentText: node.rootIntentText.slice(0, 100),
-          },
-        });
-
-        if (node.parentAgentBuildId) {
-          // Color edge by coherence: green = aligned, yellow = drifting, red = breached
-          const rec = coherenceMap.get(`${node.parentAgentBuildId}→${node.agentBuildId}`);
-          const coherence = rec ? rec.rootCoherence : 1.0;
-          const edgeColor = coherence > 0.5 ? "#22c55e" : coherence > 0.15 ? "#eab308" : "#ef4444";
-          edges.push({
-            from: node.parentAgentBuildId,
-            to: node.agentBuildId,
-            color: edgeColor,
-            width: Math.max(1, coherence * 3),
-          });
-        }
+        readOnlyCount += count;
       }
     }
+    const totalCalls = writeExecCount + readOnlyCount;
+    const activityRatio = totalCalls > 0 ? writeExecCount / totalCalls : 0.5;
 
-    return json(res, 200, { view, points, edges, message, pca: { varianceExplained: nodes.length > 1 ? [0.4, 0.3, 0.3] : [0, 0, 0] } });
-  }
+    // Compute autonomy profile (Y axis): session count * tool diversity
+    const sessionCount = baseline?.sessionCount || 1;
+    const toolDiversity = Object.keys(toolFreq).length || (agent.toolInventory?.length || 1);
+    const autonomyScore = sessionCount * toolDiversity;
 
-  if (view === "evolution") {
-    // Returns the list of agents for the dropdown + full evolution data for selected agent
-    const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+    rawX.push(activityRatio);
+    rawY.push(autonomyScore);
 
-    // Merge agents from vector store baselines AND agent tracker — show all known agents
-    const tracker = deps.agentTracker;
-    const agentMap = new Map<string, { buildId: string; label: string; maturity: string; count: number }>();
+    // Top tools by frequency
+    const sortedTools = Object.entries(toolFreq)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name]) => name);
 
-    // Add agents from vector store (have workflow data)
+    // Trajectory: compute positions at different time windows using VectorStore workflows
+    const trajectoryRawX: number[] = [];
+    const trajectoryRawY: number[] = [];
+    const trajectoryTimes: number[] = [];
+
     if (vs) {
-      for (const b of vs.getAllAgentBaselines()) {
-        const session = tracker.getAllSessions().find(s => s.agentBuildId === b.agentBuildId);
-        agentMap.set(b.agentBuildId, {
-          buildId: b.agentBuildId,
-          label: session?.agentLabel || b.agentBuildId.slice(0, 12),
-          maturity: b.maturity,
-          count: b.count,
-        });
-      }
-    }
+      const workflows = vs.getWorkflows().filter(w => w.agentBuildId === agent.agentBuildId);
+      if (workflows.length >= 2) {
+        // Split into 2-3 time buckets
+        const sorted = [...workflows].sort((a, b) => a.timestamp - b.timestamp);
+        const bucketSize = Math.max(1, Math.floor(sorted.length / 3));
+        const buckets: Array<typeof sorted> = [];
+        for (let i = 0; i < sorted.length; i += bucketSize) {
+          buckets.push(sorted.slice(i, i + bucketSize));
+        }
+        // Cap at 3 buckets
+        if (buckets.length > 3) {
+          buckets.splice(1, buckets.length - 3);
+        }
 
-    // Add agents from tracker that aren't in vector store yet (active but no completed sessions)
-    for (const s of tracker.getAllSessions()) {
-      if (!agentMap.has(s.agentBuildId) && s.agentLabel !== "Unknown Agent") {
-        agentMap.set(s.agentBuildId, {
-          buildId: s.agentBuildId,
-          label: s.agentLabel,
-          maturity: "learning",
-          count: 0,
-        });
-      }
-    }
-
-    const agentsWithLabels = [...agentMap.values()];
-
-    // If a buildId is specified, return its evolution trajectory
-    if (buildId && vs) {
-      const trajectory = vs.readEvolutionTrajectory(buildId);
-      const centroids = trajectory.map(t => t.centroid).filter(c => c.length > 0);
-      // Also include cluster centroids from all frames for PCA
-      const allVecs = [...centroids];
-      for (const t of trajectory) {
-        for (const c of t.clusters) {
-          if (c.centroid.length > 0) allVecs.push(c.centroid);
+        for (const bucket of buckets) {
+          let bWrite = 0, bRead = 0, bTools = new Set<string>();
+          for (const wf of bucket) {
+            for (const tool of wf.sequence) {
+              bTools.add(tool);
+              if (isWriteExecTool(tool)) bWrite++; else bRead++;
+            }
+          }
+          const bTotal = bWrite + bRead;
+          const bActivity = bTotal > 0 ? bWrite / bTotal : 0.5;
+          const bAutonomy = bucket.length * bTools.size;
+          trajectoryRawX.push(bActivity);
+          trajectoryRawY.push(bAutonomy);
+          trajectoryTimes.push(bucket[bucket.length - 1].timestamp);
         }
       }
-      const pcaResult = allVecs.length >= 3
-        ? pca(allVecs.map(c => Float64Array.from(c)), 3, 50, `evo-${buildId}`)
-        : null;
+    }
 
-      const frames = trajectory.map(t => ({
-        sessionCount: t.sessionCount,
-        timestamp: t.timestamp,
-        maturity: t.maturity,
-        centroidShift: t.centroidShift,
-        behaviorLabel: t.clusters.length > 0
-          ? t.clusters.sort((a, b) => b.memberCount - a.memberCount)[0].label
-          : "unknown",
-        position: pcaResult && t.centroid.length > 0
-          ? pcaResult.project(Float64Array.from(t.centroid))
-          : [0, 0, 0],
-        clusters: t.clusters.map(c => ({
-          label: c.label,
-          radius: c.radius,
-          memberCount: c.memberCount,
-          position: pcaResult && c.centroid.length > 0
-            ? pcaResult.project(Float64Array.from(c.centroid))
-            : [0, 0, 0],
-        })),
-      }));
+    rawAgents.push({
+      label: agent.agentLabel,
+      buildId: agent.agentBuildId,
+      rawX: activityRatio,
+      rawY: autonomyScore,
+      maturity: baseline?.maturity || "none",
+      sessions: sessionCount,
+      securityEvents: agentEvents.length,
+      topTools: sortedTools.length > 0 ? sortedTools : agent.toolInventory?.slice(0, 5) || [],
+      role: agent.classification?.role || "Unknown",
+      trajectoryRawX,
+      trajectoryRawY,
+      trajectoryTimes,
+    });
+  }
 
-      return json(res, 200, {
-        view, agents: agentsWithLabels, buildId, frames,
-        pca: pcaResult ? { varianceExplained: pcaResult.variance } : null,
+  // Normalize to 0-100 range
+  // X (activityRatio) is already 0-1, scale to 0-100
+  // Y needs min-max normalization
+  let minY = Infinity, maxY = -Infinity;
+  for (const v of rawY) { if (v < minY) minY = v; if (v > maxY) maxY = v; }
+  // Also include trajectory Y values in normalization
+  for (const a of rawAgents) {
+    for (const v of a.trajectoryRawY) { if (v < minY) minY = v; if (v > maxY) maxY = v; }
+  }
+  const rangeY = maxY - minY || 1;
+
+  for (const ra of rawAgents) {
+    const x = Math.round(ra.rawX * 100);
+    const y = Math.round(((ra.rawY - minY) / rangeY) * 100);
+
+    const trajectory: Array<{ x: number; y: number; time: number }> = [];
+    for (let i = 0; i < ra.trajectoryRawX.length; i++) {
+      trajectory.push({
+        x: Math.round(ra.trajectoryRawX[i] * 100),
+        y: Math.round(((ra.trajectoryRawY[i] - minY) / rangeY) * 100),
+        time: ra.trajectoryTimes[i],
       });
     }
 
-    return json(res, 200, { view, agents: agentsWithLabels, frames: [] });
+    agents.push({
+      label: ra.label,
+      buildId: ra.buildId,
+      x,
+      y,
+      maturity: ra.maturity,
+      sessions: ra.sessions,
+      securityEvents: ra.securityEvents,
+      topTools: ra.topTools,
+      role: ra.role,
+      trajectory,
+    });
   }
 
-  json(res, 400, { error: `Unknown view: ${view}`, views: ["trajectory", "clusters", "coherence", "delegation", "evolution"] });
+  json(res, 200, {
+    agents,
+    axes: {
+      x: "Activity (read-only \u2192 write/exec)",
+      y: "Autonomy (focused \u2192 diverse)",
+    },
+  });
 }
 
-function serveVizPage(res: ServerResponse) {
-  res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(VIZ_HTML);
+// ── Timeline API handler ──────────────────────────
+
+function handleTimeline(res: ServerResponse, deps: DashboardDeps) {
+  const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+  const scorer = (globalThis as any).__shroudTransformerScorer as { getStats(): any } | undefined;
+  const bus = deps.securityBus;
+
+  // Resolve agent labels
+  const labelMap = new Map<string, string>();
+  for (const s of deps.agentTracker.getAllSessions()) {
+    labelMap.set(s.agentBuildId, s.agentLabel);
+  }
+
+  // Build event lookup: agentBuildId+sessionId -> events
+  const eventMap = new Map<string, Array<{ threatClass: string; severity: string; action: string; timestamp: number }>>();
+  if (bus) {
+    for (const ev of bus.getEvents()) {
+      const key = `${ev.agentBuildId || "unknown"}:${ev.agentSessionId || "unknown"}`;
+      if (!eventMap.has(key)) eventMap.set(key, []);
+      eventMap.get(key)!.push({
+        threatClass: ev.threatClass,
+        severity: ev.severity,
+        action: ev.action,
+        timestamp: ev.timestamp,
+      });
+    }
+  }
+
+  // Get transformer surprise data if available
+  const transformerStats = scorer ? scorer.getStats() : null;
+
+  interface TimelineTool {
+    name: string;
+    timestamp: number;
+    surprise?: number;
+    threat?: string;
+    blocked?: boolean;
+  }
+  interface TimelineSession {
+    id: string;
+    tools: TimelineTool[];
+  }
+  interface TimelineAgent {
+    label: string;
+    buildId: string;
+    sessions: TimelineSession[];
+  }
+
+  const agentMap = new Map<string, TimelineAgent>();
+
+  if (vs) {
+    const workflows = vs.getWorkflows();
+    // Take last 200 workflows max
+    const recent = workflows.slice(-200);
+
+    for (const wf of recent) {
+      const label = labelMap.get(wf.agentBuildId) || wf.agentBuildId.slice(0, 12);
+      if (!agentMap.has(wf.agentBuildId)) {
+        agentMap.set(wf.agentBuildId, { label, buildId: wf.agentBuildId, sessions: [] });
+      }
+      const agent = agentMap.get(wf.agentBuildId)!;
+
+      const evKey = `${wf.agentBuildId}:${wf.sessionId}`;
+      const sessionEvents = eventMap.get(evKey) || [];
+
+      // Distribute timestamps evenly within the workflow timestamp
+      const tools: TimelineTool[] = wf.sequence.slice(0, 200).map((name, i) => {
+        // Spread tools across time leading up to the workflow timestamp
+        const toolTs = wf.timestamp - (wf.sequence.length - 1 - i) * 1000;
+        const matchingEvent = sessionEvents.find(e =>
+          Math.abs(e.timestamp - toolTs) < 5000
+        );
+        return {
+          name,
+          timestamp: toolTs,
+          threat: matchingEvent ? matchingEvent.threatClass : undefined,
+          blocked: matchingEvent ? matchingEvent.action === "blocked" : false,
+        };
+      });
+
+      agent.sessions.push({ id: wf.sessionId, tools });
+    }
+  }
+
+  // If no vector store data, fall back to security events
+  if (agentMap.size === 0 && bus) {
+    const events = bus.getEvents().slice(-200);
+    for (const ev of events) {
+      const buildId = ev.agentBuildId || "unknown";
+      const label = ev.agentLabel || labelMap.get(buildId) || buildId.slice(0, 12);
+      if (!agentMap.has(buildId)) {
+        agentMap.set(buildId, { label, buildId, sessions: [] });
+      }
+      const agent = agentMap.get(buildId)!;
+      const sessionId = ev.agentSessionId || "unknown";
+      let session = agent.sessions.find(s => s.id === sessionId);
+      if (!session) {
+        session = { id: sessionId, tools: [] };
+        agent.sessions.push(session);
+      }
+      if (session.tools.length < 200) {
+        session.tools.push({
+          name: ev.signatureId || ev.threatClass,
+          timestamp: ev.timestamp,
+          threat: ev.threatClass,
+          blocked: ev.action === "blocked",
+        });
+      }
+    }
+  }
+
+  // Inject transformer surprise scores if available
+  if (transformerStats && transformerStats.recentSurprises) {
+    const surprises: number[] = transformerStats.recentSurprises;
+    // Apply surprise scores to the most recent tools across all agents
+    // (transformer tracks globally, not per-session, so we distribute to recent calls)
+    const allTools: TimelineTool[] = [];
+    for (const agent of agentMap.values()) {
+      for (const session of agent.sessions) {
+        for (const tool of session.tools) {
+          allTools.push(tool);
+        }
+      }
+    }
+    allTools.sort((a, b) => a.timestamp - b.timestamp);
+    // Apply from most recent backwards
+    const offset = Math.max(0, allTools.length - surprises.length);
+    for (let i = 0; i < surprises.length && offset + i < allTools.length; i++) {
+      allTools[offset + i].surprise = surprises[i];
+    }
+  }
+
+  const agents = [...agentMap.values()];
+  json(res, 200, { agents });
+}
+
+// ── Tripwires API handler ──────────────────────────
+
+function handleTripwires(res: ServerResponse, deps: DashboardDeps) {
+  const allEvents = deps.securityBus?.getEvents() ?? [];
+  const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
+  const scorer = (globalThis as any).__shroudTransformerScorer as { getStats(): any } | undefined;
+
+  // Honeypot events
+  const honeypotEvents = allEvents.filter(e => e.description?.startsWith("HONEYPOT TRIPPED:"));
+  const phantomEvents = allEvents.filter(e => e.description?.startsWith("PHANTOM TOOL TRIPPED:"));
+
+  // Per-agent tripwire history
+  const agentTripwires: Record<string, Array<{ type: string; signatureId: string; timestamp: number; description: string; severity: string }>> = {};
+  for (const e of [...honeypotEvents, ...phantomEvents]) {
+    const key = e.agentLabel || e.agentBuildId || "unknown";
+    if (!agentTripwires[key]) agentTripwires[key] = [];
+    agentTripwires[key].push({
+      type: e.description?.startsWith("HONEYPOT") ? "honeypot" : "phantom",
+      signatureId: e.signatureId,
+      timestamp: e.timestamp,
+      description: e.description,
+      severity: e.severity,
+    });
+  }
+
+  // Phantom tool breakdown by tool name
+  const phantomByTool: Record<string, number> = {};
+  for (const e of phantomEvents) {
+    // Extract tool name from matchedText: "PHANTOM TOOL: upload_file_external called with ..."
+    const match = e.matchedText?.match(/PHANTOM TOOL: (\S+)/);
+    const toolName = match ? match[1] : "unknown";
+    phantomByTool[toolName] = (phantomByTool[toolName] || 0) + 1;
+  }
+
+  // Honeypot type breakdown from signatureId
+  const honeypotByType: Record<string, number> = {};
+  for (const e of honeypotEvents) {
+    const sig = e.signatureId || "unknown";
+    honeypotByType[sig] = (honeypotByType[sig] || 0) + 1;
+  }
+
+  // Flywheel stats from transformer scorer
+  const transformerStats = scorer ? scorer.getStats() : null;
+  const attackTraceCount = transformerStats?.attackTraceCount ?? 0;
+
+  // Attack trace source breakdown from security events
+  const flywheelBySrc: Record<string, number> = {};
+  const flywheelEvents = allEvents.filter(e =>
+    e.signatureId?.startsWith("hp_") || e.signatureId?.startsWith("phantom_") ||
+    e.threatClass === ("shadow_exfil_detected" as any),
+  );
+  for (const e of flywheelEvents) {
+    let src = "other";
+    if (e.signatureId?.startsWith("hp_")) src = "honeypot";
+    else if (e.signatureId?.startsWith("phantom_") || e.description?.startsWith("PHANTOM TOOL")) src = "phantom";
+    else if (e.threatClass === ("shadow_exfil_detected" as any)) src = "shadow";
+    flywheelBySrc[src] = (flywheelBySrc[src] || 0) + 1;
+  }
+
+  // Threat labels from transformer
+  const threatHeads = transformerStats?.threatHeads ?? null;
+
+  json(res, 200, {
+    honeypot: {
+      enabled: deps.config.honeypotEnabled,
+      totalTrips: honeypotEvents.length,
+      byType: honeypotByType,
+    },
+    phantom: {
+      totalTrips: phantomEvents.length,
+      byTool: phantomByTool,
+    },
+    flywheel: {
+      attackTraceCount,
+      bySource: flywheelBySrc,
+      threatHeads: threatHeads ? {
+        enabled: threatHeads.enabled,
+        labelCount: threatHeads.labelCount,
+        paramCount: threatHeads.paramCount,
+        reliabilityScores: threatHeads.reliabilityScores,
+      } : null,
+      lastTrainedAt: transformerStats?.lastTrainedAt ?? null,
+      trainingSessions: transformerStats?.trainingSessions ?? 0,
+    },
+    agentBreakdown: agentTripwires,
+  });
 }
 
 function json(res: ServerResponse, status: number, data: unknown) {
@@ -1544,17 +1523,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 </div>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
+  <div class="tab" onclick="switchTab('agents')">Agents</div>
+  <div class="tab" onclick="switchTab('events')">Events</div>
+  <div class="tab" onclick="switchTab('tripwires')">Tripwires</div>
+  <div class="tab" onclick="switchTab('transformer')">Transformer</div>
+  <div class="tab" onclick="switchTab('timeline')">Timeline</div>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
-  <div class="tab" onclick="switchTab('transformer')">Transformer</div>
-  <div class="tab" onclick="window.open('/viz','_blank')" style="margin-left:auto;border-color:#a855f7;color:#a855f7">Vector Space 3D</div>
 </div>
 <div class="grid" id="content">
   <div class="card"><h2>Initializing...</h2></div>
 </div>
+<div id="agentsContent" style="display:none"></div>
+<div id="eventsContent" style="display:none"></div>
+<div id="tripwiresContent" style="display:none"></div>
 <div id="rulesContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
 <div id="transformerContent" style="display:none"></div>
+<div id="timelineContent" style="display:none"></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -1694,11 +1680,7 @@ function sigTooltip(sigId) {
 
 async function refresh() {
   try {
-    const [overview, agents, events] = await Promise.all([
-      fetchJson('/api/overview'),
-      fetchJson('/api/agents'),
-      fetchJson('/api/events?limit=30'),
-    ]);
+    const overview = await fetchJson('/api/overview');
 
     const sec = overview.security;
     const ag = overview.agents;
@@ -1706,56 +1688,169 @@ async function refresh() {
 
     let html = '';
 
-    // ═══ AGENT COMMAND CENTER — hero section, full width ═══
-    html += '<div class="card card-wide"><h2>Agent Command Center</h2>';
-    html += '<div class="stat-row" style="margin-bottom:16px">';
+    // ═══ KEY METRICS — clean hero row ═══
+    html += '<div class="card card-wide"><h2>Command Center</h2>';
+    html += '<div class="stat-row" style="margin-bottom:12px">';
     html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
     html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
-    html += '<div class="stat-group"><div class="stat ' + (ag.totalSecurityEvents > 0 ? 'yellow' : 'green') + '">' + ag.totalSecurityEvents + '</div><div class="stat-label">Security Events</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">With Baseline</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (ag.eventsLastHour > 0 ? 'yellow' : 'green') + '">' + ag.eventsLastHour + '</div><div class="stat-label">Events (1h)</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">' + ag.eventsLastDay + ' today &middot; ' + ag.eventsLastWeek + ' week</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">Baselined</div></div>';
+    html += '</div>';
     html += '</div>';
 
-    // Per-agent cards (inline in hero)
-    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">';
+    // ═══ OBFUSCATION STATS ═══
+    html += '<div class="card"><h2>Privacy Shield</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat green">' + obf.totalObfuscated.toLocaleString() + '</div><div class="stat-label">Entities Protected</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + obf.storeMappings + '</div><div class="stat-label">Active Mappings</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
+    html += '</div>';
+
+    // ═══ FIREWALL MODE BADGE ═══
+    const modeColor = sec.injectionDetection === 'block' ? 'pill-critical' : sec.injectionDetection === 'flag' ? 'pill-medium' : 'pill-info';
+    html += '<div class="card"><h2>Firewall</h2>';
+    html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
+    html += '<span class="pill ' + modeColor + '" style="font-size:14px;padding:4px 14px">' + sec.injectionDetection.toUpperCase() + '</span>';
+    html += '<span style="color:var(--text-muted);font-size:12px">' + (sec.injectionDetection === 'block' ? 'Injections blocked' : sec.injectionDetection === 'flag' ? 'Injections flagged' : 'Detection disabled') + '</span>';
+    html += '</div>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div><div class="stat-label">Total Events</div></div>';
+    html += '<div class="stat-group"><div class="stat red">' + sec.blockedCount + '</div><div class="stat-label">Blocked</div></div>';
+    html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:10px"><span class="label">Honeypots</span><span class="pill ' + (sec.honeypotEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.honeypotEnabled ? 'ARMED' : 'OFF') + '</span></div>';
+    html += '<div class="row"><span class="label">Profiling</span><span class="pill ' + (sec.profilingEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.profilingEnabled ? sec.profilingMode.toUpperCase() : 'OFF') + '</span></div>';
+    html += '</div>';
+
+    document.getElementById('content').innerHTML = html;
+    document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById('lastUpdate').textContent = 'Error: ' + err.message;
+  }
+}
+
+// ─── Agents tab ───
+async function renderAgents() {
+  const el = document.getElementById('agentsContent');
+  try {
+    const [agents, spaceData] = await Promise.all([
+      fetchJson('/api/agents'),
+      fetchJson('/api/agent-space'),
+    ]);
+    let html = '<div style="padding:20px 28px">';
+
+    // ── Agent Behavioral Space graph ──
+    var spaceAgents = spaceData.agents || [];
+    if (spaceAgents.length > 0) {
+      html += '<div class="card" style="margin-bottom:16px"><h2 style="font-size:14px;margin-bottom:4px">Agent Behavioral Space</h2>';
+      html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">' + spaceAgents.length + ' agent' + (spaceAgents.length !== 1 ? 's' : '') + ' mapped &middot; position = behavioral profile</p>';
+      html += '<div style="position:relative;width:100%;height:300px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;overflow:hidden">';
+      for (var gi = 1; gi <= 3; gi++) {
+        var gp = gi * 25;
+        html += '<div style="position:absolute;left:' + gp + '%;top:0;bottom:0;width:1px;background:var(--border);opacity:0.5"></div>';
+        html += '<div style="position:absolute;top:' + (100 - gp) + '%;left:0;right:0;height:1px;background:var(--border);opacity:0.5"></div>';
+      }
+      html += '<div style="position:absolute;left:8px;bottom:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Focused Reader</div>';
+      html += '<div style="position:absolute;right:8px;bottom:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Focused Actor</div>';
+      html += '<div style="position:absolute;left:8px;top:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Diverse Researcher</div>';
+      html += '<div style="position:absolute;right:8px;top:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Autonomous Agent</div>';
+      html += '<div style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--text-muted);white-space:nowrap">Read-only \\u2192 Write/Execute</div>';
+      html += '<div style="position:absolute;left:2px;top:50%;transform:translateY(-50%) rotate(-90deg);font-size:9px;color:var(--text-muted);white-space:nowrap;transform-origin:left center">Focused \\u2192 Diverse</div>';
+      for (var ai = 0; ai < spaceAgents.length; ai++) {
+        var sa = spaceAgents[ai];
+        var px = 5 + (sa.x / 100) * 90;
+        var py = 95 - (sa.y / 100) * 90;
+        var dotSize = Math.max(10, Math.min(28, 8 + Math.sqrt(sa.sessions) * 2));
+        var dotColor = sa.securityEvents === 0 ? 'var(--success)' : sa.securityEvents <= 5 ? 'var(--medium)' : 'var(--critical)';
+        if (sa.trajectory && sa.trajectory.length >= 2) {
+          var lastTraj = sa.trajectory[sa.trajectory.length - 1];
+          var firstTraj = sa.trajectory[0];
+          var tx1 = 5 + (firstTraj.x / 100) * 90;
+          var ty1 = 95 - (firstTraj.y / 100) * 90;
+          var tx2 = 5 + (lastTraj.x / 100) * 90;
+          var ty2 = 95 - (lastTraj.y / 100) * 90;
+          html += '<svg style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible">';
+          html += '<defs><marker id="arrow' + ai + '" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0, 6 2, 0 4" fill="' + dotColor + '" opacity="0.4"/></marker></defs>';
+          html += '<line x1="' + tx1 + '%" y1="' + ty1 + '%" x2="' + tx2 + '%" y2="' + ty2 + '%" stroke="' + dotColor + '" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.35" marker-end="url(#arrow' + ai + ')"/>';
+          html += '<circle cx="' + tx1 + '%" cy="' + ty1 + '%" r="3" fill="' + dotColor + '" opacity="0.25"/>';
+          html += '</svg>';
+        }
+        var tooltip = sa.label + '\\n' + (sa.role || 'Unknown') + '\\nSessions: ' + sa.sessions + '\\nSecurity events: ' + sa.securityEvents + '\\nMaturity: ' + sa.maturity + '\\nTop tools: ' + (sa.topTools || []).join(', ');
+        html += '<div style="position:absolute;left:' + px + '%;top:' + py + '%;transform:translate(-50%,-50%);text-align:center;cursor:default" title="' + tooltip.replace(/"/g, '&quot;') + '">';
+        html += '<div style="width:' + dotSize + 'px;height:' + dotSize + 'px;border-radius:50%;background:' + dotColor + ';opacity:0.85;margin:0 auto;box-shadow:0 0 6px ' + dotColor + '"></div>';
+        html += '<div style="font-size:9px;color:var(--text-secondary);margin-top:2px;white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis">' + sa.label.replace(/</g, '&lt;').slice(0, 20) + '</div>';
+        html += '</div>';
+      }
+      html += '</div>';
+      html += '<div style="display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--text-muted);flex-wrap:wrap">';
+      html += '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--success);vertical-align:middle"></span> No events</span>';
+      html += '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--medium);vertical-align:middle"></span> Few events</span>';
+      html += '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--critical);vertical-align:middle"></span> Many events</span>';
+      html += '<span style="margin-left:8px">Dot size = session count &middot; Dashed line = behavioral shift</span>';
+      html += '</div>';
+      html += '</div>';
+    }
+
+    // ── Behavioral Archetypes ──
+    const archCounts = {};
+    const archColourMap = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
+    for (const a of agents.agents || []) {
+      const arch = (a.behavior || {}).archetype || 'Unknown';
+      archCounts[arch] = (archCounts[arch] || 0) + 1;
+    }
+    const totalAgents = (agents.agents || []).length || 1;
+
+    html += '<div class="card" style="margin-bottom:16px"><h2>Behavioral Archetypes</h2>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Derived from runtime tool call patterns. Builds over time.</p>';
+    html += '<div style="display:flex;height:28px;border-radius:6px;overflow:hidden;gap:1px">';
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
+      const col = archColourMap[arch] || '#484f58';
+      html += '<div style="flex:' + count + ';background:' + col + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0d1117;min-width:40px" title="' + arch + ': ' + count + '">' + arch + '</div>';
+    }
+    html += '</div>';
+    html += '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:12px">';
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
+      const col = archColourMap[arch] || '#484f58';
+      const archAgents = (agents.agents || []).filter(a => ((a.behavior || {}).archetype || 'Unknown') === arch);
+      html += '<div style="font-size:11px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + col + ';margin-right:4px"></span>';
+      html += '<span style="color:' + col + ';font-weight:600">' + arch + '</span> ';
+      html += '<span style="color:var(--text-muted)">' + archAgents.map(a => a.agentLabel).join(', ') + '</span>';
+      html += '</div>';
+    }
+    html += '</div></div>';
+
+    // ── Per-agent cards ──
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">';
     for (const a of agents.agents || []) {
       const p = a.profiling || {};
       const maturity = p.maturity || 'none';
-      const cats = (p.knownCategories || []).join(', ') || 'none yet';
-      const tools = (p.knownTools || []).join(', ') || 'none';
       const sessNeeded = p.sessionsUntilActive || 0;
-      const statusText = maturity === 'none' ? 'No baseline - first session'
-        : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more sessions needed'
-        : 'Active - ' + maturity + ' baseline';
-
+      const statusText = maturity === 'none' ? 'No baseline'
+        : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more'
+        : maturity + ' baseline';
       const cls = a.classification || {};
       const roleLabel = cls.role || 'Unclassified';
       const rolePct = cls.confidencePct ?? 0;
-
       const h = a.health || {};
-      const healthIcon = h.status === 'healthy' ? '&#x25CF;' : h.status === 'warning' ? '&#x25B2;' : '&#x25CF;';
-      const healthColour = h.colour || '#8b949e';
       const complianceText = h.compliant === false ? 'non-compliant' : h.compliant === true ? 'compliant' : 'pending';
       const compliancePill = h.compliant === false ? 'pill-critical' : h.compliant === true ? 'pill-healthy' : 'pill-info';
       const eventPill = a.securityEventCount > 5 ? 'pill-critical' : a.securityEventCount > 0 ? 'pill-medium' : 'pill-low';
-
       const healthCls = h.status === 'critical' ? 'critical' : h.status === 'warning' ? 'warning' : maturity;
-
-      // Behavioral archetype
       const beh = a.behavior || {};
       const archetype = beh.archetype || 'Unknown';
       const archConf = beh.archetypeConfidence || 0;
       const archColours = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
       const archColour = archColours[archetype] || '#484f58';
 
-      html += '<div class="agent-card ' + healthCls + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)">';
+      html += '<div class="agent-card ' + healthCls + '" onclick="switchTab(\\'overview\\');showAgent(&quot;' + a.agentBuildId + '&quot;)">';
       html += '<div class="agent-header">';
       html += '<div class="agent-name">' + (a.agentLabel || a.agentBuildId) + '</div>';
       html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
       html += '<span class="agent-role">' + roleLabel + ' ' + rolePct + '%</span>';
       html += '<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:' + archColour + '22;color:' + archColour + ';font-weight:500;border:1px solid ' + archColour + '44">' + archetype + (archConf > 0 ? ' ' + archConf + '%' : '') + '</span>';
       html += '<span class="pill ' + compliancePill + '">' + complianceText + '</span>';
-      html += '</div>';
-      html += '</div>';
+      html += '</div></div>';
 
       if (h.issues && h.issues.length > 0) {
         html += '<div style="margin-top:4px;font-size:11px;color:var(--critical)">';
@@ -1811,6 +1906,7 @@ async function refresh() {
         html += '<span class="pill ' + chCls + '">' + ch + '</span>';
       }
       html += '</div>';
+
       const hb = a.heartbeat || {};
       if (hb.enabled) {
         const hbColor = hb.status === 'alive' ? '#3fb950' : hb.status === 'stale' ? '#d29922' : hb.status === 'dead' ? '#f85149' : '#8b949e';
@@ -1820,187 +1916,99 @@ async function refresh() {
         html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
         html += 'Heartbeat: <span style="color:' + hbColor + '">' + hbIcon + ' ' + hb.status + '</span>';
         html += ' (every ~' + hbInterval + ', last: ' + hbLast + ')';
-        if (hb.lastResponse && !hb.lastResponse.includes('HEARTBEAT_OK')) {
-          html += ' <span style="color:#f85149">ALERT: ' + hb.lastResponse.slice(0, 60) + '</span>';
-        }
         html += '</div>';
       }
-      const ac = a.cache || {};
-      if (ac.callsWithCache > 0) {
-        const hitPct = Math.round((ac.avgHitRatio || 0) * 100);
-        const cacheColour = hitPct >= 70 ? '#3fb950' : hitPct >= 30 ? '#d29922' : '#f85149';
-        const basePct = ac.baselineHitRatio >= 0 ? Math.round(ac.baselineHitRatio * 100) + '%' : 'learning';
-        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
-        html += 'Cache: <span style="color:' + cacheColour + ';font-weight:600">' + hitPct + '% hit</span>';
-        html += ' (baseline: ' + basePct + ', ' + ac.callsWithCache + ' calls, ';
-        html += (ac.totalCacheRead || 0).toLocaleString() + ' read / ' + (ac.totalCacheWrite || 0).toLocaleString() + ' write tokens)';
-        html += '</div>';
-      }
+
       html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
       html += '<div class="progress" style="flex:1"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%;background:' + (maturity==='mature'?'#3fb950':maturity==='reliable'?'#58a6ff':'#d29922') + '"></div></div>';
       html += '<span style="font-size:11px;color:#8b949e">' + statusText + '</span>';
       html += '</div>';
       html += '</div>';
     }
-    html += '</div>'; // grid
-    html += '</div>'; // card
+    html += '</div>';
 
-    // ═══ BEHAVIORAL ARCHETYPE MAP ═══
-    const archCounts = {};
-    const archColourMap = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
-    for (const a of agents.agents || []) {
-      const arch = (a.behavior || {}).archetype || 'Unknown';
-      archCounts[arch] = (archCounts[arch] || 0) + 1;
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
+  }
+}
+
+// ─── Events tab ───
+let eventsSearchQuery = '';
+let eventsSeverityFilter = '';
+let eventsTimeFilter = '';
+let eventsAutoRefreshTimer = null;
+
+async function renderEvents() {
+  const el = document.getElementById('eventsContent');
+  if (eventsAutoRefreshTimer) clearInterval(eventsAutoRefreshTimer);
+
+  try {
+    // Build query params
+    let qp = '?limit=200';
+    if (eventsSearchQuery) qp += '&q=' + encodeURIComponent(eventsSearchQuery);
+    if (eventsSeverityFilter) qp += '&severity=' + eventsSeverityFilter;
+    if (eventsTimeFilter) {
+      const now = Date.now();
+      const sinceMap = { '1h': now - 3600000, 'today': now - 86400000, 'week': now - 604800000 };
+      if (sinceMap[eventsTimeFilter]) qp += '&since=' + sinceMap[eventsTimeFilter];
     }
-    const totalAgents = (agents.agents || []).length || 1;
 
-    html += '<div class="card card-wide"><h2>Behavioral Archetypes</h2>';
-    html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Derived from runtime tool call patterns — what agents actually do, not what they are labelled as. Builds over time.</p>';
-    // Stacked bar
-    html += '<div style="display:flex;height:28px;border-radius:6px;overflow:hidden;gap:1px">';
-    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
-      const pct = Math.round(count / totalAgents * 100);
-      const col = archColourMap[arch] || '#484f58';
-      html += '<div style="flex:' + count + ';background:' + col + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0d1117;min-width:40px" title="' + arch + ': ' + count + ' agent(s)">' + arch + '</div>';
+    const data = await fetchJson('/api/events' + qp);
+    const events = data.events || [];
+    const stats = data.stats || {};
+
+    let html = '<div style="padding:20px 28px">';
+
+    // Controls bar
+    html += '<div class="card" style="margin-bottom:16px">';
+    html += '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">';
+    html += '<input id="evtSearch" type="text" placeholder="Search signature, agent, description..." value="' + (eventsSearchQuery || '').replace(/"/g, '&quot;') + '" style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:7px 12px;border-radius:6px;font-size:12px" onkeydown="if(event.key===\\'Enter\\'){eventsSearchQuery=this.value;renderEvents()}">';
+    html += '<button class="btn btn-primary" onclick="eventsSearchQuery=document.getElementById(\\'evtSearch\\').value;renderEvents()">Search</button>';
+    html += '</div>';
+
+    // Severity filter buttons
+    html += '<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">';
+    const sevOptions = [['', 'All'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']];
+    for (const [val, label] of sevOptions) {
+      const active = eventsSeverityFilter === val;
+      html += '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsSeverityFilter=\\'' + val + '\\';renderEvents()">' + label + '</button>';
     }
-    html += '</div>';
-    // Legend with agent names
-    html += '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:12px">';
-    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
-      const col = archColourMap[arch] || '#484f58';
-      const archAgents = (agents.agents || []).filter(a => ((a.behavior || {}).archetype || 'Unknown') === arch);
-      html += '<div style="font-size:11px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + col + ';margin-right:4px"></span>';
-      html += '<span style="color:' + col + ';font-weight:600">' + arch + '</span> ';
-      html += '<span style="color:var(--text-muted)">' + archAgents.map(a => a.agentLabel).join(', ') + '</span>';
-      html += '</div>';
-    }
-    html += '</div>';
-    html += '</div>';
-
-    // ═══ SECURITY OVERVIEW ═══
-    const modeColor = sec.injectionDetection === 'block' ? 'pill-critical' : sec.injectionDetection === 'flag' ? 'pill-medium' : 'pill-info';
-    html += '<div class="card"><h2>Threat Detection</h2>';
-    html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div><div class="stat-label">Events</div></div>';
-    html += '<div class="stat-group"><div class="stat red">' + sec.blockedCount + '</div><div class="stat-label">Blocked</div></div>';
-    html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div></div>';
-    html += '</div>';
-    html += '<div class="row" style="margin-top:12px"><span class="label">Firewall Mode</span><span class="pill ' + modeColor + '">' + sec.injectionDetection.toUpperCase() + '</span></div>';
-    html += '</div>';
-
-    html += '<div class="card"><h2>Zero-FP Tripwires</h2>';
-    html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat ' + (sec.honeypotTrips > 0 ? 'red' : 'green') + '">' + (sec.honeypotTrips||0) + '</div><div class="stat-label">Honeypot Trips</div></div>';
-    html += '<div class="stat-group"><div class="stat ' + (sec.phantomTrips > 0 ? 'red' : 'green') + '">' + (sec.phantomTrips||0) + '</div><div class="stat-label">Phantom Tool Trips</div></div>';
-    html += '</div>';
-    html += '<div class="row" style="margin-top:12px"><span class="label">Honeypots</span><span class="pill ' + (sec.honeypotEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.honeypotEnabled ? 'ARMED' : 'OFF') + '</span></div>';
-    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">5 fake secrets + 5 phantom tools planted in context. Any use = 100% confirmed injection.</p>';
-    html += '</div>';
-
-    html += '<div class="card"><h2>Privacy Shield</h2>';
-    html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat green">' + obf.totalObfuscated.toLocaleString() + '</div><div class="stat-label">Entities Protected</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + obf.storeMappings + '</div><div class="stat-label">Active Mappings</div></div>';
-    html += '</div>';
-    html += '<div class="row" style="margin-top:12px"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
-    html += '</div>';
-
-    // LLM Cache + External Signatures
-    const cache = overview.cache;
-    const extSigs = overview.externalSignatures;
-    html += '<div class="card"><h2>LLM Cache</h2>';
-    if (cache && cache.turns > 0) {
-      const hitPct = Math.round(cache.hitRatio * 100);
-      const hitCls = hitPct >= 70 ? 'green' : hitPct >= 30 ? 'yellow' : 'red';
-      html += '<div class="stat ' + hitCls + '">' + hitPct + '%</div>';
-      html += '<div class="stat-label">Cache hit ratio (' + cache.turns + ' turns)</div>';
-      html += '<div class="row"><span class="label">Input tokens</span><span class="value">' + cache.totalInput.toLocaleString() + '</span></div>';
-      html += '<div class="row"><span class="label">Cache read</span><span class="value" style="color:var(--success)">' + cache.totalCacheRead.toLocaleString() + '</span></div>';
-      html += '<div class="row"><span class="label">Cache write</span><span class="value">' + cache.totalCacheWrite.toLocaleString() + '</span></div>';
-      html += '<div class="row"><span class="label">Output tokens</span><span class="value">' + cache.totalOutput.toLocaleString() + '</span></div>';
-    } else {
-      html += '<div class="stat" style="color:var(--text-muted)">—</div>';
-      html += '<div class="stat-label">No LLM calls profiled yet</div>';
-    }
-    if (extSigs) {
-      html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border)">';
-      html += '<div class="row"><span class="label">External Sigs</span><span class="pill pill-info">' + extSigs.count + ' (v' + extSigs.version + ')</span></div>';
-      html += '<div class="row"><span class="label">Last refresh</span><span class="value">' + timeAgo(new Date(extSigs.loadedAt).getTime()) + '</span></div>';
-      html += '</div>';
+    html += '<span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>';
+    const timeOptions = [['', 'All time'], ['1h', 'Last hour'], ['today', 'Today'], ['week', 'This week']];
+    for (const [val, label] of timeOptions) {
+      const active = eventsTimeFilter === val;
+      html += '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsTimeFilter=\\'' + val + '\\';renderEvents()">' + label + '</button>';
     }
     html += '</div>';
 
-    // Semantic Drift Detection
-    const drift = overview.drift;
-    html += '<div class="card"><h2>Semantic Drift</h2>';
-    if (drift.enabled) {
-      html += '<div class="stat-row">';
-      html += '<div class="stat-group"><div class="stat ' + (drift.events > 0 ? 'yellow' : 'green') + '">' + drift.events + '</div><div class="stat-label">Drift Events</div></div>';
-      html += '<div class="stat-group"><div class="stat accent">' + drift.trajectoryLength + '</div><div class="stat-label">Steps Tracked</div></div>';
-      html += '</div>';
-      html += '<div class="row" style="margin-top:12px"><span class="label">Threshold</span><span class="value">' + drift.threshold + '</span></div>';
-      if (drift.reference) {
-        html += '<div class="row"><span class="label">Current Intent</span><span class="value" style="font-size:11px">' + truncate(drift.reference, 60) + '</span></div>';
-      }
-      // Trajectory sparkline
-      if (drift.trajectory && drift.trajectory.length > 0) {
-        html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border)">';
-        html += '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Trajectory</div>';
-        html += '<div style="display:flex;align-items:flex-end;gap:2px;height:40px">';
-        for (const p of drift.trajectory) {
-          const h = Math.max(2, Math.round(p.similarity * 38));
-          const c = p.similarity < 0.15 ? 'var(--critical)' : p.similarity < 0.3 ? 'var(--medium)' : 'var(--success)';
-          html += '<div title="Step ' + p.step + ': ' + p.toolName + ' (' + p.similarity.toFixed(2) + ')" style="flex:1;height:' + h + 'px;background:' + c + ';border-radius:2px 2px 0 0;min-width:4px"></div>';
-        }
-        html += '</div>';
-        html += '<div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:2px"><span>Step 1</span><span>Step ' + drift.trajectory.length + '</span></div>';
-        html += '</div>';
-      }
-      html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">TF-IDF cosine similarity tracks agent trajectory vs user intent. Cliff = injection point.</p>';
-    } else {
-      html += '<div class="stat" style="color:var(--text-muted)">&mdash;</div>';
-      html += '<div class="stat-label">Disabled &mdash; set SHROUD_DRIFT_ENABLED=true</div>';
-    }
+    // Stats summary
+    html += '<div style="display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--text-muted)">';
+    html += '<span>' + events.length + ' events shown</span>';
+    if (stats.totalEvents !== undefined) html += '<span>' + stats.totalEvents + ' total</span>';
+    if (stats.blockedCount) html += '<span style="color:var(--critical)">' + stats.blockedCount + ' blocked</span>';
+    html += '</div>';
     html += '</div>';
 
-    // Shadow Execution
-    const shadow = overview.shadow;
-    html += '<div class="card"><h2>Shadow Execution</h2>';
-    if (shadow.enabled) {
-      html += '<div class="stat-row">';
-      html += '<div class="stat-group"><div class="stat ' + (shadow.blocked > 0 ? 'red' : 'green') + '">' + shadow.blocked + '</div><div class="stat-label">Blocked</div></div>';
-      html += '<div class="stat-group"><div class="stat green">' + shadow.allowed + '</div><div class="stat-label">Allowed</div></div>';
-      html += '<div class="stat-group"><div class="stat accent">' + shadow.executions + '</div><div class="stat-label">Total Runs</div></div>';
-      html += '</div>';
-      html += '<div class="row" style="margin-top:12px"><span class="label">Max Steps</span><span class="value">' + shadow.maxSteps + '</span></div>';
-      html += '<div class="row"><span class="label">Timeout</span><span class="value">' + (shadow.timeoutMs / 1000) + 's</span></div>';
-      html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">Suspicious tool calls run on a treadmill &mdash; fake results, real LLM, observe the attack chain before any damage.</p>';
-    } else {
-      html += '<div class="stat" style="color:var(--text-muted)">&mdash;</div>';
-      html += '<div class="stat-label">Disabled &mdash; set SHROUD_SHADOW_EXECUTION=true</div>';
-    }
-    html += '</div>';
-
-    // Threat breakdown
-    if (events.stats && Object.keys(events.stats.byThreatClass || {}).length > 0) {
-      html += '<div class="card"><h2>Threats by Class</h2>';
-      const colors = { instruction_override: '#f85149', role_switch: '#da3633', prompt_extraction: '#d29922', conversation_mockup: '#d29922', encoding_bypass: '#58a6ff', data_exfiltration: '#f85149', privilege_escalation: '#da3633', mcp_tool_poisoning: '#bc4c00', semantic_drift: '#a78bfa', shadow_exfil_detected: '#f472b6' };
-      for (const [cls, count] of Object.entries(events.stats.byThreatClass)) {
-        const pct = Math.round(count / events.stats.totalEvents * 100);
-        html += '<div class="row"><span class="label">' + cls.replace(/_/g, ' ') + '</span><span class="value" style="color:' + (colors[cls]||'#c9d1d9') + '">' + count + ' (' + pct + '%)</span></div>';
-      }
-      html += '</div>';
-    }
-
-    // Recent events
-    html += '<div class="card card-wide"><h2>Recent Security Events</h2><div class="events-list">';
-    for (let i = 0; i < (events.events || []).length; i++) {
-      const e = events.events[events.events.length - 1 - i];
-      const eid = 'evt-' + i;
-      html += '<div class="event event-clickable ' + e.severity + '" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
-      html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
+    // Event list
+    html += '<div style="max-height:calc(100vh - 280px);overflow-y:auto">';
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      const eid = 'evt-tab-' + i;
+      html += '<div class="event event-clickable ' + e.severity + '" style="margin:0 0 4px 0" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
+      html += '<div class="event-header">';
+      html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
       html += sigTooltip(e.signatureId) + ' ';
-      html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || '', 40) + '</span>';
+      html += '<span class="pill pill-' + e.severity + '">' + e.severity + '</span>';
+      html += '<span class="pill pill-' + (e.action === 'blocked' ? 'blocked' : 'flagged') + '">' + e.action + '</span>';
+      html += '</div>';
+      html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
+      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between;margin-top:4px">';
+      html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || 'unknown', 40) + '</span>';
+      html += '<span style="color:var(--text-muted);font-size:10px">' + (e.threatClass || '').replace(/_/g, ' ') + '</span>';
+      html += '</div>';
       html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
       html += '<div id="' + eid + '" class="event-detail">';
       html += '<table class="event-detail-table"><tbody>';
@@ -2010,6 +2018,7 @@ async function refresh() {
       html += '<tr><td>Direction</td><td>' + (e.direction || '') + '</td></tr>';
       html += '<tr><td>Action</td><td>' + (e.action || '') + '</td></tr>';
       html += '<tr><td>Agent</td><td>' + (e.agentLabel || e.agentBuildId || 'unknown') + '</td></tr>';
+      html += '<tr><td>Session</td><td style="font-family:monospace;font-size:11px">' + (e.agentSessionId || '') + '</td></tr>';
       html += '<tr><td>Match Position</td><td>' + (e.matchStart || 0) + '-' + (e.matchEnd || 0) + ' of ' + (e.textLength || 0) + ' chars</td></tr>';
       html += '<tr><td>Description</td><td class="detail-text">' + (e.description || '') + '</td></tr>';
       html += '<tr><td>Full Match</td><td class="detail-mono">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
@@ -2018,12 +2027,122 @@ async function refresh() {
       html += '</div>';
       html += '</div>';
     }
-    html += '</div></div>';
+    if (events.length === 0) {
+      html += '<div class="card" style="text-align:center;padding:40px"><h2 style="color:var(--text-muted)">No events match your filters</h2></div>';
+    }
+    html += '</div>';
 
-    document.getElementById('content').innerHTML = html;
-    document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-  } catch (err) {
-    document.getElementById('lastUpdate').textContent = 'Error: ' + err.message;
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
+  }
+
+  eventsAutoRefreshTimer = setInterval(() => { if (currentTab === 'events') renderEvents(); }, 30000);
+}
+
+// ─── Tripwires tab ───
+async function renderTripwires() {
+  const el = document.getElementById('tripwiresContent');
+  try {
+    const data = await fetchJson('/api/tripwires');
+    let html = '<div style="padding:20px 28px">';
+
+    // ═══ HONEYPOT STATS ═══
+    html += '<div class="card" style="margin-bottom:16px"><h2>Honeypot Tokens</h2>';
+    html += '<div class="stat-row" style="margin-bottom:12px">';
+    html += '<div class="stat-group"><div class="stat ' + (data.honeypot.totalTrips > 0 ? 'red' : 'green') + '">' + data.honeypot.totalTrips + '</div><div class="stat-label">Trips</div></div>';
+    html += '<div class="stat-group"><div class="stat">';
+    html += data.honeypot.enabled ? '<span style="color:var(--success)">ARMED</span>' : '<span style="color:var(--text-muted)">OFF</span>';
+    html += '</div><div class="stat-label">Status</div></div>';
+    html += '</div>';
+    // By type breakdown
+    const hpTypes = Object.entries(data.honeypot.byType || {});
+    if (hpTypes.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">By Signature</div>';
+      for (const [sig, count] of hpTypes.sort((a,b) => b[1] - a[1])) {
+        html += '<div class="row"><span class="label">' + sig + '</span><span class="value" style="color:var(--critical)">' + count + '</span></div>';
+      }
+    }
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Fake credentials and internal-looking URLs planted in agent context. Any use = 100% confirmed injection. Zero false positives.</p>';
+    html += '</div>';
+
+    // ═══ PHANTOM TOOLS ═══
+    html += '<div class="card" style="margin-bottom:16px"><h2>Phantom Tools</h2>';
+    html += '<div class="stat-row" style="margin-bottom:12px">';
+    html += '<div class="stat-group"><div class="stat ' + (data.phantom.totalTrips > 0 ? 'red' : 'green') + '">' + data.phantom.totalTrips + '</div><div class="stat-label">Phantom Calls</div></div>';
+    html += '</div>';
+    const ptTools = Object.entries(data.phantom.byTool || {});
+    if (ptTools.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">By Tool</div>';
+      for (const [tool, count] of ptTools.sort((a,b) => b[1] - a[1])) {
+        html += '<div class="row"><span class="label" style="font-family:monospace">' + tool + '</span><span class="value" style="color:var(--critical)">' + count + '</span></div>';
+      }
+    }
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">5 canary tool definitions registered in the agent runtime. No legitimate workflow uses them. Calls = confirmed injection.</p>';
+    html += '</div>';
+
+    // ═══ FLYWHEEL / ATTACK TRACES ═══
+    html += '<div class="card" style="margin-bottom:16px"><h2>Contrastive Flywheel</h2>';
+    html += '<div class="stat-row" style="margin-bottom:12px">';
+    html += '<div class="stat-group"><div class="stat accent">' + data.flywheel.attackTraceCount + '</div><div class="stat-label">Attack Traces</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.flywheel.trainingSessions + '</div><div class="stat-label">Training Sessions</div></div>';
+    if (data.flywheel.threatHeads) {
+      html += '<div class="stat-group"><div class="stat">' + data.flywheel.threatHeads.labelCount + '</div><div class="stat-label">Threat Labels</div></div>';
+    }
+    html += '</div>';
+    // By source breakdown
+    const flySrc = Object.entries(data.flywheel.bySource || {});
+    if (flySrc.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Trace Sources</div>';
+      const srcColors = { honeypot: 'var(--critical)', phantom: 'var(--high)', shadow: 'var(--accent)', other: 'var(--text-muted)' };
+      for (const [src, count] of flySrc.sort((a,b) => b[1] - a[1])) {
+        html += '<div class="row"><span class="label">' + src + '</span><span class="value" style="color:' + (srcColors[src] || 'var(--text-primary)') + '">' + count + '</span></div>';
+      }
+    }
+    if (data.flywheel.lastTrainedAt) {
+      html += '<div class="row" style="margin-top:8px"><span class="label">Last trained</span><span class="value">' + timeAgo(data.flywheel.lastTrainedAt) + '</span></div>';
+    }
+    // Threat head reliability
+    if (data.flywheel.threatHeads && data.flywheel.threatHeads.reliabilityScores) {
+      const scores = data.flywheel.threatHeads.reliabilityScores;
+      const validScores = scores.filter(s => s > 0);
+      if (validScores.length > 0) {
+        const avgReliability = validScores.reduce((a, b) => a + b, 0) / validScores.length;
+        html += '<div class="row"><span class="label">Threat head avg reliability</span><span class="value" style="color:' + (avgReliability > 0.7 ? 'var(--success)' : avgReliability > 0.4 ? 'var(--medium)' : 'var(--critical)') + '">' + (avgReliability * 100).toFixed(0) + '%</span></div>';
+      }
+    }
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Honeypot/phantom/shadow traces feed back into the transformer via contrastive learning. More traces = better anomaly detection.</p>';
+    html += '</div>';
+
+    // ═══ PER-AGENT TRIPWIRE HISTORY ═══
+    const agentBreakdown = Object.entries(data.agentBreakdown || {});
+    if (agentBreakdown.length > 0) {
+      html += '<div class="card"><h2>Per-Agent Tripwire History</h2>';
+      for (const [agent, trips] of agentBreakdown.sort((a,b) => b[1].length - a[1].length)) {
+        html += '<div style="margin-bottom:12px">';
+        html += '<div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">' + agent + ' <span style="color:var(--critical);font-size:11px">(' + trips.length + ' trips)</span></div>';
+        for (const t of trips.slice(-5)) {
+          const typeColor = t.type === 'honeypot' ? 'var(--critical)' : 'var(--high)';
+          html += '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:11px;border-bottom:1px solid rgba(30,41,59,0.3)">';
+          html += '<span class="pill ' + (t.severity === 'high' ? 'pill-high' : 'pill-medium') + '">' + t.type + '</span>';
+          html += '<span style="color:var(--accent);font-family:monospace;font-size:10px">' + t.signatureId + '</span>';
+          html += '<span style="flex:1;color:var(--text-muted)">' + truncate(t.description || '', 80) + '</span>';
+          html += '<span style="color:var(--text-muted);font-size:10px">' + timeAgo(t.timestamp) + '</span>';
+          html += '</div>';
+        }
+        if (trips.length > 5) {
+          html += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px">... and ' + (trips.length - 5) + ' more</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
   }
 }
 
@@ -2101,18 +2220,33 @@ async function showAgent(buildId) {
 
 // Tab switching
 let currentTab = 'overview';
+const TAB_CONTAINERS = {
+  overview: 'content',
+  agents: 'agentsContent',
+  events: 'eventsContent',
+  tripwires: 'tripwiresContent',
+  rules: 'rulesContent',
+  signatures: 'sigContent',
+  transformer: 'transformerContent',
+  timeline: 'timelineContent',
+};
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelector('.tab[onclick*=\"' + tab + '\"]').classList.add('active');
-  document.getElementById('content').style.display = tab === 'overview' ? 'grid' : 'none';
-  document.getElementById('rulesContent').style.display = tab === 'rules' ? 'block' : 'none';
-  document.getElementById('sigContent').style.display = tab === 'signatures' ? 'block' : 'none';
-  document.getElementById('transformerContent').style.display = tab === 'transformer' ? 'block' : 'none';
+  for (const [t, id] of Object.entries(TAB_CONTAINERS)) {
+    const el = document.getElementById(id);
+    if (!el) continue;
+    el.style.display = t === tab ? (t === 'overview' ? 'grid' : 'block') : 'none';
+  }
   if (tab === 'overview') refresh();
+  else if (tab === 'agents') renderAgents();
+  else if (tab === 'events') renderEvents();
+  else if (tab === 'tripwires') renderTripwires();
   else if (tab === 'rules') refreshRules();
   else if (tab === 'signatures') renderSignatures();
   else if (tab === 'transformer') renderTransformer();
+  else if (tab === 'timeline') renderTimeline();
 }
 
 function showToast(msg, isError) {
@@ -2556,6 +2690,10 @@ async function renderTransformer() {
       html += '<div><span class="stat">' + data.vocabSize + '</span><div class="stat-label">Tool Vocabulary</div></div>';
       html += '<div><span class="stat">' + data.inferenceCount + '</span><div class="stat-label">Inferences</div></div>';
       html += '<div><span class="stat">' + (data.avgInferenceMs > 0 ? data.avgInferenceMs.toFixed(1) + 'ms' : '-') + '</span><div class="stat-label">Avg Latency</div></div>';
+      html += '<div><span class="stat accent">' + (data.attackTraceCount || 0) + '</span><div class="stat-label">Attack Traces</div></div>';
+      if (data.threatHeads) {
+        html += '<div><span class="stat">' + data.threatHeads.labelCount + '</span><div class="stat-label">Threat Labels</div></div>';
+      }
       html += '</div>';
 
       // Training info
@@ -2566,6 +2704,16 @@ async function renderTransformer() {
       }
       if (data.lastTrainedAt) {
         html += '<span>Last trained: <strong style="color:var(--text-primary)">' + new Date(data.lastTrainedAt).toLocaleString() + '</strong></span>';
+      }
+      if (data.attackTraceCount > 0) {
+        html += '<span>Flywheel traces: <strong style="color:var(--accent)">' + data.attackTraceCount + '</strong></span>';
+      }
+      if (data.threatHeads && data.threatHeads.reliabilityScores) {
+        var relScores = data.threatHeads.reliabilityScores.filter(function(s) { return s > 0; });
+        if (relScores.length > 0) {
+          var avgRel = relScores.reduce(function(a, b) { return a + b; }, 0) / relScores.length;
+          html += '<span>Threat head reliability: <strong style="color:' + (avgRel > 0.7 ? 'var(--success)' : avgRel > 0.4 ? 'var(--medium)' : 'var(--critical)') + '">' + (avgRel * 100).toFixed(0) + '%</strong></span>';
+        }
       }
       html += '</div>';
       html += '</div>';
@@ -2661,6 +2809,149 @@ async function renderTransformer() {
   }
 }
 
+// ─── Timeline tab ───
+let timelineRefreshTimer = null;
+let expandedSessions = new Set();
+
+function relativeTime(ts) {
+  const diff = Date.now() - ts;
+  if (diff < 60000) return Math.floor(diff / 1000) + 's ago';
+  if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+  if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+  return Math.floor(diff / 86400000) + 'd ago';
+}
+
+function toolColor(tool) {
+  if (tool.blocked) return 'var(--critical)';
+  const s = tool.surprise;
+  if (s !== undefined && s !== null) {
+    if (s > 0.85) return 'var(--critical)';
+    if (s > 0.5) return 'var(--medium)';
+  }
+  return 'var(--success)';
+}
+
+function toolBorder(tool) {
+  return tool.threat ? '2px solid var(--accent)' : '2px solid transparent';
+}
+
+async function renderTimeline() {
+  const el = document.getElementById('timelineContent');
+  if (timelineRefreshTimer) clearInterval(timelineRefreshTimer);
+
+  try {
+    const data = await fetchJson('/api/timeline');
+    const agents = data.agents || [];
+
+    if (agents.length === 0) {
+      el.innerHTML = '<div style="padding:40px 28px;text-align:center"><div class="card" style="max-width:500px;margin:0 auto"><h2>Timeline</h2><p style="color:var(--text-muted);margin-top:12px">Waiting for agent sessions...</p><p style="color:var(--text-muted);font-size:11px;margin-top:8px">Tool calls will appear here as agents execute workflows.</p></div></div>';
+      timelineRefreshTimer = setInterval(() => { if (currentTab === 'timeline') renderTimeline(); }, 30000);
+      return;
+    }
+
+    let html = '<div style="padding:20px 28px">';
+
+    // Find global time range
+    var minTs = Infinity, maxTs = -Infinity;
+    for (var _ai2 = 0; _ai2 < agents.length; _ai2++) {
+      var _ag = agents[_ai2];
+      for (var _si = 0; _si < _ag.sessions.length; _si++) {
+        var _sess = _ag.sessions[_si];
+        for (var _ti = 0; _ti < _sess.tools.length; _ti++) {
+          if (_sess.tools[_ti].timestamp < minTs) minTs = _sess.tools[_ti].timestamp;
+          if (_sess.tools[_ti].timestamp > maxTs) maxTs = _sess.tools[_ti].timestamp;
+        }
+      }
+    }
+    var timeRange = Math.max(maxTs - minTs, 1000);
+    html += '<div class="card" style="margin-bottom:16px"><h2>Agent Timeline</h2>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:4px">' + agents.length + ' agent' + (agents.length !== 1 ? 's' : '') + ' &middot; ';
+    let totalTools = 0;
+    for (const a of agents) for (const s of a.sessions) totalTools += s.tools.length;
+    html += totalTools + ' tool calls &middot; auto-refreshes every 30s</p>';
+    html += '<div style="display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--text-muted)">';
+    html += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--success);vertical-align:middle"></span> Normal</span>';
+    html += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--medium);vertical-align:middle"></span> Unusual</span>';
+    html += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:var(--critical);vertical-align:middle"></span> Anomalous</span>';
+    html += '<span><span style="display:inline-block;width:10px;height:10px;border-radius:50%;border:2px solid var(--accent);vertical-align:middle;box-sizing:border-box"></span> Security event</span>';
+    html += '</div></div>';
+
+    // Agent lanes
+    for (const agent of agents) {
+      html += '<div class="card" style="margin-bottom:12px">';
+      html += '<div style="display:flex;align-items:center;gap:10px;margin-bottom:10px">';
+      html += '<div style="width:8px;height:8px;border-radius:50%;background:var(--accent);flex-shrink:0"></div>';
+      html += '<h2 style="font-size:13px;margin:0">' + agent.label + '</h2>';
+      html += '<span style="color:var(--text-muted);font-size:10px">' + agent.sessions.length + ' session' + (agent.sessions.length !== 1 ? 's' : '') + '</span>';
+      html += '</div>';
+
+      for (const session of agent.sessions) {
+        const sessionKey = agent.buildId + ':' + session.id;
+        const isExpanded = expandedSessions.has(sessionKey);
+        const tools = session.tools;
+        if (tools.length === 0) continue;
+
+        html += '<div style="margin-bottom:8px;padding-left:18px">';
+        html += '<div onclick="toggleSession(\'' + sessionKey.replace(/'/g, "\\'") + '\')" style="cursor:pointer;display:flex;align-items:center;gap:6px;margin-bottom:4px">';
+        html += '<span style="color:var(--text-muted);font-size:10px;font-family:monospace">' + (isExpanded ? '&#9660;' : '&#9654;') + '</span>';
+        html += '<span style="color:var(--text-muted);font-size:10px">' + session.id.slice(0, 8) + ' &middot; ' + tools.length + ' calls &middot; ' + relativeTime(tools[tools.length - 1].timestamp) + '</span>';
+        html += '</div>';
+
+        // Timeline bar
+        html += '<div style="display:flex;align-items:center;gap:2px;padding:4px 0;overflow-x:auto;max-width:100%">';
+        for (const tool of tools) {
+          const pct = ((tool.timestamp - minTs) / timeRange) * 100;
+          const bg = toolColor(tool);
+          const border = toolBorder(tool);
+          const title = tool.name + (tool.surprise !== undefined ? ' (surprise: ' + tool.surprise.toFixed(3) + ')' : '') + (tool.threat ? ' [' + tool.threat + ']' : '') + (tool.blocked ? ' BLOCKED' : '') + ' - ' + relativeTime(tool.timestamp);
+          html += '<div class="tl-dot" style="flex-shrink:0;width:12px;height:12px;border-radius:3px;background:' + bg + ';border:' + border + '" title="' + title.replace(/"/g, '&quot;') + '"></div>';
+        }
+        html += '</div>';
+
+        // Expanded details
+        if (isExpanded) {
+          html += '<div style="margin-top:6px;padding:8px 12px;background:var(--bg-secondary);border-radius:6px;font-size:11px;max-height:300px;overflow-y:auto">';
+          html += '<table style="width:100%;border-collapse:collapse">';
+          html += '<tr style="color:var(--text-muted);font-size:10px;text-transform:uppercase"><th style="text-align:left;padding:4px 8px">Tool</th><th style="text-align:left;padding:4px 8px">Surprise</th><th style="text-align:left;padding:4px 8px">Threat</th><th style="text-align:left;padding:4px 8px">Time</th></tr>';
+          for (const tool of tools) {
+            const scoreColor = !tool.surprise ? 'var(--text-muted)' : tool.surprise > 0.85 ? 'var(--critical)' : tool.surprise > 0.5 ? 'var(--medium)' : 'var(--success)';
+            html += '<tr style="border-top:1px solid var(--border)">';
+            html += '<td style="padding:4px 8px;color:var(--text-primary)">' + tool.name + '</td>';
+            html += '<td style="padding:4px 8px;color:' + scoreColor + '">' + (tool.surprise !== undefined ? tool.surprise.toFixed(3) : '-') + '</td>';
+            html += '<td style="padding:4px 8px;color:' + (tool.threat ? 'var(--critical)' : 'var(--text-muted)') + '">' + (tool.threat || '-') + (tool.blocked ? ' <span style="color:var(--critical);font-weight:600">BLOCKED</span>' : '') + '</td>';
+            html += '<td style="padding:4px 8px;color:var(--text-muted)">' + relativeTime(tool.timestamp) + '</td>';
+            html += '</tr>';
+          }
+          html += '</table></div>';
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    // Time axis
+    html += '<div style="display:flex;justify-content:space-between;padding:4px 28px;font-size:10px;color:var(--text-muted)">';
+    html += '<span>' + relativeTime(minTs) + '</span>';
+    const midTs = minTs + timeRange / 2;
+    html += '<span>' + relativeTime(midTs) + '</span>';
+    html += '<span>' + relativeTime(maxTs) + '</span>';
+    html += '</div>';
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
+  }
+
+  timelineRefreshTimer = setInterval(() => { if (currentTab === 'timeline') renderTimeline(); }, 30000);
+}
+
+function toggleSession(key) {
+  if (expandedSessions.has(key)) expandedSessions.delete(key);
+  else expandedSessions.add(key);
+  renderTimeline();
+}
+
 // Auto-refresh every 3 seconds (only overview tab)
 refresh();
 let viewingAgent = false;
@@ -2675,653 +2966,4 @@ try {
 </body>
 </html>`;
 
-// ── 3D Visualization HTML ──────────────────────────────
-
-const VIZ_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Shroud — Vector Space Visualization</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: #0a0e1a; color: #e2e8f0; font-family: 'SF Mono', 'Fira Code', monospace; overflow: hidden; }
-  #controls { position: fixed; top: 16px; left: 16px; z-index: 100; display: flex; gap: 8px; }
-  .tab { padding: 8px 16px; background: rgba(30,41,59,0.9); border: 1px solid #334155; border-radius: 6px;
-         color: #94a3b8; cursor: pointer; font-size: 12px; font-family: inherit; transition: all 0.2s; }
-  .tab:hover { border-color: #3b82f6; color: #e2e8f0; }
-  .tab.active { background: #1e3a5f; border-color: #3b82f6; color: #60a5fa; }
-  #info { position: fixed; bottom: 16px; left: 16px; z-index: 100; background: rgba(30,41,59,0.9);
-          border: 1px solid #334155; border-radius: 6px; padding: 12px 16px; font-size: 11px; max-width: 400px; }
-  #info h3 { color: #60a5fa; margin-bottom: 4px; font-size: 12px; }
-  #info p { color: #94a3b8; line-height: 1.5; }
-  #tooltip { position: fixed; z-index: 200; background: rgba(15,23,42,0.95); border: 1px solid #3b82f6;
-             border-radius: 6px; padding: 8px 12px; font-size: 11px; pointer-events: none; display: none; }
-  canvas { display: block; }
-  #legend { position: fixed; top: 16px; right: 16px; z-index: 100; background: rgba(30,41,59,0.9);
-            border: 1px solid #334155; border-radius: 6px; padding: 12px 16px; font-size: 11px; }
-  #legend .item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-  #legend .dot { width: 10px; height: 10px; border-radius: 50%; }
-  #pca-info { position: fixed; bottom: 16px; right: 16px; z-index: 100; background: rgba(30,41,59,0.9);
-              border: 1px solid #334155; border-radius: 6px; padding: 8px 12px; font-size: 10px; color: #64748b; }
-  #guide { position: fixed; top: 60px; right: 16px; z-index: 100; background: rgba(15,23,42,0.95);
-           border: 1px solid #334155; border-radius: 8px; padding: 16px 20px; font-size: 11px;
-           max-width: 320px; line-height: 1.6; display: none; }
-  #guide h3 { color: #a855f7; font-size: 13px; margin-bottom: 8px; }
-  #guide .section { margin-bottom: 10px; }
-  #guide .label { color: #60a5fa; font-weight: 600; }
-  #guide .good { color: #22c55e; }
-  #guide .bad { color: #ef4444; }
-  #guide .warn { color: #eab308; }
-  #guide .muted { color: #64748b; font-size: 10px; }
-  .help-btn { padding: 8px 12px; background: rgba(30,41,59,0.9); border: 1px solid #a855f7; border-radius: 6px;
-              color: #a855f7; cursor: pointer; font-size: 12px; font-family: inherit; }
-  .help-btn:hover { background: rgba(168,85,247,0.15); }
-  #timeline { position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%); z-index: 100;
-              background: rgba(15,23,42,0.95); border: 1px solid #334155; border-radius: 8px;
-              padding: 12px 20px; display: flex; align-items: center; gap: 12px; font-size: 11px; }
-  #timeline select { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 4px;
-                     padding: 4px 8px; font-family: inherit; font-size: 11px; }
-  #timeline input[type=range] { width: 300px; accent-color: #a855f7; }
-  #timeline #time-label { color: #94a3b8; min-width: 120px; }
-  #timeline #play-btn { background: #a855f7; color: #0a0e1a; border: none; border-radius: 4px;
-                        padding: 4px 12px; cursor: pointer; font-family: inherit; font-weight: 600; font-size: 11px; }
-</style>
-</head>
-<body>
-<div id="controls">
-  <button class="tab active" onclick="switchView('trajectory')">Intent Trajectory</button>
-  <button class="tab" onclick="switchView('clusters')">Workflow Clusters</button>
-  <button class="tab" onclick="switchView('coherence')">Causal Coherence</button>
-  <button class="tab" onclick="switchView('delegation')">Delegation Tree</button>
-  <button class="tab" onclick="switchView('evolution')">Agent Evolution</button>
-  <button class="help-btn" onclick="toggleGuide()">? How to Read</button>
-</div>
-<div id="legend"></div>
-<div id="info"></div>
-<div id="timeline" style="display:none">
-  <select id="agent-select" onchange="loadEvolution()"></select>
-  <input type="range" id="time-slider" min="0" max="0" value="0" oninput="scrubTimeline(this.value)">
-  <span id="time-label">Session 0</span>
-  <button id="play-btn" onclick="togglePlay()">Play</button>
-</div>
-<div id="tooltip"></div>
-<div id="pca-info"></div>
-<div id="guide"></div>
-
-<script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.162.0/build/three.module.js",
-               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.162.0/examples/jsm/" } }
-</script>
-<script type="module">
-import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-
-const BASE = window.location.origin;
-let currentView = 'trajectory';
-let scene, camera, renderer, controls;
-let pointMeshes = [], edgeMeshes = [], clusterMeshes = [];
-
-// Setup Three.js
-function init() {
-  scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x0a0e1a);
-
-  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-  camera.position.set(8, 6, 8);
-
-  renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio);
-  document.body.appendChild(renderer.domElement);
-
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.enableDamping = true;
-  controls.dampingFactor = 0.05;
-
-  // Grid
-  const grid = new THREE.GridHelper(20, 20, 0x1e293b, 0x1e293b);
-  scene.add(grid);
-
-  // Ambient + directional light
-  scene.add(new THREE.AmbientLight(0x404060, 1));
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-  dirLight.position.set(5, 10, 5);
-  scene.add(dirLight);
-
-  window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
-  });
-
-  animate();
-}
-
-function animate() {
-  requestAnimationFrame(animate);
-  controls.update();
-  renderer.render(scene, camera);
-}
-
-// Clear scene objects
-function clearScene() {
-  for (const m of [...pointMeshes, ...edgeMeshes, ...clusterMeshes]) {
-    scene.remove(m);
-    if (m.geometry) m.geometry.dispose();
-    if (m.material) {
-      if (Array.isArray(m.material)) m.material.forEach(mat => mat.dispose());
-      else m.material.dispose();
-    }
-  }
-  pointMeshes = []; edgeMeshes = []; clusterMeshes = [];
-}
-
-// Create text sprite for 3D labels — dynamic canvas width for readability
-function makeLabel(text, color) {
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  if (!ctx) {
-    const mat = new THREE.SpriteMaterial({ color: 0xffffff, transparent: true });
-    return new THREE.Sprite(mat);
-  }
-  const label = (text || '').slice(0, 50);
-  const fontSize = 28;
-  ctx.font = 'bold ' + fontSize + 'px monospace';
-  // Measure text first to size canvas
-  const textWidth = ctx.measureText(label).width;
-  const pad = 20;
-  canvas.width = Math.max(128, Math.ceil(textWidth + pad * 2));
-  canvas.height = 48;
-  // Re-set font after canvas resize (resets context)
-  ctx.font = 'bold ' + fontSize + 'px monospace';
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  // Background pill
-  // roundRect polyfill for older browsers
-  function rr(c, x, y, w, h, r) {
-    c.beginPath();
-    c.moveTo(x+r, y);
-    c.lineTo(x+w-r, y); c.quadraticCurveTo(x+w, y, x+w, y+r);
-    c.lineTo(x+w, y+h-r); c.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
-    c.lineTo(x+r, y+h); c.quadraticCurveTo(x, y+h, x, y+h-r);
-    c.lineTo(x, y+r); c.quadraticCurveTo(x, y, x+r, y);
-    c.closePath();
-  }
-  ctx.fillStyle = 'rgba(10,14,26,0.88)';
-  rr(ctx, 2, 2, canvas.width - 4, canvas.height - 4, 6);
-  ctx.fill();
-  ctx.strokeStyle = color || '#94a3b8';
-  ctx.lineWidth = 1.5;
-  rr(ctx, 2, 2, canvas.width - 4, canvas.height - 4, 6);
-  ctx.stroke();
-  // Text
-  ctx.fillStyle = color || '#e2e8f0';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(label, canvas.width / 2, canvas.height / 2);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.minFilter = THREE.LinearFilter;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-  const sprite = new THREE.Sprite(mat);
-  // Scale proportional to text length — wider labels get wider sprites
-  const aspect = canvas.width / canvas.height;
-  sprite.scale.set(aspect * 0.7, 0.7, 1);
-  return sprite;
-}
-
-// Render data
-function renderData(data) {
-  clearScene();
-
-  const points = data.points || [];
-  const edges = data.edges || [];
-
-  // Empty state — show server-provided message or generic fallback
-  if (points.length === 0) {
-    const msg = data.message || 'No data yet — waiting for agent sessions';
-    const label = makeLabel(msg, '#64748b');
-    label.position.set(0, 2, 0);
-    label.scale.multiplyScalar(2);
-    scene.add(label);
-    pointMeshes.push(label);
-    return;
-  }
-  // Sparse state — show message alongside the few points we have
-  if (data.message && points.length > 0 && points.length <= 2) {
-    const hint = makeLabel(data.message, '#64748b');
-    hint.position.set(0, -1.5, 0);
-    hint.scale.multiplyScalar(1.5);
-    scene.add(hint);
-    pointMeshes.push(hint);
-  }
-
-  // Points
-  for (const pt of points) {
-    const geo = new THREE.SphereGeometry(0.15, 16, 16);
-    const mat = new THREE.MeshPhongMaterial({ color: pt.color || '#ffffff', emissive: pt.color || '#ffffff', emissiveIntensity: 0.3 });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(pt.x, pt.z || 0, pt.y);
-    mesh.userData = { label: pt.label, metadata: pt.metadata };
-    scene.add(mesh);
-    pointMeshes.push(mesh);
-
-    // Text label above node
-    if (pt.label) {
-      const sprite = makeLabel(pt.label, pt.color || '#94a3b8');
-      sprite.position.set(pt.x, (pt.z || 0) + 0.35, pt.y);
-      scene.add(sprite);
-      pointMeshes.push(sprite);
-    }
-  }
-
-  // Edges
-  for (const edge of (data.edges || [])) {
-    const from = data.points.find(p => p.id === edge.from);
-    const to = data.points.find(p => p.id === edge.to);
-    if (!from || !to) continue;
-
-    const pts = [
-      new THREE.Vector3(from.x, from.z || 0, from.y),
-      new THREE.Vector3(to.x, to.z || 0, to.y),
-    ];
-    const geo = new THREE.BufferGeometry().setFromPoints(pts);
-    const mat = new THREE.LineBasicMaterial({ color: edge.color || '#666', linewidth: edge.width || 1 });
-    const line = new THREE.Line(geo, mat);
-    scene.add(line);
-    edgeMeshes.push(line);
-  }
-
-  // Clusters (transparent spheres with labels)
-  for (const cl of (data.clusters || [])) {
-    const geo = new THREE.SphereGeometry(cl.radius || 1, 32, 32);
-    const mat = new THREE.MeshPhongMaterial({ color: cl.color || '#3b82f6', transparent: true, opacity: 0.1, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(cl.center.x, cl.center.z || 0, cl.center.y);
-    scene.add(mesh);
-    clusterMeshes.push(mesh);
-
-    // Cluster label
-    if (cl.label) {
-      const sprite = makeLabel(cl.label.toUpperCase(), cl.color || '#3b82f6');
-      sprite.position.set(cl.center.x, (cl.center.z || 0) + (cl.radius || 1) + 0.5, cl.center.y);
-      scene.add(sprite);
-      clusterMeshes.push(sprite);
-    }
-  }
-
-  // Update PCA info
-  const pcaDiv = document.getElementById('pca-info');
-  if (data.pca && data.pca.varianceExplained) {
-    const ve = data.pca.varianceExplained.map(v => (v * 100).toFixed(1) + '%');
-    pcaDiv.textContent = 'PCA variance: ' + ve.join(' / ');
-  }
-}
-
-// Fetch and render
-async function loadView(view) {
-  try {
-    const resp = await fetch(BASE + '/api/viz/projection?view=' + view);
-    const data = await resp.json();
-    renderData(data);
-    updateLegend(view);
-    updateInfo(view, data);
-  } catch (e) {
-    console.error('Failed to load view:', e);
-  }
-}
-
-function updateLegend(view) {
-  const el = document.getElementById('legend');
-  const legends = {
-    trajectory: [
-      { color: '#22c55e', label: 'High coherence (>0.5)' },
-      { color: '#eab308', label: 'Moderate (0.15-0.5)' },
-      { color: '#ef4444', label: 'Drifted (<0.15)' },
-    ],
-    clusters: [
-      { color: '#22c55e', label: 'Healthy workflow' },
-      { color: '#ef4444', label: 'Flagged workflow' },
-    ],
-    coherence: [
-      { color: '#3b82f6', label: 'Tool result' },
-      { color: '#f97316', label: 'Next action' },
-      { color: '#22c55e', label: 'Coherent pair' },
-      { color: '#ef4444', label: 'Broken pair' },
-    ],
-    delegation: [
-      { color: '#22c55e', label: 'Root agent (depth 0)' },
-      { color: '#3b82f6', label: 'Delegate (depth 1)' },
-      { color: '#a855f7', label: 'Sub-delegate (depth 2+)' },
-    ],
-    evolution: [
-      { color: '#f97316', label: 'Learning (<5 sessions)' },
-      { color: '#eab308', label: 'Reliable (5-49 sessions)' },
-      { color: '#22c55e', label: 'Mature (50+ sessions)' },
-      { color: '#a855f7', label: 'Trail path' },
-      { color: '#3b82f6', label: 'Cluster boundary' },
-    ],
-  };
-  el.innerHTML = (legends[view] || []).map(l =>
-    '<div class="item"><div class="dot" style="background:' + l.color + '"></div>' + l.label + '</div>'
-  ).join('');
-}
-
-function updateInfo(view, data) {
-  const el = document.getElementById('info');
-  const infos = {
-    trajectory: '<h3>Intent Trajectory</h3><p>' + (data.points?.length || 0) + ' points. ' + (data.points?.length > 0 && data.points[0]?.id === 'ref' ? 'Live session — user intent at origin. Tool calls by semantic distance.' : 'Historical workflows by agent. Blue = agent origin, green = healthy, red = flagged.') + '</p>',
-    clusters: '<h3>Workflow Clusters</h3><p>' + (data.clusters?.length || 0) + ' clusters, ' + (data.points?.length || 0) + ' workflows. Transparent spheres show cluster boundaries. Red dots = flagged sessions.</p>',
-    coherence: '<h3>Causal Coherence</h3><p>' + (data.message ? data.message : (data.points?.length || 0) + ' nodes. ' + (data.edges?.length > 0 && data.points?.[0]?.metadata?.type === 'result' ? 'Live pairs — blue = result, orange = action. Line length = causal distance. Pairs spiral upward over time.' : 'Tool flow graph — node height = frequency, edges = transitions between tools.')) + '</p>',
-    delegation: '<h3>Delegation Tree</h3><p>' + (data.message ? data.message : 'Root agent at center. Sub-agents branch outward. Distance = drift from root intent. Edge color = coherence (green = aligned, red = breached).') + '</p>',
-    evolution: '<h3>Agent Evolution</h3><p>Select an agent to watch its behavioral profile develop over time. Trail shows centroid migration. Use slider or Play to scrub through sessions.</p>',
-  };
-  el.innerHTML = infos[view] || '';
-}
-
-// Tab switching
-window.switchView = function(view) {
-  currentView = view;
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelector('.tab[onclick*="' + view + '"]')?.classList.add('active');
-
-  // Show/hide timeline controls for evolution view
-  document.getElementById('timeline').style.display = view === 'evolution' ? 'flex' : 'none';
-
-  if (view === 'evolution') {
-    // Populate agent dropdown then load
-    fetch(BASE + '/api/viz/projection?view=evolution').then(r => r.json()).then(data => {
-      const select = document.getElementById('agent-select');
-      select.innerHTML = '<option value="">Select agent...</option>';
-      for (const a of (data.agents || [])) {
-        select.innerHTML += '<option value="' + a.buildId + '">' + a.label + ' (' + a.maturity + ', ' + a.count + ' sessions)</option>';
-      }
-      if (data.agents && data.agents.length > 0) {
-        select.value = data.agents[0].buildId;
-        loadEvolution();
-      } else {
-        clearScene();
-        const label = makeLabel('No agents with evolution data yet', '#64748b');
-        label.position.set(0, 2, 0); label.scale.multiplyScalar(2);
-        scene.add(label); pointMeshes.push(label);
-      }
-    });
-  } else {
-    loadView(view);
-  }
-  updateGuide(view);
-};
-
-// Interpretation guide
-const guides = {
-  trajectory: '<h3>Reading: Intent Trajectory</h3>'
-    + '<div class="section"><span class="label">What you see:</span> The user message is the green origin point. Each tool call is a node. Lines connect them in execution order.</div>'
-    + '<div class="section"><span class="label">Colors mean:</span><br>'
-    + '<span class="good">Green</span> = tool call is semantically close to user intent (similarity &gt; 0.5)<br>'
-    + '<span class="warn">Yellow</span> = moderate drift (0.15 - 0.5) — agent is tangenting but may be legitimate<br>'
-    + '<span class="bad">Red</span> = strong drift (&lt; 0.15) — agent is doing something unrelated to the request</div>'
-    + '<div class="section"><span class="label">What to watch for:</span><br>'
-    + '- <span class="good">Smooth arc</span> = healthy session, agent stays on task<br>'
-    + '- <span class="bad">Sharp angle + color snap</span> = injection point — the exact tool call where control was hijacked<br>'
-    + '- Gradual yellow drift that returns to green = legitimate tangent (reading docs to fix a bug)</div>'
-    + '<div class="muted">Hover any node to see tool name, similarity score, and delta from previous step.</div>',
-
-  clusters: '<h3>Reading: Workflow Clusters</h3>'
-    + '<div class="section"><span class="label">What you see:</span> Each dot is a completed session, positioned by its tool-call sequence fingerprint. Transparent spheres are learned workflow clusters.</div>'
-    + '<div class="section"><span class="label">Cluster labels:</span> Derived from tool patterns — <em>research</em> (read + web_fetch), <em>coding</em> (read + edit + exec), <em>testing</em> (heavy exec), <em>communication</em> (message-heavy), etc.</div>'
-    + '<div class="section"><span class="label">What to watch for:</span><br>'
-    + '- <span class="good">Dots inside clouds</span> = known workflow, agent is doing something it has done before<br>'
-    + '- <span class="bad">Red dots outside all clouds</span> = novel sequence this agent has never exhibited — suspicious<br>'
-    + '- Clusters that grow tighter over time = agent behavior is stabilizing (immune system maturing)</div>'
-    + '<div class="muted">More sessions = more reliable clusters. Learning phase (&lt;5 sessions) has loose boundaries.</div>',
-
-  coherence: '<h3>Reading: Causal Coherence</h3>'
-    + '<div class="section"><span class="label">What you see:</span> Pairs of points connected by lines. <span style="color:#3b82f6">Blue</span> = tool result (what the model received). <span style="color:#f97316">Orange</span> = next action (what the model decided to do).</div>'
-    + '<div class="section"><span class="label">Line length = causal distance:</span><br>'
-    + '<span class="good">Short green line</span> = result and action are semantically related (read Python file → edit Python file)<br>'
-    + '<span class="warn">Medium yellow line</span> = weak but plausible connection<br>'
-    + '<span class="bad">Long red line</span> = result and action are unrelated — the model did something that does not follow from what it just read</div>'
-    + '<div class="section"><span class="label">Why this catches injections:</span><br>'
-    + 'An injection MUST break the causal link — its purpose is to make the model do something unrelated to what it consumed. '
-    + 'A long red line is the injection fingerprint. The exact pair where the line stretches is where control was hijacked.</div>'
-    + '<div class="muted">Z-score flagging activates after 3+ observations of each transition type (e.g. read to edit).</div>',
-
-  delegation: '<h3>Reading: Delegation Tree</h3>'
-    + '<div class="section"><span class="label">What you see:</span> A radial tree. <span class="good">Green center</span> = root agent (talks to user). <span style="color:#3b82f6">Blue</span> = first-level delegates. <span style="color:#a855f7">Purple</span> = sub-delegates (depth 2+).</div>'
-    + '<div class="section"><span class="label">Distance from center:</span> = drift from the user original intent. Sub-agents close to center are still aligned with what the user asked for. Agents far from center have diverged.</div>'
-    + '<div class="section"><span class="label">What to watch for:</span><br>'
-    + '- <span class="good">Tight tree</span> = all agents working coherently toward user goal<br>'
-    + '- <span class="bad">An arm stretching far out</span> = a sub-agent has been hijacked — it drifted from both its delegation instruction AND the root intent<br>'
-    + '- Sub-agents get tighter thresholds (0.10 vs 0.15) because they should be MORE focused, not less</div>'
-    + '<div class="muted">Lines show parent to child delegation. Hover nodes to see delegation message and coherence scores.</div>',
-
-  evolution: '<h3>Reading: Agent Evolution</h3>'
-    + '<div class="section"><span class="label">What you see:</span> A trail of connected spheres showing how an agent behavioral centroid migrates through vector space over its lifetime. Each sphere is a snapshot taken every 5 sessions.</div>'
-    + '<div class="section"><span class="label">Colors mean:</span><br>'
-    + '<span style="color:#f97316">Orange</span> = learning phase (&lt;5 sessions) — profile is unstable, boundaries loose<br>'
-    + '<span style="color:#eab308">Yellow</span> = reliable phase (5-49 sessions) — patterns forming, anomaly detection active<br>'
-    + '<span class="good">Green</span> = mature phase (50+ sessions) — stable behavioral fingerprint, tight boundaries</div>'
-    + '<div class="section"><span class="label">What to watch for:</span><br>'
-    + '- <span class="good">Converging trail</span> = agent behavior is stabilizing, immune system maturing<br>'
-    + '- <span class="warn">Wandering trail</span> = agent does different things each session — may need investigation<br>'
-    + '- <span class="label">Behavior labels</span> change along the trail (research → coding → testing) — shows how the agent role evolves<br>'
-    + '- Cluster spheres show what workflow regions the agent inhabits at each point in time</div>'
-    + '<div class="section"><span class="label">Timeline controls:</span> Select an agent from the dropdown. Use the slider or Play button to scrub through time. The trail draws progressively.</div>'
-    + '<div class="muted">Data accumulates as agents complete sessions. Snapshots every 5 sessions.</div>',
-};
-
-function updateGuide(view) {
-  const el = document.getElementById('guide');
-  el.innerHTML = guides[view] || '';
-}
-
-window.toggleGuide = function() {
-  const el = document.getElementById('guide');
-  if (el.style.display === 'block') {
-    el.style.display = 'none';
-  } else {
-    el.style.display = 'block';
-    updateGuide(currentView);
-  }
-};
-
-// ─── Evolution view state ───
-let evoFrames = [];
-let evoPlaying = false;
-let evoPlayInterval = null;
-let evoTrailMeshes = [];
-
-async function loadEvolution() {
-  const select = document.getElementById('agent-select');
-  const buildId = select.value;
-  if (!buildId) return;
-
-  const resp = await fetch(BASE + '/api/viz/projection?view=evolution&buildId=' + buildId);
-  const data = await resp.json();
-  evoFrames = data.frames || [];
-
-  const slider = document.getElementById('time-slider');
-  slider.max = Math.max(0, evoFrames.length - 1);
-  slider.value = evoFrames.length - 1;
-
-  renderEvolutionFrame(evoFrames.length - 1);
-}
-
-function renderEvolutionFrame(frameIdx) {
-  clearScene();
-  for (const m of evoTrailMeshes) {
-    scene.remove(m);
-    if (m.geometry) m.geometry.dispose();
-    if (m.material) m.material.dispose();
-  }
-  evoTrailMeshes = [];
-
-  if (evoFrames.length === 0) {
-    const select = document.getElementById('agent-select');
-    const agentName = select?.selectedOptions?.[0]?.text || 'agent';
-    const label = makeLabel(agentName + ': no completed sessions yet', '#eab308');
-    label.position.set(0, 2.5, 0);
-    label.scale.multiplyScalar(1.5);
-    scene.add(label);
-    pointMeshes.push(label);
-    const hint = makeLabel('Sessions record on completion — check back after agent finishes work', '#64748b');
-    hint.position.set(0, 1.2, 0);
-    hint.scale.multiplyScalar(1.5);
-    scene.add(hint);
-    pointMeshes.push(hint);
-    updateEvolutionInfo(null);
-    return;
-  }
-
-  const visibleFrames = evoFrames.slice(0, frameIdx + 1);
-
-  // Draw trail — connected spheres with color by maturity
-  const trailPoints = [];
-  for (let i = 0; i < visibleFrames.length; i++) {
-    const f = visibleFrames[i];
-    const [x, y, z] = f.position || [0, 0, 0];
-    const isLast = i === visibleFrames.length - 1;
-    const size = isLast ? 0.25 : 0.12;
-
-    const matColor = f.maturity === 'mature' ? '#22c55e'
-      : f.maturity === 'reliable' ? '#eab308' : '#f97316';
-
-    const geo = new THREE.SphereGeometry(size, 16, 16);
-    const mat = new THREE.MeshPhongMaterial({
-      color: matColor, emissive: matColor, emissiveIntensity: isLast ? 0.5 : 0.2,
-    });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(x, z || 0, y);
-    mesh.userData = {
-      label: f.behaviorLabel || 'unknown',
-      metadata: { session: f.sessionCount, maturity: f.maturity, shift: f.centroidShift },
-    };
-    scene.add(mesh);
-    pointMeshes.push(mesh);
-    trailPoints.push(new THREE.Vector3(x, z || 0, y));
-
-    // Label on current frame and every 3rd frame
-    if (isLast || i % 3 === 0) {
-      const lbl = f.behaviorLabel || ('session ' + f.sessionCount);
-      const sprite = makeLabel(isLast ? lbl.toUpperCase() : lbl, matColor);
-      sprite.position.set(x, (z || 0) + (isLast ? 0.5 : 0.3), y);
-      if (isLast) sprite.scale.multiplyScalar(1.3);
-      scene.add(sprite);
-      pointMeshes.push(sprite);
-    }
-  }
-
-  // Trail line
-  if (trailPoints.length >= 2) {
-    const geo = new THREE.BufferGeometry().setFromPoints(trailPoints);
-    const mat = new THREE.LineBasicMaterial({ color: '#a855f7', linewidth: 2 });
-    const line = new THREE.Line(geo, mat);
-    scene.add(line);
-    evoTrailMeshes.push(line);
-  }
-
-  // Draw clusters for the current frame
-  const currentFrame = visibleFrames[visibleFrames.length - 1];
-  if (currentFrame && currentFrame.clusters) {
-    for (const cl of currentFrame.clusters) {
-      const [cx, cy, cz] = cl.position || [0, 0, 0];
-      const geo = new THREE.SphereGeometry(Math.max(0.3, cl.radius * 3), 32, 32);
-      const mat = new THREE.MeshPhongMaterial({
-        color: '#3b82f6', transparent: true, opacity: 0.08, side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(cx, cz || 0, cy);
-      scene.add(mesh);
-      clusterMeshes.push(mesh);
-
-      if (cl.label) {
-        const sprite = makeLabel(cl.label.toUpperCase(), '#3b82f6');
-        sprite.position.set(cx, (cz || 0) + Math.max(0.3, cl.radius * 3) + 0.4, cy);
-        scene.add(sprite);
-        clusterMeshes.push(sprite);
-      }
-    }
-  }
-
-  updateEvolutionInfo(currentFrame);
-}
-
-function updateEvolutionInfo(frame) {
-  const el = document.getElementById('time-label');
-  if (!frame) { el.textContent = 'No data'; return; }
-  const date = new Date(frame.timestamp).toLocaleDateString();
-  el.textContent = 'Session ' + frame.sessionCount + ' | ' + frame.maturity + ' | ' + (frame.behaviorLabel || '?') + ' | ' + date;
-}
-
-function scrubTimeline(val) {
-  renderEvolutionFrame(parseInt(val));
-}
-
-window.togglePlay = function() {
-  if (evoPlaying) {
-    clearInterval(evoPlayInterval);
-    evoPlaying = false;
-    document.getElementById('play-btn').textContent = 'Play';
-  } else {
-    evoPlaying = true;
-    document.getElementById('play-btn').textContent = 'Pause';
-    const slider = document.getElementById('time-slider');
-    slider.value = 0;
-    renderEvolutionFrame(0);
-    evoPlayInterval = setInterval(() => {
-      const v = parseInt(slider.value) + 1;
-      if (v >= evoFrames.length) {
-        clearInterval(evoPlayInterval);
-        evoPlaying = false;
-        document.getElementById('play-btn').textContent = 'Play';
-        return;
-      }
-      slider.value = v;
-      renderEvolutionFrame(v);
-    }, 800);
-  }
-};
-
-// Tooltip on hover
-const raycaster = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
-const tooltip = document.getElementById('tooltip');
-
-document.addEventListener('mousemove', (e) => {
-  if (!camera || !renderer) return;
-  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
-  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
-  raycaster.setFromCamera(mouse, camera);
-  const intersects = raycaster.intersectObjects(pointMeshes);
-  if (intersects.length > 0) {
-    const obj = intersects[0].object;
-    const ud = obj.userData;
-    tooltip.style.display = 'block';
-    tooltip.style.left = (e.clientX + 12) + 'px';
-    tooltip.style.top = (e.clientY + 12) + 'px';
-    let html = '<strong>' + (ud.label || '?') + '</strong>';
-    if (ud.metadata) {
-      for (const [k, v] of Object.entries(ud.metadata)) {
-        const val = typeof v === 'number' ? v.toFixed(3) : String(v).slice(0, 60);
-        html += '<br><span style="color:#64748b">' + k + ':</span> ' + val;
-      }
-    }
-    tooltip.innerHTML = html;
-  } else {
-    tooltip.style.display = 'none';
-  }
-});
-
-// Init
-init();
-loadView('trajectory');
-// Auto-show guide on first visit
-document.getElementById('guide').style.display = 'block';
-updateGuide('trajectory');
-
-// Auto-refresh every 5 seconds (skip evolution — it has its own controls)
-setInterval(() => {
-  if (currentView !== 'evolution') loadView(currentView);
-}, 5000);
-</script>
-</body>
-</html>`;
+// (3D Visualization removed — replaced by inline Timeline tab)
