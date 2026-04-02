@@ -12,7 +12,7 @@ import type { AgentBaseline } from "../src/profiler-types.js";
 import { resolveConfig } from "../src/config.js";
 import { PolicyEngine } from "../src/policy.js";
 import { BaselineStore } from "../src/profiler-store.js";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -83,6 +83,7 @@ describe("RuleSuggestionEngine", () => {
     expect(suppressSuggestion!.agentBuildId).toBe("agent001");
     expect(suppressSuggestion!.confidence).toBeGreaterThan(0);
     expect(suppressSuggestion!.impact).toContain("events/day");
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("suggests widening thresholds when >50% events are drift/coherence", () => {
@@ -180,6 +181,7 @@ describe("RuleSuggestionEngine", () => {
 
     const policy = policyEngine.getPolicy("agent001");
     expect(policy.injectionDisabledSignatures).toContain("test_sig");
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("accepts widen_threshold suggestion and creates policy note", () => {
@@ -200,6 +202,7 @@ describe("RuleSuggestionEngine", () => {
     engine.acceptSuggestion(suggestion, policyEngine);
     const policy = policyEngine.getPolicy("agent001");
     expect(policy.notes).toContain("Auto-widened");
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("sorts suggestions by confidence descending", () => {
@@ -243,6 +246,7 @@ describe("RuleSuggestionEngine", () => {
         expect(suggestions[i - 1].confidence).toBeGreaterThanOrEqual(suggestions[i].confidence);
       }
     }
+    rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("prunes stale dismissed entries", () => {

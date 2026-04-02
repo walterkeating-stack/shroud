@@ -5,7 +5,7 @@
  * anomaly detection, baseline store, and session lifecycle.
  */
 
-import { describe, test, expect, beforeEach, afterAll } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -226,6 +226,10 @@ describe("BaselineStore — File Persistence", () => {
     store = new BaselineStore(tempDir);
   });
 
+  afterEach(() => {
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
+  });
+
   test("load returns null for nonexistent build", () => {
     expect(store.load("nonexistent")).toBeNull();
   });
@@ -369,6 +373,10 @@ describe("BehaviouralProfiler — Feature Extraction", () => {
       { mode: "learning", sigma: 3, minBaseline: 5, profileDir: tempDir },
       new BaselineStore(tempDir),
     );
+  });
+
+  afterEach(() => {
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch {}
   });
 
   test("extract request features from text", () => {

@@ -3,7 +3,8 @@
  * contrastive trainer, embedding extraction, end-to-end separation.
  */
 
-import { describe, test, expect, beforeEach } from "vitest";
+import { describe, test, expect, beforeEach, afterAll } from "vitest";
+import { rmSync, readdirSync } from "node:fs";
 import { l2Distance, l2Normalize, cosineSimilarity } from "../src/transformer/linalg.js";
 import { MiniTransformer, DEFAULT_CONFIG, flattenWeightsList } from "../src/transformer/model.js";
 import { ToolTokenizer } from "../src/transformer/tokenizer.js";
@@ -123,6 +124,14 @@ describe("tripletLoss", () => {
 
 describe("AttackTraceStore", () => {
   let store: AttackTraceStore;
+
+  afterAll(() => {
+    try {
+      for (const d of readdirSync("/tmp").filter(f => f.startsWith("shroud-test-traces"))) {
+        try { rmSync("/tmp/" + d, { recursive: true, force: true }); } catch {}
+      }
+    } catch {}
+  });
 
   beforeEach(() => {
     store = new AttackTraceStore("/tmp/shroud-test-traces-" + Date.now());

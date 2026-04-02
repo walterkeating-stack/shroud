@@ -6,7 +6,8 @@
  * drops near zero, it signals the agent has been hijacked away from the user's request.
  */
 
-import { describe, test, expect, beforeEach } from "vitest";
+import { describe, test, expect, beforeEach, afterAll } from "vitest";
+import { rmSync, readdirSync } from "node:fs";
 import { MiniTransformer, DEFAULT_CONFIG } from "../src/transformer/model.js";
 import { TransformerScorer, DEFAULT_SCORER_CONFIG } from "../src/transformer/scorer.js";
 import { ThreatClass } from "../src/security-event.js";
@@ -86,6 +87,14 @@ describe("intentAttention in ForwardCache", () => {
 
 describe("intentAttention in scorer", () => {
   let scorer: TransformerScorer;
+
+  afterAll(() => {
+    try {
+      for (const d of readdirSync("/tmp").filter(f => f.startsWith("shroud-test-intent-") || f.startsWith("shroud-test-hijack-") || f.startsWith("shroud-test-no-hijack-") || f.startsWith("shroud-test-stats-") || f.startsWith("shroud-test-reset-"))) {
+        try { rmSync("/tmp/" + d, { recursive: true, force: true }); } catch {}
+      }
+    } catch {}
+  });
 
   beforeEach(() => {
     scorer = new TransformerScorer("/tmp/shroud-test-intent-attn-" + Date.now(), {

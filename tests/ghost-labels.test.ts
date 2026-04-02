@@ -6,7 +6,7 @@
  * (1,157 entries across 6 distinct patterns).
  */
 
-import { describe, test, expect, beforeEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { AgentSessionTracker, _isValidAgentLabel, normalizeLabel } from "../src/agent-session.js";
 import { writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
@@ -268,6 +268,10 @@ describe("loadFromFile ghost filtering", () => {
     tmpDir = join(tmpdir(), `shroud-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpDir, { recursive: true });
     filePath = join(tmpDir, "agent-sessions.json");
+  });
+
+  afterEach(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
   });
 
   function writeSessions(sessions: any[]) {

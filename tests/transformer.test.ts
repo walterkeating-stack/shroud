@@ -2,7 +2,8 @@
  * Mini transformer tests — linalg, tokenizer, model, training, scoring.
  */
 
-import { describe, test, expect, beforeEach } from "vitest";
+import { describe, test, expect, beforeEach, afterAll } from "vitest";
+import { rmSync, readdirSync } from "node:fs";
 import {
   matmul, matmulTransB, matmulTransA, addBias,
   softmax, softmaxRows, layerNorm, gelu, geluBackward,
@@ -360,6 +361,14 @@ describe("TransformerTrainer", () => {
 // ─── Scorer ───
 
 describe("TransformerScorer", () => {
+  afterAll(() => {
+    try {
+      for (const d of readdirSync("/tmp").filter(f => f.startsWith("shroud-test-transformer-") || (f.startsWith("shroud-test-") && !f.includes("traces")))) {
+        try { rmSync("/tmp/" + d, { recursive: true, force: true }); } catch {}
+      }
+    } catch {}
+  });
+
   test("cold start returns neutral scores", () => {
     const scorer = new TransformerScorer("/tmp/shroud-test-transformer-" + Date.now());
     const prediction = scorer.scoreToolCall(["read", "edit"], "exec");
