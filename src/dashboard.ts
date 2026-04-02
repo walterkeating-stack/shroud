@@ -2007,6 +2007,7 @@ async function refresh() {
     document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
   } catch (err) {
     document.getElementById('lastUpdate').textContent = 'Error: ' + err.message;
+    document.getElementById('content').innerHTML = '<div class="card"><h2 style="color:var(--critical)">Dashboard Error</h2><pre style="color:var(--text-muted);white-space:pre-wrap">' + err.message + '\\n' + (err.stack || '') + '</pre></div>';
   }
 }
 // Agent detail view
@@ -2102,13 +2103,13 @@ function switchTab(tab) {
     el.style.display = t === tab ? (t === 'overview' ? 'grid' : 'block') : 'none';
   }
   if (tab === 'overview') refresh();
-  else if (tab === 'agents') renderAgents();
   else if (tab === 'events') renderEvents();
   else if (tab === 'tripwires') renderTripwires();
   else if (tab === 'rules') refreshRules();
   else if (tab === 'signatures') renderSignatures();
   else if (tab === 'transformer') renderTransformer();
   else if (tab === 'timeline') renderTimeline();
+}
 
 function showToast(msg, isError) {
   const t = document.getElementById('toast');
