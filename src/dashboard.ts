@@ -604,7 +604,7 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
       agents.push({
         agentLabel: app.agentLabel, agentBuildId: app.agentBuildId || "",
         sessionId: "", llmCallCount: app.requestCount || 0,
-        channels: [app.channel || "app"], classification: { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+        channels: [app.channel || "app"], classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
         toolInventory: [], startedAt: Date.now() - (app.uptimeMs || 0),
         lastCallAt: Date.now(), securityEventCount: app.securityEvents || 0, detectedModel: "app-server",
         channelSource: "app-server", soulExtract: "",

@@ -77,12 +77,18 @@ const APP_SESSIONS_FILE = process.env.SHROUD_APP_SESSIONS_FILE || "/tmp/shroud-a
 let SecurityEventBus = null;
 let InjectionDetector = null;
 let scanToolCall = null;
+let classifyAgent = null;
+let classifyAgentWithTools = null;
 let securityBus = null;
 let injectionDetector = null;
 let securityEnabled = false;
 
 // Tool sequence tracking (for profiling + transformer)
 const toolSequence = [];
+// Agent classification (inferred from text on first obfuscate calls)
+let agentClassification = null;
+let classificationTextSampled = 0;
+let classificationTextBuffer = "";
 
 try {
   const secMod = await import(pathToFileURL(resolve(shroudDist, "security-event.js")).href);
@@ -93,6 +99,10 @@ try {
 
   const guardMod = await import(pathToFileURL(resolve(shroudDist, "detectors", "tool-guard.js")).href);
   scanToolCall = guardMod.scanToolCall;
+
+  const agentMod = await import(pathToFileURL(resolve(shroudDist, "agent-session.js")).href);
+  classifyAgent = agentMod.classifyAgent;
+  classifyAgentWithTools = agentMod.classifyAgentWithTools;
 
   if (config.injectionDetection !== "off") {
     securityBus = new SecurityEventBus(5000, 60_000);
@@ -213,6 +223,8 @@ function dumpSessionFile() {
       uptimeMs: Date.now() - startTime,
       securityEvents: securityBus ? securityBus.getEvents().length : 0,
       storeSize: getObfuscator().getStats().storeMappings ?? 0,
+      classification: agentClassification,
+      toolSequence: toolSequence.slice(-20),
       updatedAt: new Date().toISOString(),
     };
     writeFileSync(APP_SESSIONS_FILE, JSON.stringify(session, null, 2) + "\n");
@@ -245,6 +257,30 @@ function requireIdentified(id) {
       'Agent not identified. Call "identify" with {agent, version} before obfuscate/deobfuscate.');
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// Agent classification from obfuscation text
+// ---------------------------------------------------------------------------
+
+function maybeClassify(text) {
+  // Classify on the first 5 obfuscate calls — enough to see system prompt + context
+  if (!classifyAgent || agentClassification?.confidencePct >= 70 || classificationTextSampled >= 5) return;
+  classificationTextBuffer += " " + text;
+  classificationTextSampled++;
+
+  if (classificationTextSampled >= 2) {
+    // Classify from accumulated text + agent label + tool sequence
+    agentClassification = toolSequence.length > 0 && classifyAgentWithTools
+      ? classifyAgentWithTools(agentLabel || "app-client", classificationTextBuffer, toolSequence)
+      : classifyAgent(agentLabel || "app-client", classificationTextBuffer);
+
+    if (agentClassification.confidencePct >= 40) {
+      process.stderr.write(
+        `[app-server] Agent classified: ${agentClassification.role} (${agentClassification.confidencePct}%)\n`
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -312,6 +348,9 @@ function handleObfuscate(id, params) {
 
   const obf = resolvePartition(params);
   const text = params.text;
+
+  // Classify agent from early obfuscation text (system prompt + context)
+  maybeClassify(text);
 
   // Injection scan on inbound text
   const injectionEvents = scanForInjections(text, "request");
