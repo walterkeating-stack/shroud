@@ -1757,13 +1757,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // has fake text. Returning { content } forces OpenClaw to use our text
     // instead of falling back to the original payload.
     if (typeof event.content === "string") {
-      const deobfuscated = ob().deobfuscate(event.content);
-      if (deobfuscated !== event.content) {
+      const { text: deobfuscated, replacementCount: _msRc } = ob().deobfuscateWithStats(event.content);
+      if (_msRc > 0) {
+        agentTracker.recordDeobfuscation(_msRc);
         api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
         if (auditActive) {
           try {
-            const { replacementCount } = ob().deobfuscateWithStats(event.content);
-            emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount);
+            emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), _msRc);
           } catch { /* best-effort */ }
         }
         dumpStatsFile(obfuscator);
@@ -1897,9 +1897,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (target?.content && Array.isArray(target.content)) {
           for (const block of target.content) {
             if (block?.type === "text" && typeof block.text === "string") {
-              const deob = ob().deobfuscate(block.text);
+              const { text: deob, replacementCount: _esRc } = ob().deobfuscateWithStats(block.text);
               if (deob !== block.text) {
                 block.text = deob;
+                if (_esRc > 0) agentTracker.recordDeobfuscation(_esRc);
               }
             }
           }
@@ -1921,7 +1922,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   (globalThis as any).__shroudDeobfuscate = (text: string): string => {
     if (typeof text !== "string") return text;
-    return ob().deobfuscate(text);
+    const { text: deob, replacementCount: _gdRc } = ob().deobfuscateWithStats(text);
+    if (_gdRc > 0) agentTracker.recordDeobfuscation(_gdRc);
+    return deob;
   };
 
   // -----------------------------------------------------------------------
