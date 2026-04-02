@@ -6,6 +6,10 @@
  * Wraps the Shroud obfuscation engine and exposes all APP methods
  * over newline-delimited JSON-RPC on stdio.
  *
+ * Security extension: when security modules are available (feature/transformer
+ * build), the APP server integrates injection detection, agent tracking, and
+ * event shipping. Clients MUST call `identify` before obfuscate/deobfuscate.
+ *
  * Usage:
  *   node app-server.mjs [dist-path]
  *
@@ -13,13 +17,15 @@
  *   SHROUD_PLUGIN_CONFIG   JSON config for the engine
  *   SHROUD_STORE_FILE      Persistent store file path
  *   SHROUD_STATS_FILE      Stats dump file path
+ *   SHROUD_APP_EVENTS_FILE JSONL file for security events (dashboard bridge)
+ *   SHROUD_APP_SESSIONS_FILE JSON file for agent sessions (dashboard bridge)
  */
 
 import { createHash, randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { resolve, dirname } from "node:path";
-import { writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync, appendFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +67,58 @@ let obfuscator = new Obfuscator(config);
 
 const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
 const STORE_FILE = process.env.SHROUD_STORE_FILE || "";
+const APP_EVENTS_FILE = process.env.SHROUD_APP_EVENTS_FILE || "/tmp/shroud-app-events.jsonl";
+const APP_SESSIONS_FILE = process.env.SHROUD_APP_SESSIONS_FILE || "/tmp/shroud-app-sessions.json";
+
+// ---------------------------------------------------------------------------
+// Security modules (optional — degrade gracefully if not built)
+// ---------------------------------------------------------------------------
+
+let SecurityEventBus = null;
+let InjectionDetector = null;
+let securityBus = null;
+let injectionDetector = null;
+let securityEnabled = false;
+
+try {
+  const secMod = await import(pathToFileURL(resolve(shroudDist, "security-event.js")).href);
+  SecurityEventBus = secMod.SecurityEventBus;
+
+  const injMod = await import(pathToFileURL(resolve(shroudDist, "detectors", "injection.js")).href);
+  InjectionDetector = injMod.InjectionDetector;
+
+  if (config.injectionDetection !== "off") {
+    securityBus = new SecurityEventBus(5000, 60_000);
+    injectionDetector = new InjectionDetector({
+      action: config.injectionDetection || "flag",
+      disabledSignatures: new Set(config.injectionDisabledSignatures || []),
+      minSeverity: config.injectionMinSeverity || "low",
+      scanResponses: config.injectionScanResponses ?? false,
+    });
+    securityEnabled = true;
+
+    // Ship events to JSONL file for dashboard bridge
+    securityBus.onEvent((event) => {
+      try {
+        appendFileSync(APP_EVENTS_FILE, JSON.stringify(event) + "\n");
+      } catch { /* best-effort */ }
+    });
+
+    process.stderr.write(`[app-server] Security enabled: injection=${config.injectionDetection || "flag"}\n`);
+  }
+} catch {
+  process.stderr.write("[app-server] Security modules not available (core-only build)\n");
+}
+
+// ---------------------------------------------------------------------------
+// Agent identity (required before obfuscate/deobfuscate)
+// ---------------------------------------------------------------------------
+
+let agentIdentified = false;
+let agentLabel = null;
+let agentBuildId = null;
+let agentVersion = null;
+let agentChannel = null;
 
 // ---------------------------------------------------------------------------
 // Audit chain
@@ -131,6 +189,30 @@ function dumpStats() {
 }
 
 // ---------------------------------------------------------------------------
+// Session file dump (for dashboard visibility)
+// ---------------------------------------------------------------------------
+
+function dumpSessionFile() {
+  if (!agentIdentified) return;
+  try {
+    const session = {
+      agentLabel,
+      agentBuildId,
+      agentVersion,
+      channel: agentChannel,
+      source: "app-server",
+      pid: process.pid,
+      requestCount,
+      uptimeMs: Date.now() - startTime,
+      securityEvents: securityBus ? securityBus.getEvents().length : 0,
+      storeSize: getObfuscator().getStats().storeMappings ?? 0,
+      updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(APP_SESSIONS_FILE, JSON.stringify(session, null, 2) + "\n");
+  } catch { /* best-effort */ }
+}
+
+// ---------------------------------------------------------------------------
 // JSON-RPC helpers
 // ---------------------------------------------------------------------------
 
@@ -140,6 +222,7 @@ const ERR_NO_METHOD   = -32601;
 const ERR_BAD_PARAMS  = -32602;
 const ERR_INTERNAL    = -32603;
 const ERR_ENGINE      = -32000;
+const ERR_NOT_IDENTIFIED = -32001;
 
 function jsonError(id, code, message) {
   return JSON.stringify({ id: id ?? null, error: { code, message } });
@@ -149,17 +232,87 @@ function jsonResult(id, result) {
   return JSON.stringify({ id, result });
 }
 
+function requireIdentified(id) {
+  if (!agentIdentified) {
+    return jsonError(id, ERR_NOT_IDENTIFIED,
+      'Agent not identified. Call "identify" with {agent, version} before obfuscate/deobfuscate.');
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Injection scanning helper
+// ---------------------------------------------------------------------------
+
+function scanForInjections(text, direction) {
+  if (!injectionDetector || !securityBus) return [];
+  try {
+    const events = direction === "request"
+      ? injectionDetector.scanRequest(text)
+      : injectionDetector.scanResponse(text);
+    for (const evt of events) {
+      evt.agentBuildId = agentBuildId;
+      evt.agentLabel = agentLabel;
+      evt.source = "app-server";
+      securityBus.emit(evt);
+    }
+    return events;
+  } catch { return []; }
+}
+
 // ---------------------------------------------------------------------------
 // APP method handlers
 // ---------------------------------------------------------------------------
 
+function handleIdentify(id, params) {
+  if (!params || typeof params.agent !== "string" || !params.agent.trim()) {
+    return jsonError(id, ERR_BAD_PARAMS, 'Missing required param: agent (string)');
+  }
+  if (typeof params.version !== "string" || !params.version.trim()) {
+    return jsonError(id, ERR_BAD_PARAMS, 'Missing required param: version (string)');
+  }
+
+  agentLabel = params.agent.trim();
+  agentVersion = params.version.trim();
+  agentChannel = (params.channel || "app").trim();
+  agentBuildId = createHash("sha256")
+    .update(agentLabel + ":" + agentVersion)
+    .digest("hex")
+    .slice(0, 16);
+  agentIdentified = true;
+
+  process.stderr.write(
+    `[app-server] Agent identified: ${agentLabel} v${agentVersion} (${agentChannel}) buildId=${agentBuildId}\n`
+  );
+
+  dumpSessionFile();
+
+  return jsonResult(id, {
+    ok: true,
+    agent: agentLabel,
+    buildId: agentBuildId,
+    security: securityEnabled,
+  });
+}
+
 function handleObfuscate(id, params) {
+  const gate = requireIdentified(id);
+  if (gate) return gate;
+
   if (!params || typeof params.text !== "string") {
     return jsonError(id, ERR_BAD_PARAMS, "Missing required param: text");
   }
 
   const obf = resolvePartition(params);
   const text = params.text;
+
+  // Injection scan on inbound text
+  const injectionEvents = scanForInjections(text, "request");
+  if (config.injectionDetection === "block" && injectionEvents.some(e => e.severity === "high")) {
+    return jsonError(id, ERR_ENGINE,
+      `Request blocked: injection detected (${injectionEvents[0].threatClass})`);
+  }
+
   const out = obf.obfuscate(text);
 
   const categories = {};
@@ -191,6 +344,7 @@ function handleObfuscate(id, params) {
 
   const maxFakes = config.auditMaxFakesSample || 3;
   audit.fakesSample = Object.values(out.mappingsUsed || {}).slice(0, maxFakes);
+  if (injectionEvents.length > 0) audit.securityEvents = injectionEvents.length;
   result.audit = audit;
 
   dumpStats();
@@ -198,6 +352,9 @@ function handleObfuscate(id, params) {
 }
 
 function handleDeobfuscate(id, params) {
+  const gate = requireIdentified(id);
+  if (gate) return gate;
+
   if (!params || typeof params.text !== "string") {
     return jsonError(id, ERR_BAD_PARAMS, "Missing required param: text");
   }
@@ -208,6 +365,9 @@ function handleDeobfuscate(id, params) {
   const deobResult = obf.deobfuscateWithStats
     ? obf.deobfuscateWithStats(text)
     : { text: obf.deobfuscate(text), replacementCount: 0, replacementsByCategory: {} };
+
+  // Scan deobfuscated output for exfiltration markers
+  const injectionEvents = scanForInjections(deobResult.text, "response");
 
   const stats = obf.getStats();
 
@@ -229,6 +389,7 @@ function handleDeobfuscate(id, params) {
       ts: Date.now(),
     }),
   };
+  if (injectionEvents.length > 0) audit.securityEvents = injectionEvents.length;
   result.audit = audit;
 
   dumpStats();
@@ -236,6 +397,9 @@ function handleDeobfuscate(id, params) {
 }
 
 function handleBatch(id, params) {
+  const gate = requireIdentified(id);
+  if (gate) return gate;
+
   if (!params || !Array.isArray(params.operations)) {
     return jsonError(id, ERR_BAD_PARAMS, "Missing required param: operations (array)");
   }
@@ -246,6 +410,11 @@ function handleBatch(id, params) {
     const obf = resolvePartition(opParams);
 
     if (op.direction === "obfuscate") {
+      const injEvents = scanForInjections(op.text || "", "request");
+      if (config.injectionDetection === "block" && injEvents.some(e => e.severity === "high")) {
+        results.push({ error: `Blocked: injection detected (${injEvents[0].threatClass})` });
+        continue;
+      }
       const out = obf.obfuscate(op.text || "");
       const categories = {};
       for (const e of out.entities) {
@@ -383,6 +552,7 @@ function handleConfigure(id, params) {
 
 function handleShutdown(id) {
   dumpStats();
+  dumpSessionFile();
   const response = jsonResult(id, { ok: true, flushed: true });
   process.stdout.write(response + "\n");
   process.exit(0);
@@ -408,11 +578,45 @@ function handleSetPartition(id, params) {
   });
 }
 
+function handleSecurity(id) {
+  if (!securityBus) {
+    return jsonResult(id, { enabled: false });
+  }
+
+  const events = securityBus.getEvents();
+  const byThreatClass = {};
+  for (const e of events) {
+    byThreatClass[e.threatClass] = (byThreatClass[e.threatClass] || 0) + 1;
+  }
+
+  return jsonResult(id, {
+    enabled: true,
+    mode: config.injectionDetection || "flag",
+    events: events.length,
+    byThreatClass,
+    agent: agentIdentified ? {
+      label: agentLabel,
+      buildId: agentBuildId,
+      version: agentVersion,
+      channel: agentChannel,
+      requestCount,
+    } : null,
+    recentEvents: events.slice(-10).map(e => ({
+      threatClass: e.threatClass,
+      severity: e.severity,
+      action: e.action,
+      timestamp: e.timestamp,
+      description: e.description?.slice(0, 200),
+    })),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
 const METHODS = {
+  identify: handleIdentify,
   obfuscate: handleObfuscate,
   deobfuscate: handleDeobfuscate,
   batch: handleBatch,
@@ -422,6 +626,7 @@ const METHODS = {
   configure: handleConfigure,
   shutdown: handleShutdown,
   setPartition: handleSetPartition,
+  security: handleSecurity,
 };
 
 function dispatch(line) {
@@ -468,6 +673,9 @@ function dispatch(line) {
   }
 
   totalProcessingMs += Date.now() - t0;
+
+  // Periodic session file dump
+  if (requestCount % 10 === 0) dumpSessionFile();
 }
 
 // ---------------------------------------------------------------------------
@@ -491,8 +699,11 @@ const heartbeatInterval = setInterval(() => {
       avgLatencyMs,
       storeSize: stats.storeMappings ?? 0,
       memoryMB: Math.round(process.memoryUsage().rss / 1024 / 1024),
+      agent: agentLabel,
+      security: securityEnabled,
     };
     process.stderr.write(JSON.stringify(hb) + "\n");
+    dumpSessionFile();
   } catch { /* best-effort */ }
 }, 30_000);
 
@@ -515,7 +726,15 @@ const handshake = {
     "configure",
     "audit",
     "partitions",
+    // Security capabilities (advertised even if not active, so clients know the protocol)
+    "identify",
+    "security",
   ],
+  security: securityEnabled ? {
+    injectionDetection: config.injectionDetection || "flag",
+    scanResponses: config.injectionScanResponses ?? false,
+    requireIdentify: true,
+  } : null,
 };
 
 process.stderr.write(`[app-server] Starting APP server v${engineVersion}\n`);
@@ -530,5 +749,6 @@ rl.on("line", dispatch);
 rl.on("close", () => {
   clearInterval(heartbeatInterval);
   dumpStats();
+  dumpSessionFile();
   process.exit(0);
 });
