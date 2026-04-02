@@ -2892,7 +2892,7 @@ async function renderTimeline() {
         if (tools.length === 0) continue;
 
         html += '<div style="margin-bottom:8px;padding-left:18px">';
-        html += '<div onclick="toggleSession(\'' + sessionKey.replace(/'/g, "\\'") + '\')" style="cursor:pointer;display:flex;align-items:center;gap:6px;margin-bottom:4px">';
+        html += '<div onclick="toggleSession(&quot;' + sessionKey.replace(/"/g, '&quot;') + '&quot;)" style="cursor:pointer;display:flex;align-items:center;gap:6px;margin-bottom:4px">';
         html += '<span style="color:var(--text-muted);font-size:10px;font-family:monospace">' + (isExpanded ? '&#9660;' : '&#9654;') + '</span>';
         html += '<span style="color:var(--text-muted);font-size:10px">' + session.id.slice(0, 8) + ' &middot; ' + tools.length + ' calls &middot; ' + relativeTime(tools[tools.length - 1].timestamp) + '</span>';
         html += '</div>';
