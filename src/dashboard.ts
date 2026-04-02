@@ -600,6 +600,7 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
           channelSource: "", soulExtract: entry.soulExtract || "",
           cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
           heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+          privacy: entry.privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
         });
       }
     } catch { /* file may not exist or be malformed */ }
@@ -619,6 +620,7 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
         channelSource: "app-server", soulExtract: "",
         cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
         heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+        privacy: app.privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
       });
     }
   }

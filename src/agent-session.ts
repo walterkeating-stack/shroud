@@ -590,6 +590,7 @@ export class AgentSessionTracker {
         lastCallAt: s.lastCallAt,
         soulExtract: s.soulExtract,
         behavior: s.behavior,
+        privacy: s.privacy,
       }));
       const dir = dirname(filePath);
       if (!existsSync(dir)) mkdirSync(dir, { recursive: true });

@@ -166,6 +166,9 @@ export class Runner {
       );
     }
 
+    // Isolate test APP server from live session/event files
+    process.env.SHROUD_APP_SESSIONS_FILE = "/tmp/shroud-test-app-sessions.json";
+    process.env.SHROUD_APP_EVENTS_FILE = "/tmp/shroud-test-app-events.jsonl";
     this.#appClient = await APPClient.spawn("node", [serverPath]);
   }
 
