@@ -540,6 +540,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           channels: s.channels, classification: s.classification,
           toolInventory: s.toolInventory, startedAt: s.startedAt,
           lastCallAt: s.lastCallAt, soulExtract: s.soulExtract,
+          behavior: s.behavior, privacy: s.privacy,
         });
       }
 

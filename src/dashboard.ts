@@ -3015,8 +3015,12 @@ async function renderObfuscation() {
     html += '<div class="stat-group"><div class="stat">' + (g.learnedEntities||0) + '</div><div class="stat-label">Learned Entities</div><div class="stat-hint">From context detector</div></div>';
     html += '</div></div>';
 
-    // ── Category breakdown ──
-    const catEntries = Object.entries(g.replacementsByCategory || {}).sort((a,b) => b[1] - a[1]);
+    // ── Category breakdown (merge global OC stats + per-agent APP stats) ──
+    const _mergedCats = {...(g.replacementsByCategory || {})};
+    for (const [cat, count] of Object.entries(data.aggregateCategories || {})) {
+      _mergedCats[cat] = Math.max(_mergedCats[cat] || 0, count);
+    }
+    const catEntries = Object.entries(_mergedCats).sort((a,b) => b[1] - a[1]);
     if (catEntries.length > 0) {
       const maxCat = catEntries[0][1];
       const catColours = { ip_address:'#58a6ff', hostname:'#a78bfa', email:'#f97316', person_name:'#06b6d4', phone:'#eab308', file_path:'#22c55e', url:'#f472b6', api_key:'#f85149', aws_key:'#da3633', mac_address:'#64748b', subnet:'#3fb950' };
