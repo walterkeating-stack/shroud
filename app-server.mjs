@@ -76,9 +76,13 @@ const APP_SESSIONS_FILE = process.env.SHROUD_APP_SESSIONS_FILE || "/tmp/shroud-a
 
 let SecurityEventBus = null;
 let InjectionDetector = null;
+let scanToolCall = null;
 let securityBus = null;
 let injectionDetector = null;
 let securityEnabled = false;
+
+// Tool sequence tracking (for profiling + transformer)
+const toolSequence = [];
 
 try {
   const secMod = await import(pathToFileURL(resolve(shroudDist, "security-event.js")).href);
@@ -86,6 +90,9 @@ try {
 
   const injMod = await import(pathToFileURL(resolve(shroudDist, "detectors", "injection.js")).href);
   InjectionDetector = injMod.InjectionDetector;
+
+  const guardMod = await import(pathToFileURL(resolve(shroudDist, "detectors", "tool-guard.js")).href);
+  scanToolCall = guardMod.scanToolCall;
 
   if (config.injectionDetection !== "off") {
     securityBus = new SecurityEventBus(5000, 60_000);
@@ -611,6 +618,100 @@ function handleSecurity(id) {
   });
 }
 
+function handleToolCall(id, params) {
+  const gate = requireIdentified(id);
+  if (gate) return gate;
+
+  if (!params || typeof params.tool !== "string") {
+    return jsonError(id, ERR_BAD_PARAMS, "Missing required param: tool (string)");
+  }
+
+  const toolName = params.tool;
+  const toolArgs = params.args || {};
+  const events = [];
+
+  // Track in sequence
+  toolSequence.push(toolName);
+
+  // Tool guard: scan for dangerous commands
+  if (scanToolCall && securityBus) {
+    const guardResult = scanToolCall(toolName, toolArgs);
+    if (guardResult.events.length > 0) {
+      for (const evt of guardResult.events) {
+        evt.agentBuildId = agentBuildId;
+        evt.agentLabel = agentLabel;
+        evt.source = "app-server";
+        securityBus.emit(evt);
+        events.push({
+          threatClass: evt.threatClass,
+          severity: evt.severity,
+          action: evt.action,
+          description: evt.description?.slice(0, 200),
+        });
+      }
+
+      if (guardResult.shouldBlock && config.injectionDetection === "block") {
+        return jsonResult(id, {
+          allowed: false,
+          blocked: true,
+          reason: guardResult.events[0].description,
+          events,
+        });
+      }
+    }
+  }
+
+  // Injection scan on stringified args
+  const argStr = JSON.stringify(toolArgs);
+  const injEvents = scanForInjections(argStr, "request");
+  for (const evt of injEvents) {
+    events.push({
+      threatClass: evt.threatClass,
+      severity: evt.severity,
+      action: evt.action,
+    });
+  }
+
+  return jsonResult(id, {
+    allowed: true,
+    blocked: false,
+    tool: toolName,
+    sequenceLength: toolSequence.length,
+    events: events.length > 0 ? events : undefined,
+  });
+}
+
+function handleToolResult(id, params) {
+  const gate = requireIdentified(id);
+  if (gate) return gate;
+
+  if (!params || typeof params.tool !== "string") {
+    return jsonError(id, ERR_BAD_PARAMS, "Missing required param: tool (string)");
+  }
+
+  const toolName = params.tool;
+  const resultText = params.result || "";
+  const events = [];
+
+  // Scan result for exfiltration markers
+  if (typeof resultText === "string" && resultText.length > 0) {
+    const injEvents = scanForInjections(resultText, "response");
+    for (const evt of injEvents) {
+      events.push({
+        threatClass: evt.threatClass,
+        severity: evt.severity,
+        action: evt.action,
+      });
+    }
+  }
+
+  return jsonResult(id, {
+    ok: true,
+    tool: toolName,
+    events: events.length > 0 ? events : undefined,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -627,6 +728,8 @@ const METHODS = {
   shutdown: handleShutdown,
   setPartition: handleSetPartition,
   security: handleSecurity,
+  tool_call: handleToolCall,
+  tool_result: handleToolResult,
 };
 
 function dispatch(line) {
@@ -729,6 +832,8 @@ const handshake = {
     // Security capabilities (advertised even if not active, so clients know the protocol)
     "identify",
     "security",
+    "tool_call",
+    "tool_result",
   ],
   security: securityEnabled ? {
     injectionDetection: config.injectionDetection || "flag",
