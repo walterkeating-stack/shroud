@@ -453,7 +453,7 @@ describe("SelfLabelingFlywheel", () => {
 // ─── End-to-End: Train + Classify ───
 
 describe("end-to-end threat head training", () => {
-  test("training on labeled examples improves classification", () => {
+  test("training on labeled examples improves classification", async () => {
     const model = new MiniTransformer(DEFAULT_CONFIG);
     model.initWeights("e2e-test");
     const tokenizer = new ToolTokenizer();
@@ -495,7 +495,7 @@ describe("end-to-end threat head training", () => {
       ["glob", "grep", "read_file"],
     ];
     const trainer = new TransformerTrainer(model, tokenizer);
-    const result = trainer.trainOnSequences(
+    const result = await trainer.trainOnSequences(
       healthySeqs,
       undefined,
       undefined,

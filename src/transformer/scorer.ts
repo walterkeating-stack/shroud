@@ -359,7 +359,7 @@ export class TransformerScorer {
   }
 
   /** Check if we should retrain, and do it if so. Returns result or null. */
-  maybeRetrain(vectorStore: VectorStore): TrainResult | null {
+  async maybeRetrain(vectorStore: VectorStore): Promise<TrainResult | null> {
     this._sessionsSinceLastTrain++;
 
     const workflows = vectorStore.getWorkflows();
@@ -393,7 +393,7 @@ export class TransformerScorer {
     // Train (pass attack traces for contrastive learning + threat labels for Tier 4)
     const trainer = new TransformerTrainer(this._model, this._tokenizer);
     const traces = this._attackTraceStore.getAll();
-    const result = trainer.trainOnSequences(
+    const result = await trainer.trainOnSequences(
       sequences,
       undefined,
       traces.length > 0 ? traces : undefined,

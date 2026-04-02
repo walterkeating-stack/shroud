@@ -501,13 +501,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
         _vectorStore.flush();
 
-        // Trigger transformer retraining if enough new data, always save on flush
+        // Trigger transformer retraining if enough new data.
+        // Runs async with setImmediate yields so the gateway stays responsive.
+        // Fire-and-forget — _flushToDisk is sync, retraining runs in background.
         if (_transformerScorer) {
-          const result = _transformerScorer.maybeRetrain(_vectorStore);
-          if (result) {
-            api.logger?.info(`[shroud] Transformer retrained: loss=${result.finalLoss.toFixed(4)}, ${result.sequencesUsed} sequences, ${result.durationMs}ms`);
-          }
-          _transformerScorer._saveModel();
+          const scorer = _transformerScorer;
+          const vs = _vectorStore;
+          scorer.maybeRetrain(vs).then(result => {
+            if (result) {
+              api.logger?.info(`[shroud] Transformer retrained: loss=${result.finalLoss.toFixed(4)}, ${result.sequencesUsed} sequences, ${result.durationMs}ms`);
+            }
+            scorer._saveModel();
+          }).catch(() => {});
         }
       }
 

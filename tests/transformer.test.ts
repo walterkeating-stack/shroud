@@ -277,7 +277,7 @@ describe("MiniTransformer", () => {
 // ─── Training ───
 
 describe("TransformerTrainer", () => {
-  test("overfit on a single repeated sequence", () => {
+  test("overfit on a single repeated sequence", async () => {
     const tok = new ToolTokenizer();
     tok.addTool("a"); tok.addTool("b"); tok.addTool("c");
     const model = new MiniTransformer({
@@ -303,7 +303,7 @@ describe("TransformerTrainer", () => {
 
     // Train on 20 copies of the same sequence
     const sequences = Array(20).fill(["a", "b", "c", "a", "b", "c"]);
-    const result = trainer.trainOnSequences(sequences);
+    const result = await trainer.trainOnSequences(sequences);
 
     expect(result.finalLoss).toBeLessThan(1.0);
     expect(result.epochs).toBe(50);
@@ -321,7 +321,7 @@ describe("TransformerTrainer", () => {
     expect(maxId).toBe(cId);
   });
 
-  test("loss decreases over training", () => {
+  test("loss decreases over training", async () => {
     const tok = new ToolTokenizer();
     tok.addTool("read"); tok.addTool("edit"); tok.addTool("exec");
     const model = new MiniTransformer({
@@ -343,7 +343,7 @@ describe("TransformerTrainer", () => {
       batchSize: 4, maxEpochs: 5, warmupSteps: 5,
       maxSequences: 100, gradClipNorm: 1.0,
     });
-    const result1 = trainer1.trainOnSequences(sequences);
+    const result1 = await trainer1.trainOnSequences(sequences);
 
     // Train 5 more
     const trainer2 = new TransformerTrainer(model, tok, {
@@ -351,7 +351,7 @@ describe("TransformerTrainer", () => {
       batchSize: 4, maxEpochs: 5, warmupSteps: 0,
       maxSequences: 100, gradClipNorm: 1.0,
     });
-    const result2 = trainer2.trainOnSequences(sequences);
+    const result2 = await trainer2.trainOnSequences(sequences);
 
     expect(result2.finalLoss).toBeLessThan(result1.finalLoss);
   });
@@ -367,7 +367,7 @@ describe("TransformerScorer", () => {
     expect(prediction.sessionAnomalyScore).toBe(0);
   });
 
-  test("trained model scores known patterns low", () => {
+  test("trained model scores known patterns low", { timeout: 15000 }, async () => {
     const scorer = new TransformerScorer("/tmp/shroud-test-transformer-" + Date.now(), {
       anomalyThreshold: 0.85,
       windowSize: 10,
@@ -387,7 +387,7 @@ describe("TransformerScorer", () => {
       batchSize: 4, maxEpochs: 30, warmupSteps: 5,
       maxSequences: 100, gradClipNorm: 1.0,
     });
-    trainer.trainOnSequences(Array(30).fill(["read", "edit", "exec", "read", "edit"]));
+    await trainer.trainOnSequences(Array(30).fill(["read", "edit", "exec", "read", "edit"]));
     (scorer as any)._modelLoaded = true;
 
     // Known pattern should have low surprise

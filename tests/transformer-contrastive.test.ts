@@ -435,7 +435,7 @@ describe("ContrastiveTrainer", () => {
 // ─── End-to-end: contrastive training separates embeddings ───
 
 describe("end-to-end contrastive separation", () => {
-  test("after contrastive training, healthy and attack embeddings diverge", () => {
+  test("after contrastive training, healthy and attack embeddings diverge", async () => {
     const tok = new ToolTokenizer();
     tok.addTool("read"); tok.addTool("edit"); tok.addTool("exec");
     tok.addTool("web_fetch"); tok.addTool("message"); tok.addTool("bash");
@@ -490,7 +490,7 @@ describe("end-to-end contrastive separation", () => {
       maxSequences: 100,
       gradClipNorm: 1.0,
     });
-    trainer.trainOnSequences(healthyWorkflows, undefined, attackTraces);
+    await trainer.trainOnSequences(healthyWorkflows, undefined, attackTraces);
 
     // Then run more contrastive training rounds
     const cTrainer = new ContrastiveTrainer(model, tok, {
@@ -519,7 +519,7 @@ describe("end-to-end contrastive separation", () => {
     expect(typeof distAfter).toBe("number");
   });
 
-  test("trainer.trainOnSequences includes contrastive loss in result", () => {
+  test("trainer.trainOnSequences includes contrastive loss in result", async () => {
     const tok = new ToolTokenizer();
     tok.addTool("read"); tok.addTool("edit"); tok.addTool("exec");
     tok.addTool("web_fetch"); tok.addTool("message");
@@ -559,14 +559,14 @@ describe("end-to-end contrastive separation", () => {
       gradClipNorm: 1.0,
     });
 
-    const result = trainer.trainOnSequences(sequences, undefined, attackTraces);
+    const result = await trainer.trainOnSequences(sequences, undefined, attackTraces);
 
     // contrastiveLoss should be present in result
     expect(typeof result.contrastiveLoss).toBe("number");
     expect(result.contrastiveLoss).toBeGreaterThanOrEqual(0);
   });
 
-  test("trainOnSequences without attack traces sets contrastiveLoss to 0", () => {
+  test("trainOnSequences without attack traces sets contrastiveLoss to 0", async () => {
     const tok = new ToolTokenizer();
     tok.addTool("read"); tok.addTool("edit"); tok.addTool("exec");
 
@@ -596,7 +596,7 @@ describe("end-to-end contrastive separation", () => {
       gradClipNorm: 1.0,
     });
 
-    const result = trainer.trainOnSequences(sequences);
+    const result = await trainer.trainOnSequences(sequences);
     expect(result.contrastiveLoss).toBe(0);
   });
 });

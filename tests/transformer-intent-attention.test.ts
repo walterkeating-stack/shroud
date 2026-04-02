@@ -101,7 +101,7 @@ describe("intentAttention in scorer", () => {
     expect(prediction.intentAttentionPerHead).toEqual([]);
   });
 
-  test("trained model returns intentAttention and per-head breakdown", () => {
+  test("trained model returns intentAttention and per-head breakdown", { timeout: 15000 }, async () => {
     // Train a minimal model by manually training the scorer
     const scorerDir = "/tmp/shroud-test-intent-trained-" + Date.now();
     const trainedScorer = new TransformerScorer(scorerDir, {
@@ -119,7 +119,7 @@ describe("intentAttention in scorer", () => {
       batchSize: 4, maxEpochs: 30, warmupSteps: 5,
       maxSequences: 100, gradClipNorm: 1.0,
     });
-    trainer.trainOnSequences(Array(30).fill(["read_file", "edit_file", "write_file", "run_test"]));
+    await trainer.trainOnSequences(Array(30).fill(["read_file", "edit_file", "write_file", "run_test"]));
     (trainedScorer as any)._modelLoaded = true;
 
     const prediction = trainedScorer.scoreToolCall(

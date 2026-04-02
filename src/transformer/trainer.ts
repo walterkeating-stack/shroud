@@ -89,13 +89,13 @@ export class TransformerTrainer {
    * Optional attackTraces: if provided and non-empty, contrastive mini-batches run
    * after the cross-entropy loop (lambda=0.3 weighting).
    */
-  trainOnSequences(
+  async trainOnSequences(
     sequences: string[][],
     intentVecs?: Array<Float64Array | null>,
     attackTraces?: AttackTrace[],
     threatClassifier?: ThreatHeadClassifier,
     threatLabels?: ThreatLabeledExample[],
-  ): TrainResult {
+  ): Promise<TrainResult> {
     const start = Date.now();
     const cfg = this._config;
 
@@ -143,6 +143,9 @@ export class TransformerTrainer {
     let lastLoss = 0;
 
     for (let epoch = 0; epoch < cfg.maxEpochs; epoch++) {
+      // Yield to event loop between epochs so the gateway stays responsive
+      if (epoch > 0) await new Promise<void>(r => setImmediate(r));
+
       // Shuffle examples
       this._shuffle(examples);
 
@@ -150,6 +153,9 @@ export class TransformerTrainer {
       let epochCount = 0;
 
       for (let b = 0; b < examples.length; b += cfg.batchSize) {
+        // Yield every 8 batches to keep the event loop responsive
+        if (b > 0 && (b / cfg.batchSize) % 8 === 0) await new Promise<void>(r => setImmediate(r));
+
         const batchEnd = Math.min(b + cfg.batchSize, examples.length);
         const batchSize = batchEnd - b;
 
