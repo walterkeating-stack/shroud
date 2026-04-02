@@ -2669,6 +2669,7 @@ async function renderTransformer() {
   } catch (e) {
     el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
   }
+}
 
 
 // ─── Events tab ───
