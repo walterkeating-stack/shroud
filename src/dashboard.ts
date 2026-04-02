@@ -1692,7 +1692,7 @@ async function refresh() {
 
     // Command Center hero row
     html += '<div class="card card-wide"><h2>Agent Command Center</h2>';
-    html += '<div class="stat-row" style="margin-bottom:16px">';
+    html += '<div class="stat-row" style="margin-bottom:16px;justify-content:space-between">';
     html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
     html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
     html += '<div class="stat-group"><div class="stat ' + ((ag.eventsLastHour||0) > 0 ? 'yellow' : 'green') + '">' + (ag.eventsLastHour||0) + '</div><div class="stat-label">Events (1h)</div></div>';
