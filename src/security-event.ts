@@ -25,6 +25,10 @@ export enum ThreatClass {
   URL_CORRELATION = "url_correlation",
   DELEGATION_DRIFT = "delegation_drift",
   TOOL_SEQUENCE_ANOMALY = "tool_sequence_anomaly",
+  EXFILTRATION_LEARNED = "exfiltration_learned",
+  PRIVILEGE_ESCALATION_LEARNED = "privilege_escalation_learned",
+  RECONNAISSANCE_LEARNED = "reconnaissance_learned",
+  INTENT_HIJACK = "intent_hijack",
 }
 
 /** Severity levels for security events. */

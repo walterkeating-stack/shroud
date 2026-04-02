@@ -15,7 +15,16 @@ import { join } from "node:path";
 import { MiniTransformer, DEFAULT_CONFIG, type TransformerConfig } from "./model.js";
 import { ToolTokenizer, type TokenizerConfig } from "./tokenizer.js";
 import { TransformerTrainer, DEFAULT_TRAINER_CONFIG, type TrainResult } from "./trainer.js";
-import { crossEntropyLoss, softmax } from "./linalg.js";
+import { crossEntropyLoss, softmax, l2Distance } from "./linalg.js";
+import { AttackTraceStore, type AttackTrace } from "./contrastive.js";
+import {
+  ThreatHeadClassifier,
+  type ThreatPrediction,
+  type ThreatLabeledExample,
+  LearnedThreatClass,
+  THREAT_HEAD_NAMES,
+} from "./threat-heads.js";
+import { SelfLabelingFlywheel } from "./flywheel.js";
 import type { SecurityEvent } from "../security-event.js";
 import { ThreatClass } from "../security-event.js";
 import type { VectorStore } from "../vector-store.js";
@@ -28,6 +37,7 @@ export interface ScorerConfig {
   minSequenceLength: number;    // 3 (don't score until we have context)
   minSessionsToTrain: number;   // 30
   trainIntervalSessions: number; // 50
+  intentAttentionThreshold: number; // 0.05 (below this = intent hijack)
 }
 
 export interface ToolPrediction {
@@ -35,6 +45,13 @@ export interface ToolPrediction {
   surprise: number;              // 1 - P(actual_next_tool)
   perplexity: number;           // exp(cross-entropy)
   sessionAnomalyScore: number;  // rolling average surprise over window
+  embeddingShift: number;       // L2 distance between current and extended sequence embeddings
+  /** Threat head prediction (Tier 4). Null if threat heads not initialized. */
+  threatPrediction: ThreatPrediction | null;
+  /** Average attention to position 0 (intent vector) across all heads/layers. */
+  intentAttention: number;
+  /** Per-head breakdown of attention to intent (numHeads × numLayers values). */
+  intentAttentionPerHead: number[];
 }
 
 export interface TransformerStats {
@@ -48,10 +65,21 @@ export interface TransformerStats {
   inferenceCount: number;
   avgInferenceMs: number;
   recentSurprises: number[];
+  /** Recent intent attention scores (parallel to recentSurprises). */
+  recentIntentAttention: number[];
   /** Min sessions needed before first training (for cold start progress). */
   minSessionsToTrain: number;
   /** Sessions accumulated since last training (progress counter). */
   sessionsSinceLastTrain: number;
+  /** Number of attack traces in the contrastive store. */
+  attackTraceCount: number;
+  /** Threat head stats (Tier 4). */
+  threatHeads: {
+    enabled: boolean;
+    paramCount: number;
+    labelCount: number;
+    reliabilityScores: number[];
+  };
 }
 
 interface PersistedMeta {
@@ -69,6 +97,7 @@ export const DEFAULT_SCORER_CONFIG: ScorerConfig = {
   minSequenceLength: 3,
   minSessionsToTrain: 30,
   trainIntervalSessions: 50,
+  intentAttentionThreshold: 0.05,
 };
 
 // ─── Scorer ───
@@ -79,9 +108,17 @@ export class TransformerScorer {
   private _config: ScorerConfig;
   private _profileDir: string;
   private _modelLoaded = false;
+  _attackTraceStore: AttackTraceStore;
+
+  // Threat heads (Tier 4)
+  _threatClassifier: ThreatHeadClassifier;
+  _flywheel: SelfLabelingFlywheel;
+  private _threatLabels: ThreatLabeledExample[] = [];
+  private static readonly MAX_THREAT_LABELS = 1000;
 
   // Session state
   private _surpriseWindow: number[] = [];
+  private _intentAttentionWindow: number[] = [];
 
   // Stats
   private _inferenceCount = 0;
@@ -101,7 +138,17 @@ export class TransformerScorer {
     this._config = config;
     this._model = new MiniTransformer(DEFAULT_CONFIG);
     this._tokenizer = new ToolTokenizer();
+    this._attackTraceStore = new AttackTraceStore(this._profileDir);
+    this._attackTraceStore.load();
+    this._threatClassifier = new ThreatHeadClassifier();
+    this._threatClassifier.initWeights();
+    this._flywheel = new SelfLabelingFlywheel();
     this._modelLoaded = this._loadModel();
+  }
+
+  /** Record an attack trace for contrastive training. */
+  recordAttackTrace(trace: AttackTrace): void {
+    this._attackTraceStore.add(trace);
   }
 
   /** Score a tool call given the sequence so far.
@@ -115,6 +162,10 @@ export class TransformerScorer {
         surprise: 0,
         perplexity: 1,
         sessionAnomalyScore: 0,
+        embeddingShift: 0,
+        threatPrediction: null,
+        intentAttention: 0,
+        intentAttentionPerHead: [],
       };
     }
 
@@ -132,7 +183,8 @@ export class TransformerScorer {
       inputIds.splice(0, inputIds.length - this._model.config.maxSeqLen);
     }
 
-    const probs = this._model.predict(inputIds, intentVec);
+    const cache = this._model.forwardFull(inputIds, intentVec);
+    const probs = softmax(cache.logits, this._model.config.vocabSize);
     const nextId = this._tokenizer.encode(nextTool);
     const nextProb = probs[nextId] || 0;
     const surprise = 1 - nextProb;
@@ -154,28 +206,125 @@ export class TransformerScorer {
       }
     }
 
-    // Update sliding window
+    // Compute embedding shift: L2 distance between current sequence embedding
+    // and extended sequence embedding (with nextTool appended)
+    let embeddingShift = 0;
+    try {
+      const currentEmb = this._model.getEmbedding(inputIds, intentVec);
+      const extendedIds = [...inputIds, nextId];
+      if (extendedIds.length <= this._model.config.maxSeqLen) {
+        const extendedEmb = this._model.getEmbedding(extendedIds, intentVec);
+        embeddingShift = l2Distance(currentEmb, extendedEmb, this._model.config.hiddenDim);
+      }
+    } catch {
+      // Best-effort — don't let embedding computation break scoring
+    }
+
+    // Extract intent attention from forward cache: average across all heads/layers
+    const intentAttentionPerHead = Array.from(cache.intentAttention);
+    const intentAttention = intentAttentionPerHead.length > 0
+      ? intentAttentionPerHead.reduce((a, b) => a + b, 0) / intentAttentionPerHead.length
+      : 0;
+
+    // Update sliding windows
     this._surpriseWindow.push(surprise);
     if (this._surpriseWindow.length > this._config.windowSize) {
       this._surpriseWindow.shift();
+    }
+    this._intentAttentionWindow.push(intentAttention);
+    if (this._intentAttentionWindow.length > this._config.windowSize) {
+      this._intentAttentionWindow.shift();
     }
 
     const sessionAnomalyScore = this._surpriseWindow.reduce((a, b) => a + b, 0)
       / this._surpriseWindow.length;
 
+    // Threat head classification (Tier 4)
+    let threatPrediction: ThreatPrediction | null = null;
+    try {
+      threatPrediction = this._threatClassifier.forward(
+        cache.finalLnOut,
+        cache.headAttentionEntropy,
+      );
+    } catch {
+      // Best-effort — don't break scoring if threat heads fail
+    }
+
     // Stats
     this._inferenceCount++;
     this._totalInferenceMs += Date.now() - start;
 
-    return { topK, surprise, perplexity, sessionAnomalyScore };
+    return { topK, surprise, perplexity, sessionAnomalyScore, embeddingShift, threatPrediction, intentAttention, intentAttentionPerHead };
   }
 
-  /** Check if a prediction triggers a security event. */
+  /** Check if a prediction triggers a security event.
+   *  Returns up to 2 events: one for surprise anomaly, one for threat head classification. */
   checkAnomaly(
     prediction: ToolPrediction,
     nextTool: string,
     agentLabel?: string,
   ): SecurityEvent | null {
+    // Check threat head classification first
+    if (prediction.threatPrediction) {
+      const tp = prediction.threatPrediction;
+      for (const headPred of tp.heads) {
+        const hostile = headPred.distribution[LearnedThreatClass.HOSTILE];
+        const suspicious = headPred.distribution[LearnedThreatClass.SUSPICIOUS];
+
+        if (hostile > 0.7 || suspicious > 0.6) {
+          const threatClassMap: Record<string, ThreatClass> = {
+            exfiltration: ThreatClass.EXFILTRATION_LEARNED,
+            privilege_escalation: ThreatClass.PRIVILEGE_ESCALATION_LEARNED,
+            reconnaissance: ThreatClass.RECONNAISSANCE_LEARNED,
+          };
+          const severity = hostile > 0.7 ? "high" as const : "medium" as const;
+          const threatClass = threatClassMap[headPred.name] || ThreatClass.TOOL_SEQUENCE_ANOMALY;
+
+          return {
+            timestamp: Date.now(),
+            eventType: "anomaly_detected",
+            direction: "request",
+            threatClass,
+            signatureId: `transformer_threat_${headPred.name}`,
+            severity,
+            matchedText: `Tool "${nextTool}" classified as ${headPred.predicted === LearnedThreatClass.HOSTILE ? "HOSTILE" : "SUSPICIOUS"} by ${headPred.name} head (P=${(hostile > 0.7 ? hostile : suspicious).toFixed(3)})`,
+            matchStart: 0,
+            matchEnd: 0,
+            textLength: 0,
+            action: "flagged",
+            description: `Threat head "${headPred.name}": tool "${nextTool}" classified as ${headPred.predicted === LearnedThreatClass.HOSTILE ? "HOSTILE" : "SUSPICIOUS"} (hostile=${hostile.toFixed(3)}, suspicious=${suspicious.toFixed(3)}, threat_score=${tp.threatScore.toFixed(3)}).`,
+            agentLabel,
+          };
+        }
+      }
+    }
+
+    // Check intent attention dropout: if heads have stopped attending to position 0 (intent),
+    // the agent may have been hijacked away from the user's request.
+    // Only fires when intentAttentionPerHead is populated (model produced intent attention)
+    // and the average drops below threshold.
+    if (prediction.intentAttentionPerHead && prediction.intentAttentionPerHead.length > 0 &&
+        prediction.intentAttention < this._config.intentAttentionThreshold) {
+      const perHead = prediction.intentAttentionPerHead
+        .map((v, i) => `h${i}=${v.toFixed(4)}`)
+        .join(", ");
+      return {
+        timestamp: Date.now(),
+        eventType: "anomaly_detected",
+        direction: "request",
+        threatClass: ThreatClass.INTENT_HIJACK,
+        signatureId: "transformer_intent_hijack",
+        severity: prediction.intentAttention < 0.01 ? "high" as const : "medium" as const,
+        matchedText: `Tool "${nextTool}" intent_attention=${prediction.intentAttention.toFixed(4)}, threshold=${this._config.intentAttentionThreshold}`,
+        matchStart: 0,
+        matchEnd: 0,
+        textLength: 0,
+        action: "flagged",
+        description: `Attention to user intent dropped to ${prediction.intentAttention.toFixed(4)} (threshold=${this._config.intentAttentionThreshold}). Per-head: [${perHead}]. Agent may be hijacked away from original request.`,
+        agentLabel,
+      };
+    }
+
     if (prediction.surprise < this._config.anomalyThreshold) return null;
 
     const severity = prediction.surprise > 0.95 ? "high"
@@ -206,6 +355,7 @@ export class TransformerScorer {
   /** Reset session state (call on new session/turn). */
   resetSession(): void {
     this._surpriseWindow = [];
+    this._intentAttentionWindow = [];
   }
 
   /** Check if we should retrain, and do it if so. Returns result or null. */
@@ -240,9 +390,16 @@ export class TransformerScorer {
       this._model.initWeights();
     }
 
-    // Train
+    // Train (pass attack traces for contrastive learning + threat labels for Tier 4)
     const trainer = new TransformerTrainer(this._model, this._tokenizer);
-    const result = trainer.trainOnSequences(sequences);
+    const traces = this._attackTraceStore.getAll();
+    const result = trainer.trainOnSequences(
+      sequences,
+      undefined,
+      traces.length > 0 ? traces : undefined,
+      this._threatLabels.length > 0 ? this._threatClassifier : undefined,
+      this._threatLabels.length > 0 ? this._threatLabels : undefined,
+    );
 
     // Update state
     this._modelLoaded = true;
@@ -272,9 +429,60 @@ export class TransformerScorer {
         ? this._totalInferenceMs / this._inferenceCount
         : 0,
       recentSurprises: [...this._surpriseWindow],
+      recentIntentAttention: [...this._intentAttentionWindow],
       minSessionsToTrain: this._config.minSessionsToTrain,
       sessionsSinceLastTrain: this._sessionsSinceLastTrain,
+      attackTraceCount: this._attackTraceStore.count(),
+      threatHeads: {
+        enabled: true,
+        paramCount: this._threatClassifier.paramCount(),
+        labelCount: this._threatLabels.length,
+        reliabilityScores: Array.from(this._threatClassifier.weights.reliability),
+      },
     };
+  }
+
+  /** Record a threat-labeled example for training. Ring buffer, max 1000. */
+  recordThreatLabel(example: ThreatLabeledExample): void {
+    this._threatLabels.push(example);
+    if (this._threatLabels.length > TransformerScorer.MAX_THREAT_LABELS) {
+      this._threatLabels.splice(0, this._threatLabels.length - TransformerScorer.MAX_THREAT_LABELS);
+    }
+  }
+
+  /** Convenience: process a honeypot trigger through the flywheel. */
+  onHoneypotTrigger(
+    tokenType: string,
+    sessionSequence: string[],
+    injectionIdx: number,
+    intentVec?: Float64Array | null,
+  ): void {
+    const result = this._flywheel.onHoneypotTrigger(tokenType, sessionSequence, injectionIdx, intentVec);
+    this.recordAttackTrace(result.trace);
+    for (const label of result.labels) this.recordThreatLabel(label);
+  }
+
+  /** Convenience: process a phantom tool trigger through the flywheel. */
+  onPhantomTrigger(
+    trapType: string,
+    sessionSequence: string[],
+    intentVec?: Float64Array | null,
+  ): void {
+    const result = this._flywheel.onPhantomTrigger(trapType, sessionSequence, intentVec);
+    this.recordAttackTrace(result.trace);
+    for (const label of result.labels) this.recordThreatLabel(label);
+  }
+
+  /** Convenience: process a shadow execution block through the flywheel. */
+  onShadowBlock(
+    verdictReason: string,
+    sessionSequence: string[],
+    shadowSteps: string[],
+    intentVec?: Float64Array | null,
+  ): void {
+    const result = this._flywheel.onShadowBlock(verdictReason, sessionSequence, shadowSteps, intentVec);
+    this.recordAttackTrace(result.trace);
+    for (const label of result.labels) this.recordThreatLabel(label);
   }
 
   /** Load model from disk. Returns true if loaded successfully. */
@@ -293,6 +501,18 @@ export class TransformerScorer {
       this._trainingSessions = meta.trainingSessions;
       this._lastLoss = meta.lastLoss;
       this._sessionsSinceLastTrain = meta.sessionsSinceLastTrain || 0;
+
+      // Load threat head weights if they exist (backward compat: fresh init if not found)
+      try {
+        const threatPath = join(this._profileDir, "threat-heads-weights.bin");
+        if (existsSync(threatPath)) {
+          const threatBuf = readFileSync(threatPath);
+          const threatData = new Float64Array(threatBuf.buffer, threatBuf.byteOffset, threatBuf.byteLength / 8);
+          this._threatClassifier.deserialize(threatData);
+        }
+      } catch {
+        // Backward compat: old models without threat heads get fresh init
+      }
 
       return true;
     } catch {
@@ -325,6 +545,18 @@ export class TransformerScorer {
         join(this._profileDir, "transformer-weights.bin"),
         this._model.serializeWeights(),
       );
+
+      // Persist attack traces alongside model
+      this._attackTraceStore.save();
+
+      // Persist threat head weights
+      try {
+        const threatData = this._threatClassifier.serialize();
+        const threatBuf = Buffer.from(threatData.buffer, threatData.byteOffset, threatData.byteLength);
+        writeFileSync(join(this._profileDir, "threat-heads-weights.bin"), threatBuf);
+      } catch {
+        // Best-effort
+      }
     } catch {
       // Best-effort persistence
     }

@@ -31,7 +31,7 @@ import type { PolicyEngine } from "./policy.js";
 import type { DriftDetector } from "./detectors/drift-detector.js";
 import type { CausalCoherenceTracker } from "./causal-coherence.js";
 import type { VectorStore } from "./vector-store.js";
-import type { IntentChain } from "./intent-chain.js";
+import type { IntentChain, DelegationRecord } from "./intent-chain.js";
 import { pca } from "./pca.js";
 
 export interface DashboardDeps {
@@ -938,26 +938,53 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
     const pairs = ct ? ct.getRecentPairs() : [];
     const points: any[] = [];
     const edges: any[] = [];
+    let message: string | undefined;
 
     if (pairs.length > 0) {
-      // Live coherence pairs
+      // Live coherence pairs — arrange in 3D helix so pairs are visually distinct.
+      // X-axis: time progression, Y-axis: causal distance, Z-axis: alternating
+      // result/action depth so pairs don't overlap.
+      const timeSpan = pairs.length > 1
+        ? Math.max(1, pairs[pairs.length - 1].timestamp - pairs[0].timestamp)
+        : 1;
       for (let i = 0; i < pairs.length; i++) {
         const p = pairs[i];
+        const t = pairs.length > 1
+          ? (p.timestamp - pairs[0].timestamp) / timeSpan
+          : i / Math.max(pairs.length, 1);
+        // Spiral layout: angle from time, radius from distance
+        const angle = t * Math.PI * 3;
+        const radius = 2 + p.distance * 3;
+        const rx = Math.cos(angle) * 2;
+        const ry = Math.sin(angle) * 2;
+        const zBase = t * 8; // vertical progression over time
         points.push({
-          id: `r${i}`, x: i * 2, y: 0, z: 0,
+          id: `r${i}`,
+          x: rx, y: ry, z: zBase,
           label: p.resultToolName, color: "#3b82f6",
-          metadata: { type: "result", distance: p.distance },
+          metadata: { type: "result", distance: p.distance, pair: i + 1 },
         });
         points.push({
-          id: `a${i}`, x: i * 2 + 0.5, y: p.distance * 3, z: 0.5,
+          id: `a${i}`,
+          x: rx + Math.cos(angle + 0.5) * p.distance * 3,
+          y: ry + Math.sin(angle + 0.5) * p.distance * 3,
+          z: zBase + 0.4,
           label: p.actionToolName, color: "#f97316",
-          metadata: { type: "action", distance: p.distance },
+          metadata: { type: "action", distance: p.distance, pair: i + 1 },
         });
         edges.push({
           from: `r${i}`, to: `a${i}`,
           color: p.distance < 0.5 ? "#22c55e" : p.distance < 0.8 ? "#eab308" : "#ef4444",
           width: Math.max(0.5, (1 - p.distance) * 3),
         });
+        // Chain results together to show temporal flow
+        if (i > 0) {
+          edges.push({
+            from: `r${i - 1}`, to: `r${i}`,
+            color: "#1e293b",
+            width: 0.5,
+          });
+        }
       }
     } else if (vs) {
       // No live data — show persisted transition stats as a tool-flow graph
@@ -988,80 +1015,134 @@ function handleVizProjection(req: IncomingMessage, res: ServerResponse, deps: Da
         }
       }
 
-      // Position tool nodes in a circle
       const tools = [...toolNodes.keys()];
-      for (let i = 0; i < tools.length; i++) {
-        const angle = (i / tools.length) * Math.PI * 2;
-        const radius = 4;
-        const info = toolNodes.get(tools[i])!;
-        points.push({
-          id: tools[i],
-          x: Math.cos(angle) * radius,
-          y: Math.sin(angle) * radius,
-          z: 0,
-          label: tools[i],
-          color: info.count > 10 ? "#22c55e" : info.count > 3 ? "#3b82f6" : "#94a3b8",
-          metadata: { calls: info.count, agents: [...info.agents].join(", ") },
-        });
-      }
+      if (tools.length === 0) {
+        message = "No coherence data — waiting for agent tool calls to build transition pairs";
+      } else {
+        // Position tool nodes in a circle with z-axis variation by frequency
+        const maxCalls = Math.max(1, ...([...toolNodes.values()].map(n => n.count)));
+        for (let i = 0; i < tools.length; i++) {
+          const angle = (i / tools.length) * Math.PI * 2;
+          const radius = 4;
+          const info = toolNodes.get(tools[i])!;
+          // Z proportional to log frequency — frequent tools rise above the ring
+          const zPos = Math.log2(1 + info.count) * 0.8;
+          points.push({
+            id: tools[i],
+            x: Math.cos(angle) * radius,
+            y: Math.sin(angle) * radius,
+            z: zPos,
+            label: tools[i],
+            color: info.count > 10 ? "#22c55e" : info.count > 3 ? "#3b82f6" : "#94a3b8",
+            metadata: { calls: info.count, agents: [...info.agents].join(", ") },
+          });
+        }
 
-      // Add transition edges with width proportional to frequency
-      const maxCount = Math.max(1, ...[...transitionEdges.values()].map(e => e.count));
-      for (const [, edge] of transitionEdges) {
-        if (!toolNodes.has(edge.from) || !toolNodes.has(edge.to)) continue;
-        edges.push({
-          from: edge.from, to: edge.to,
-          color: edge.count > 5 ? "#22c55e" : "#3b82f6",
-          width: Math.max(0.5, (edge.count / maxCount) * 3),
-        });
+        // Add transition edges with width proportional to frequency
+        const maxCount = Math.max(1, ...[...transitionEdges.values()].map(e => e.count));
+        for (const [, edge] of transitionEdges) {
+          if (!toolNodes.has(edge.from) || !toolNodes.has(edge.to)) continue;
+          edges.push({
+            from: edge.from, to: edge.to,
+            color: edge.count > 5 ? "#22c55e" : "#3b82f6",
+            width: Math.max(0.5, (edge.count / maxCount) * 3),
+          });
+        }
       }
+    } else {
+      message = "Causal coherence tracker not active — enable dashboard and drift detection";
     }
 
-    return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.5, 0.3, 0.2] } });
+    return json(res, 200, { view, points, edges, message, pca: { varianceExplained: points.length > 0 ? [0.5, 0.3, 0.2] : [0, 0, 0] } });
   }
 
   if (view === "delegation") {
-    if (!ic) return json(res, 200, { view, points: [], edges: [], pca: { varianceExplained: [0, 0, 0] } });
+    if (!ic) return json(res, 200, { view, points: [], edges: [], message: "Intent chain not active — enable dashboard to track multi-agent delegations", pca: { varianceExplained: [0, 0, 0] } });
 
     const nodes = ic.getAllNodes();
+    const delegationHistory = ic.getHistory();
     const points: any[] = [];
     const edges: any[] = [];
+    let message: string | undefined;
 
-    for (let ni = 0; ni < nodes.length; ni++) {
-      const node = nodes[ni];
-      // Deterministic angle from buildId hash — stable across refreshes
-      let hash = 0x811c9dc5;
-      for (let ci = 0; ci < node.agentBuildId.length; ci++) {
-        hash ^= node.agentBuildId.charCodeAt(ci);
-        hash = (hash * 0x01000193) | 0;
-      }
-      const angle = ((hash >>> 0) / 0xffffffff) * Math.PI * 2;
-      const dist = node.depth * 3;
+    if (nodes.length === 0) {
+      message = "No agents observed yet — waiting for agent sessions";
+    } else if (nodes.length === 1) {
+      // Single agent, no delegations — show it clearly, not as a dot at origin
+      const node = nodes[0];
       points.push({
         id: node.agentBuildId,
-        x: Math.cos(angle) * dist,
-        y: Math.sin(angle) * dist,
-        z: node.depth * 2,
+        x: 0, y: 0, z: 0,
         label: node.agentLabel,
-        color: node.depth === 0 ? "#22c55e" : node.depth === 1 ? "#3b82f6" : "#a855f7",
+        color: "#22c55e",
         metadata: {
-          depth: node.depth,
+          depth: 0,
           intentText: node.intentText.slice(0, 100),
-          rootIntentText: node.rootIntentText.slice(0, 100),
+          status: "Root agent — no delegations observed yet",
         },
       });
+      message = "Single root agent active. Delegation tree will populate when agents delegate to sub-agents via sessions_send/sessions_spawn.";
+    } else {
+      // Multiple agents — build the tree with drift-aware positioning
+      // Look up coherence scores from delegation history for edge coloring
+      const coherenceMap = new Map<string, DelegationRecord>();
+      for (const rec of delegationHistory) {
+        coherenceMap.set(`${rec.parentBuildId}→${rec.childBuildId}`, rec);
+      }
 
-      if (node.parentAgentBuildId) {
-        edges.push({
-          from: node.parentAgentBuildId,
-          to: node.agentBuildId,
-          color: "#6b7280",
-          width: 2,
+      for (let ni = 0; ni < nodes.length; ni++) {
+        const node = nodes[ni];
+        // Deterministic angle from buildId hash — stable across refreshes
+        let hash = 0x811c9dc5;
+        for (let ci = 0; ci < node.agentBuildId.length; ci++) {
+          hash ^= node.agentBuildId.charCodeAt(ci);
+          hash = (hash * 0x01000193) | 0;
+        }
+        const angle = ((hash >>> 0) / 0xffffffff) * Math.PI * 2;
+
+        // Distance from center encodes drift: root at origin, children
+        // pushed outward by depth AND how much they've drifted from root intent.
+        // Look up coherence from delegation history to modulate radius.
+        let driftFactor = 1.0;
+        if (node.parentAgentBuildId) {
+          const rec = coherenceMap.get(`${node.parentAgentBuildId}→${node.agentBuildId}`);
+          if (rec) {
+            // Lower coherence = more drift = farther from center
+            driftFactor = 1 + (1 - rec.rootCoherence) * 3;
+          }
+        }
+        const dist = node.depth === 0 ? 0 : node.depth * 3 * driftFactor;
+
+        points.push({
+          id: node.agentBuildId,
+          x: Math.cos(angle) * dist,
+          y: Math.sin(angle) * dist,
+          z: node.depth * 2,
+          label: node.agentLabel,
+          color: node.depth === 0 ? "#22c55e" : node.depth === 1 ? "#3b82f6" : "#a855f7",
+          metadata: {
+            depth: node.depth,
+            intentText: node.intentText.slice(0, 100),
+            rootIntentText: node.rootIntentText.slice(0, 100),
+          },
         });
+
+        if (node.parentAgentBuildId) {
+          // Color edge by coherence: green = aligned, yellow = drifting, red = breached
+          const rec = coherenceMap.get(`${node.parentAgentBuildId}→${node.agentBuildId}`);
+          const coherence = rec ? rec.rootCoherence : 1.0;
+          const edgeColor = coherence > 0.5 ? "#22c55e" : coherence > 0.15 ? "#eab308" : "#ef4444";
+          edges.push({
+            from: node.parentAgentBuildId,
+            to: node.agentBuildId,
+            color: edgeColor,
+            width: Math.max(1, coherence * 3),
+          });
+        }
       }
     }
 
-    return json(res, 200, { view, points, edges, pca: { varianceExplained: [0.4, 0.3, 0.3] } });
+    return json(res, 200, { view, points, edges, message, pca: { varianceExplained: nodes.length > 1 ? [0.4, 0.3, 0.3] : [0, 0, 0] } });
   }
 
   if (view === "evolution") {
@@ -2522,6 +2603,24 @@ async function renderTransformer() {
         html += '</div>';
       }
 
+      // Recent intent attention chart
+      if (data.recentIntentAttention && data.recentIntentAttention.length > 0) {
+        html += '<div class="card" style="margin-bottom:16px">';
+        html += '<h2>Recent Intent Attention</h2>';
+        html += '<div style="display:flex;align-items:flex-end;gap:3px;height:120px;padding:8px 0">';
+        for (const a of data.recentIntentAttention) {
+          const pct = Math.min(a * 100, 100);
+          const color = a < 0.05 ? 'var(--critical)' : a < 0.15 ? 'var(--medium)' : 'var(--success)';
+          html += '<div style="flex:1;background:' + color + ';height:' + Math.max(pct, 2) + '%;min-width:8px;border-radius:2px 2px 0 0" title="intent_attn=' + a.toFixed(4) + '"></div>';
+        }
+        html += '</div>';
+        html += '<div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text-muted);margin-top:4px">';
+        html += '<span>Oldest</span><span>Most Recent</span>';
+        html += '</div>';
+        html += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px">Below 0.05 = intent hijack (agent stopped attending to user request)</div>';
+        html += '</div>';
+      }
+
       // How it works
       html += '<div class="card" style="margin-bottom:16px">';
       html += '<h2>How It Works</h2>';
@@ -2777,14 +2876,23 @@ function renderData(data) {
   const points = data.points || [];
   const edges = data.edges || [];
 
-  // Empty state
+  // Empty state — show server-provided message or generic fallback
   if (points.length === 0) {
-    const label = makeLabel('No data yet — waiting for agent sessions', '#64748b');
+    const msg = data.message || 'No data yet — waiting for agent sessions';
+    const label = makeLabel(msg, '#64748b');
     label.position.set(0, 2, 0);
     label.scale.multiplyScalar(2);
     scene.add(label);
     pointMeshes.push(label);
     return;
+  }
+  // Sparse state — show message alongside the few points we have
+  if (data.message && points.length > 0 && points.length <= 2) {
+    const hint = makeLabel(data.message, '#64748b');
+    hint.position.set(0, -1.5, 0);
+    hint.scale.multiplyScalar(1.5);
+    scene.add(hint);
+    pointMeshes.push(hint);
   }
 
   // Points
@@ -2903,8 +3011,8 @@ function updateInfo(view, data) {
   const infos = {
     trajectory: '<h3>Intent Trajectory</h3><p>' + (data.points?.length || 0) + ' points. ' + (data.points?.length > 0 && data.points[0]?.id === 'ref' ? 'Live session — user intent at origin. Tool calls by semantic distance.' : 'Historical workflows by agent. Blue = agent origin, green = healthy, red = flagged.') + '</p>',
     clusters: '<h3>Workflow Clusters</h3><p>' + (data.clusters?.length || 0) + ' clusters, ' + (data.points?.length || 0) + ' workflows. Transparent spheres show cluster boundaries. Red dots = flagged sessions.</p>',
-    coherence: '<h3>Causal Coherence</h3><p>' + (data.points?.length || 0) + ' nodes. ' + (data.edges?.length > 0 && data.points?.[0]?.metadata?.type === 'result' ? 'Live pairs — blue = result, orange = action. Line length = causal distance.' : 'Tool flow graph — node size = frequency, edges = transitions between tools.') + '</p>',
-    delegation: '<h3>Delegation Tree</h3><p>Root agent at center. Sub-agents branch outward. Distance from center = drift from root intent.</p>',
+    coherence: '<h3>Causal Coherence</h3><p>' + (data.message ? data.message : (data.points?.length || 0) + ' nodes. ' + (data.edges?.length > 0 && data.points?.[0]?.metadata?.type === 'result' ? 'Live pairs — blue = result, orange = action. Line length = causal distance. Pairs spiral upward over time.' : 'Tool flow graph — node height = frequency, edges = transitions between tools.')) + '</p>',
+    delegation: '<h3>Delegation Tree</h3><p>' + (data.message ? data.message : 'Root agent at center. Sub-agents branch outward. Distance = drift from root intent. Edge color = coherence (green = aligned, red = breached).') + '</p>',
     evolution: '<h3>Agent Evolution</h3><p>Select an agent to watch its behavioral profile develop over time. Trail shows centroid migration. Use slider or Play to scrub through sessions.</p>',
   };
   el.innerHTML = infos[view] || '';

@@ -51,6 +51,7 @@ import { CausalCoherenceTracker, buildCoherenceEvent } from "./causal-coherence.
 import { VectorStore, buildNovelWorkflowEvent, buildUrlCorrelationEvent } from "./vector-store.js";
 import { IntentChain, buildDelegationDriftEvent } from "./intent-chain.js";
 import { TransformerScorer } from "./transformer/scorer.js";
+import type { AttackTrace } from "./transformer/contrastive.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -654,6 +655,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         minSequenceLength: 3,
         minSessionsToTrain: config.transformerMinSessions,
         trainIntervalSessions: config.transformerTrainInterval,
+        intentAttentionThreshold: config.transformerIntentAttentionThreshold,
       }, _vectorStore)
     : null;
   if (_transformerScorer) (globalThis as any).__shroudTransformerScorer = _transformerScorer;
@@ -673,6 +675,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(event);
       agentTracker.recordSecurityEvent(1);
       api.logger?.warn(`[shroud] PHANTOM TOOL TRIPPED: ${toolName} — confirmed injection`);
+      // Record attack trace for contrastive learning (Tier 2) + threat labels (Tier 4)
+      if (_transformerScorer && _sessionToolSequence.length > 0) {
+        const trace: AttackTrace = {
+          legitimatePrefix: [..._sessionToolSequence],
+          hijackedSuffix: [toolName],
+          injectionPoint: _sessionToolSequence.length,
+          source: "phantom",
+          threatType: "phantom_tool_invocation",
+          timestamp: Date.now(),
+        };
+        _transformerScorer.recordAttackTrace(trace);
+        // Extract trapType from signatureId (format: pt_<trapType>)
+        const trapType = event.signatureId.replace(/^pt_/, "") || "data_upload";
+        _transformerScorer.onPhantomTrigger(trapType, [..._sessionToolSequence, toolName]);
+      }
     });
   }
 
@@ -895,23 +912,41 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const agentSession = agentTracker.getCurrentSession();
       const seed = (agentSession?.agentLabel || "default") + ":" + (agentSession?.sessionId || "0");
       _honeypot.generate(seed, config.secretKey);
-      // Register honeypot values with the obfuscator's allowlist so they
+      // Register ALL honeypot values with the obfuscator's allowlist so they
       // survive inbound obfuscation (otherwise Shroud neutralizes its own tripwires)
       obfuscator.addRuntimeAllowlist(_honeypot.getTokens().map(t => t.value));
-      _honeypot.buildContextBlock(); // generates fragments
-      // Scatter honeypot fragments across the prompt — not clustered together.
-      // Insert each fragment at a different position so they look like
-      // incidental context from different system components.
-      const fragments = _honeypot.getContextFragments();
-      if (fragments.length > 0 && obfuscatedPrompt.length > 100) {
-        const lines = obfuscatedPrompt.split("\n");
-        const step = Math.max(1, Math.floor(lines.length / (fragments.length + 1)));
-        for (let f = 0; f < fragments.length; f++) {
-          const insertAt = Math.min((f + 1) * step, lines.length);
-          lines.splice(insertAt, 0, fragments[f]);
-        }
-        obfuscatedPrompt = lines.join("\n");
+
+      // Determine agent maturity for rate-tiered arming
+      let agentMaturityInfo: import("./detectors/honeypot.js").AgentMaturityInfo | undefined;
+      if (agentSession) {
+        const baseline = (profiler && agentSession.agentBuildId)
+          ? profiler.getBaselineStore().load(agentSession.agentBuildId)
+          : null;
+        agentMaturityInfo = {
+          maturity: baseline?.maturity ?? null,
+          securityEventCount: agentSession.securityEventCount || 0,
+        };
       }
+
+      // Rate-limited arming decision (deterministic from seed)
+      const decision = _honeypot.arm(seed, config.secretKey, config.honeypotRate, agentMaturityInfo);
+      _honeypot.buildContextBlock(); // generates fragments based on arming decision
+
+      if (decision.armed && decision.mode === "loud") {
+        // Loud tokens: scatter bare values across the prompt
+        const fragments = _honeypot.getContextFragments();
+        if (fragments.length > 0 && obfuscatedPrompt.length > 100) {
+          const lines = obfuscatedPrompt.split("\n");
+          const step = Math.max(1, Math.floor(lines.length / (fragments.length + 1)));
+          for (let f = 0; f < fragments.length; f++) {
+            const insertAt = Math.min((f + 1) * step, lines.length);
+            lines.splice(insertAt, 0, fragments[f]);
+          }
+          obfuscatedPrompt = lines.join("\n");
+        }
+      }
+      // Quiet tokens: already in allowlist, no prompt injection needed.
+      // They look like normal Shroud fakes — invisible to the LLM.
     }
 
     dumpStatsFile(obfuscator);
@@ -1143,6 +1178,25 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(honeypotHit);
         agentTracker.recordSecurityEvent(1);
         api.logger?.warn(`[shroud] HONEYPOT TRIPPED: ${honeypotHit.description}`);
+        // Record attack trace for contrastive learning (Tier 2) + threat labels (Tier 4)
+        if (_transformerScorer && _sessionToolSequence.length > 0) {
+          const trace: AttackTrace = {
+            legitimatePrefix: [..._sessionToolSequence],
+            hijackedSuffix: [event.toolName ?? "unknown"],
+            injectionPoint: _sessionToolSequence.length,
+            source: "honeypot",
+            threatType: "honeypot_credential",
+            timestamp: Date.now(),
+          };
+          _transformerScorer.recordAttackTrace(trace);
+          // Extract token type from signatureId (format: hp_<tokenType>)
+          const tokenType = honeypotHit.signatureId.replace(/^hp_/, "") || "credential";
+          _transformerScorer.onHoneypotTrigger(
+            tokenType,
+            [..._sessionToolSequence, event.toolName ?? "unknown"],
+            _sessionToolSequence.length,
+          );
+        }
         // Always block — honeypot trips are 100% injection, no false positives possible
         return { block: true, blockReason: `Shroud security: honeypot triggered — confirmed injection attempt` };
       }
@@ -1401,7 +1455,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // Log softmax prediction for all tool calls (not just anomalies)
         if (prediction.topK.length > 0) {
           const topStr = prediction.topK.map(k => `${k.tool}=${(k.prob * 100).toFixed(1)}%`).join(" ");
-          api.logger?.info(`[shroud] Transformer: ${event.toolName} surprise=${prediction.surprise.toFixed(3)} session=${prediction.sessionAnomalyScore.toFixed(3)} top=[${topStr}]`);
+          api.logger?.info(`[shroud] Transformer: ${event.toolName} surprise=${prediction.surprise.toFixed(3)} session=${prediction.sessionAnomalyScore.toFixed(3)} intent_attn=${prediction.intentAttention.toFixed(4)} top=[${topStr}]`);
         }
         if (anomalyEvt) {
           const agentSession = agentTracker.getCurrentSession();
@@ -1533,6 +1587,26 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
             if (shadowResult.verdict === "block") {
               agentTracker.recordSecurityEvent(1);
+              // Record attack trace for contrastive learning (Tier 2) + threat labels (Tier 4)
+              if (_transformerScorer && _sessionToolSequence.length > 0) {
+                const shadowToolNames = shadowResult.steps
+                  .filter(s => s.llmResponse)
+                  .flatMap(s => s.llmResponse!.toolCalls.map(tc => tc.name));
+                const trace: AttackTrace = {
+                  legitimatePrefix: [..._sessionToolSequence],
+                  hijackedSuffix: [event.toolName ?? "unknown", ...shadowToolNames],
+                  injectionPoint: _sessionToolSequence.length,
+                  source: "shadow",
+                  threatType: "shadow_exfil",
+                  timestamp: Date.now(),
+                };
+                _transformerScorer.recordAttackTrace(trace);
+                _transformerScorer.onShadowBlock(
+                  shadowResult.verdictReason,
+                  [..._sessionToolSequence],
+                  [event.toolName ?? "unknown", ...shadowToolNames],
+                );
+              }
               api.logger?.warn(`[shroud] BLOCKED by shadow execution: ${shadowResult.verdictReason}`);
               return { block: true, blockReason: `Shroud shadow execution: ${shadowResult.verdictReason}` };
             }

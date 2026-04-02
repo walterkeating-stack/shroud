@@ -11,6 +11,8 @@
 import { type MiniTransformer, type TransformerWeights, flattenWeightsList } from "./model.js";
 import { type ToolTokenizer, BOS } from "./tokenizer.js";
 import { crossEntropyLoss } from "./linalg.js";
+import { ContrastiveTrainer, DEFAULT_CONTRASTIVE_CONFIG, type AttackTrace } from "./contrastive.js";
+import { ThreatHeadClassifier, type ThreatLabeledExample, LEARNED_THREAT_CLASS_COUNT } from "./threat-heads.js";
 
 // ─── Types ───
 
@@ -26,6 +28,8 @@ export interface TrainerConfig {
 
 export interface TrainResult {
   finalLoss: number;
+  contrastiveLoss: number;
+  threatHeadLoss: number;
   epochs: number;
   totalSteps: number;
   durationMs: number;
@@ -82,14 +86,22 @@ export class TransformerTrainer {
    * Each sequence is a string[] of tool names.
    * Optional intentVecs: parallel array of 256-dim TF-IDF embeddings of the user message
    * that initiated each session (enables intent-conditioned prediction).
+   * Optional attackTraces: if provided and non-empty, contrastive mini-batches run
+   * after the cross-entropy loop (lambda=0.3 weighting).
    */
-  trainOnSequences(sequences: string[][], intentVecs?: Array<Float64Array | null>): TrainResult {
+  trainOnSequences(
+    sequences: string[][],
+    intentVecs?: Array<Float64Array | null>,
+    attackTraces?: AttackTrace[],
+    threatClassifier?: ThreatHeadClassifier,
+    threatLabels?: ThreatLabeledExample[],
+  ): TrainResult {
     const start = Date.now();
     const cfg = this._config;
 
     // Filter sequences with at least 2 tools (need input + target)
     let data = sequences.filter(s => s.length >= 2);
-    if (data.length === 0) return { finalLoss: 0, epochs: 0, totalSteps: 0, durationMs: 0, sequencesUsed: 0 };
+    if (data.length === 0) return { finalLoss: 0, contrastiveLoss: 0, threatHeadLoss: 0, epochs: 0, totalSteps: 0, durationMs: 0, sequencesUsed: 0 };
 
     // Sample if too many
     if (data.length > cfg.maxSequences) {
@@ -119,7 +131,7 @@ export class TransformerTrainer {
       }
     }
 
-    if (examples.length === 0) return { finalLoss: 0, epochs: 0, totalSteps: 0, durationMs: 0, sequencesUsed: data.length };
+    if (examples.length === 0) return { finalLoss: 0, contrastiveLoss: 0, threatHeadLoss: 0, epochs: 0, totalSteps: 0, durationMs: 0, sequencesUsed: data.length };
 
     // Initialize Adam state
     if (!this._adamState) {
@@ -188,13 +200,99 @@ export class TransformerTrainer {
       lastLoss = epochLoss / epochCount;
     }
 
+    // ── Contrastive mini-batches (Tier 2) ──
+    // After cross-entropy training, run triplet loss through the shared backbone
+    // if attack traces are available. This separates healthy vs hijacked embeddings.
+    let contrastiveLoss = 0;
+    if (attackTraces && attackTraces.length > 0 && data.length >= 2) {
+      const contrastiveTrainer = new ContrastiveTrainer(
+        this._model,
+        this._tokenizer,
+        DEFAULT_CONTRASTIVE_CONFIG,
+      );
+      const cResult = contrastiveTrainer.trainOnTraces(attackTraces, data, intentVecs);
+      contrastiveLoss = cResult.loss;
+    }
+
+    // ── Threat head training (Tier 4) ──
+    // After backbone training, train threat heads on labeled examples
+    // (backbone is frozen — only threat head weights update).
+    let threatHeadLoss = 0;
+    if (threatClassifier && threatLabels && threatLabels.length > 0) {
+      threatHeadLoss = this._trainThreatHeads(threatClassifier, threatLabels);
+    }
+
     return {
       finalLoss: lastLoss,
+      contrastiveLoss,
+      threatHeadLoss,
       epochs: cfg.maxEpochs,
       totalSteps: step,
       durationMs: Date.now() - start,
       sequencesUsed: data.length,
     };
+  }
+
+  /**
+   * Train threat head classifier on labeled examples.
+   * Backbone is frozen — only threat head MLP weights are updated.
+   * Returns average loss across all examples and heads.
+   */
+  private _trainThreatHeads(
+    classifier: ThreatHeadClassifier,
+    examples: ThreatLabeledExample[],
+  ): number {
+    const lr = 0.005;
+    const numEpochs = 5;
+    let totalLoss = 0;
+    let totalCount = 0;
+
+    for (let epoch = 0; epoch < numEpochs; epoch++) {
+      // Shuffle examples
+      const shuffled = [...examples];
+      this._shuffle(shuffled);
+
+      for (const example of shuffled) {
+        if (example.sequence.length < 2) continue;
+
+        // Ensure tools are in tokenizer
+        for (const t of example.sequence) this._tokenizer.addTool(t);
+
+        // Forward pass through backbone (frozen) to get embedding + entropy
+        const tokenIds = this._tokenizer.encodeSequence(example.sequence);
+        const cache = this._model.forwardFull(tokenIds, example.intentVec);
+
+        const backboneEmb = cache.finalLnOut;
+        const headEntropy = cache.headAttentionEntropy;
+
+        // Train each head independently
+        for (let h = 0; h < 3; h++) {
+          const headCache = classifier.forwardWithCache(h, backboneEmb, headEntropy);
+          const target = example.headLabels[h];
+
+          // Cross-entropy loss
+          const loss = -Math.log(Math.max(headCache.probs[target], 1e-12));
+          totalLoss += loss;
+          totalCount++;
+
+          // Backward pass (get gradients for this head)
+          const grad = classifier.backwardHead(h, headCache, target);
+
+          // SGD update (simple, no Adam needed for ~1236 params)
+          const head = classifier.weights.heads[h];
+          for (let i = 0; i < grad.w1.length; i++) head.w1[i] -= lr * grad.w1[i];
+          for (let i = 0; i < grad.b1.length; i++) head.b1[i] -= lr * grad.b1[i];
+          for (let i = 0; i < grad.w2.length; i++) head.w2[i] -= lr * grad.w2[i];
+          for (let i = 0; i < grad.b2.length; i++) head.b2[i] -= lr * grad.b2[i];
+
+          // Update reliability based on whether prediction matches label
+          const predicted = headCache.probs[target] > 0.5;
+          classifier.updateReliability(h, predicted);
+        }
+      }
+    }
+
+    return totalCount > 0 ? totalLoss / totalCount : 0;
   }
 
   /** Get the current learning rate with warmup + cosine decay. */

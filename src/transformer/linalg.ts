@@ -267,6 +267,51 @@ export function xorshift32(state: { s: number }): number {
   return (s >>> 0) / 0xFFFFFFFF;
 }
 
+/** L2 (Euclidean) distance between two vectors. */
+export function l2Distance(a: Float64Array, b: Float64Array, dim: number): number {
+  let sum = 0;
+  for (let i = 0; i < dim; i++) {
+    const d = a[i] - b[i];
+    sum += d * d;
+  }
+  return Math.sqrt(sum);
+}
+
+/** L2-normalize a vector. Returns new array. */
+export function l2Normalize(x: Float64Array, dim: number): Float64Array {
+  const out = new Float64Array(dim);
+  let norm = 0;
+  for (let i = 0; i < dim; i++) norm += x[i] * x[i];
+  norm = Math.sqrt(norm);
+  if (norm < 1e-12) return out; // zero vector stays zero
+  for (let i = 0; i < dim; i++) out[i] = x[i] / norm;
+  return out;
+}
+
+/** Cosine similarity between two vectors. */
+export function cosineSimilarity(a: Float64Array, b: Float64Array, dim: number): number {
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < dim; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  if (denom < 1e-12) return 0;
+  return dot / denom;
+}
+
+/** Shannon entropy of a probability distribution. H = -Σ p_i * log(p_i). */
+export function entropy(probs: Float64Array, len: number): number {
+  let h = 0;
+  for (let i = 0; i < len; i++) {
+    if (probs[i] > 1e-12) {
+      h -= probs[i] * Math.log(probs[i]);
+    }
+  }
+  return h;
+}
+
 /** FNV-1a hash for deterministic seeding. */
 export function fnv1a(str: string): number {
   let hash = 0x811c9dc5;

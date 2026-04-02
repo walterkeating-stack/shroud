@@ -80,6 +80,15 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (env === "false") return false;
       return typeof raw.honeypotEnabled === "boolean" ? raw.honeypotEnabled : true;
     })(),
+    honeypotRate: (() => {
+      const env = process.env.SHROUD_HONEYPOT_RATE;
+      if (env) {
+        const parsed = parseFloat(env);
+        if (!isNaN(parsed)) return Math.max(0, Math.min(1, parsed));
+      }
+      if (typeof raw.honeypotRate === "number") return Math.max(0, Math.min(1, raw.honeypotRate));
+      return 0.25;
+    })(),
     canaryPrefix:
       typeof raw.canaryPrefix === "string"
         ? raw.canaryPrefix
@@ -383,6 +392,11 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       const env = process.env.SHROUD_TRANSFORMER_TRAIN_INTERVAL;
       if (env) return parseInt(env) || 50;
       return typeof raw.transformerTrainInterval === "number" ? raw.transformerTrainInterval : 50;
+    })(),
+    transformerIntentAttentionThreshold: (() => {
+      const env = process.env.SHROUD_TRANSFORMER_INTENT_ATTENTION_THRESHOLD;
+      if (env) return parseFloat(env) || 0.05;
+      return typeof raw.transformerIntentAttentionThreshold === "number" ? raw.transformerIntentAttentionThreshold : 0.05;
     })(),
   };
 

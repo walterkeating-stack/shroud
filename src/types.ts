@@ -83,6 +83,8 @@ export interface ShroudConfig {
   canaryEnabled: boolean;
   canaryPrefix: string;
   honeypotEnabled: boolean;
+  /** Honeypot injection rate (0.0 to 1.0). Fraction of sessions that get armed. */
+  honeypotRate: number;
   auditEnabled: boolean;
   logMappings: boolean;
   customPatterns: Array<{ name: string; pattern: string; category?: string }>;
@@ -224,4 +226,6 @@ export interface ShroudConfig {
   transformerMinSessions: number;
   /** Sessions between retraining cycles (default: 50). */
   transformerTrainInterval: number;
+  /** Intent attention threshold — below this triggers INTENT_HIJACK event (default: 0.05). */
+  transformerIntentAttentionThreshold: number;
 }

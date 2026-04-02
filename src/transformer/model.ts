@@ -66,6 +66,14 @@ export interface ForwardCache {
   lastHidden: Float64Array;    // hiddenDim (last position)
   logits: Float64Array;        // vocabSize
   probs: Float64Array;         // vocabSize (softmax of logits)
+  /** Shannon entropy of each attention head at last position. 8-dim: numHeads × numLayers.
+   *  Used by threat head classifier for threat specialization (Tier 4). */
+  headAttentionEntropy: Float64Array;
+  /** Attention weight from last position to position 0 (intent) for each head at each layer.
+   *  Layout: [layer0_head0, layer0_head1, ..., layer1_head0, ...]. 8 values total.
+   *  When intent vector is projected into position 0, this measures how much each head
+   *  attends to the user's original intent. Near-zero = agent hijacked away from intent. */
+  intentAttention: Float64Array;
 }
 
 interface LayerCache {
@@ -328,10 +336,33 @@ export class MiniTransformer {
     // 5. Softmax for probabilities
     const probs = softmax(logits, vocabSize);
 
+    // 6. Compute attention entropy at last position for each head in each layer
+    //    Layout: [layer0_head0, layer0_head1, ..., layer1_head0, ...]
+    const headAttentionEntropy = new Float64Array(numLayers * numHeads);
+    // 7. Compute intent attention: how much the last position attends to position 0 (intent)
+    //    attnWeights[head][lastPos][0] for each head/layer. Same layout as entropy.
+    const intentAttention = new Float64Array(numLayers * numHeads);
+    for (let l = 0; l < numLayers; l++) {
+      const attnW = layerCaches[l].attnWeights;
+      for (let h = 0; h < numHeads; h++) {
+        const offset = h * T * T + (T - 1) * T;
+        let ent = 0;
+        for (let j = 0; j < T; j++) {
+          const p = attnW[offset + j];
+          if (p > 1e-12) ent -= p * Math.log(p);
+        }
+        headAttentionEntropy[l * numHeads + h] = ent;
+        // Intent attention: weight from last position to position 0
+        intentAttention[l * numHeads + h] = attnW[offset]; // offset + 0
+      }
+    }
+
     return {
       tokenIds, seqLen: T, intentVec: intentVec || null, embedded,
       layerCaches, finalLnOut, finalLnCache,
       lastHidden: lastHiddenRaw, logits, probs,
+      headAttentionEntropy,
+      intentAttention,
     };
   }
 
@@ -569,6 +600,210 @@ export class MiniTransformer {
         }
       }
       // Don't need dIntentVec — it's input data, not a parameter
+    }
+
+    return grad;
+  }
+
+  /**
+   * Extract the contrastive embedding: final layer-normed hidden state at the last position.
+   * This is the backbone's representation before the output projection — dim = hiddenDim (64).
+   * Equivalent to a forward pass but returns the embedding instead of logits.
+   */
+  getEmbedding(tokenIds: number[], intentVec?: Float64Array | null): Float64Array {
+    const cache = this.forwardFull(tokenIds, intentVec);
+    // finalLnOut is already the layer-normed hidden at last position (dim = hiddenDim)
+    return new Float64Array(cache.finalLnOut);
+  }
+
+  /**
+   * Backward pass from the embedding (contrastive loss gradient).
+   * Skips the output projection — gradient flows from the final layer norm output
+   * directly back through the transformer layers.
+   * Returns gradient structure (same shape as weights).
+   */
+  backwardContrastive(cache: ForwardCache, dEmbedding: Float64Array): TransformerWeights {
+    const { hiddenDim: d, numHeads, ffnDim } = this.config;
+    const T = cache.seqLen;
+    const headDim = d / numHeads;
+    const w = this.weights;
+
+    // Allocate gradient buffers
+    const grad = this._allocateWeights();
+
+    // Start from the embedding gradient (at the final layer norm output)
+    // dFinalLnOut = dEmbedding (directly, no output projection involved)
+    const dFinalLnOut = new Float64Array(dEmbedding);
+
+    // Final layer norm backward
+    const { dx: dLastHidden, dgamma: dFinalGamma, dbeta: dFinalBeta } = layerNormBackward(
+      dFinalLnOut, cache.finalLnCache, w.finalLnGamma, d,
+    );
+    for (let i = 0; i < d; i++) {
+      grad.finalLnGamma[i] = dFinalGamma[i];
+      grad.finalLnBeta[i] = dFinalBeta[i];
+    }
+
+    // Expand to full sequence (only last position has gradient)
+    const dHidden = new Float64Array(T * d);
+    setRow(dHidden, T - 1, d, dLastHidden);
+
+    // Transformer layers (reverse) — same as backward() but without output projection
+    let dH = dHidden;
+
+    for (let l = this.config.numLayers - 1; l >= 0; l--) {
+      const lw = w.layers[l];
+      const lc = cache.layerCaches[l];
+      const lg = grad.layers[l];
+
+      // FFN residual backward
+      const dFFN2Out = new Float64Array(dH);
+
+      for (let t = 0; t < T; t++) {
+        for (let i = 0; i < d; i++) {
+          lg.ffn2B[i] += dFFN2Out[t * d + i];
+        }
+      }
+      const dFFN2W = matmulTransA(lc.ffn1Act, dFFN2Out, T, ffnDim, d);
+      for (let i = 0; i < dFFN2W.length; i++) lg.ffn2W[i] += dFFN2W[i];
+
+      const dFFN1Act = matmulTransB(dFFN2Out, lw.ffn2W, T, d, ffnDim);
+      const dFFN1Out = geluBackward(dFFN1Act, lc.ffn1Out);
+
+      for (let t = 0; t < T; t++) {
+        for (let i = 0; i < ffnDim; i++) {
+          lg.ffn1B[i] += dFFN1Out[t * ffnDim + i];
+        }
+      }
+      const dFFN1W = matmulTransA(lc.ffnLnOut, dFFN1Out, T, d, ffnDim);
+      for (let i = 0; i < dFFN1W.length; i++) lg.ffn1W[i] += dFFN1W[i];
+
+      const dFFNLnOut = matmulTransB(dFFN1Out, lw.ffn1W, T, ffnDim, d);
+
+      const dPostAttn = new Float64Array(dH);
+      for (let t = 0; t < T; t++) {
+        const dRow = getRow(dFFNLnOut, t, d);
+        const { dx, dgamma, dbeta } = layerNormBackward(
+          dRow, lc.ffnLnCaches[t], lw.ffnLnGamma, d,
+        );
+        for (let i = 0; i < d; i++) {
+          dPostAttn[t * d + i] += dx[i];
+          lg.ffnLnGamma[i] += dgamma[i];
+          lg.ffnLnBeta[i] += dbeta[i];
+        }
+      }
+
+      // Attention backward
+      const dAttnProjOut = new Float64Array(dPostAttn);
+      const dAttnOut = matmulTransB(dAttnProjOut, lw.oProj, T, d, d);
+      const dOProj = matmulTransA(lc.attnOut, dAttnProjOut, T, d, d);
+      for (let i = 0; i < dOProj.length; i++) lg.oProj[i] += dOProj[i];
+
+      const dQ = new Float64Array(T * d);
+      const dK = new Float64Array(T * d);
+      const dV = new Float64Array(T * d);
+
+      for (let h = 0; h < numHeads; h++) {
+        const dAttnOutH = new Float64Array(T * headDim);
+        const Qh = new Float64Array(T * headDim);
+        const Kh = new Float64Array(T * headDim);
+        const Vh = new Float64Array(T * headDim);
+        const weightsH = new Float64Array(T * T);
+
+        for (let t = 0; t < T; t++) {
+          for (let i = 0; i < headDim; i++) {
+            dAttnOutH[t * headDim + i] = dAttnOut[t * d + h * headDim + i];
+            Qh[t * headDim + i] = lc.Q[t * d + h * headDim + i];
+            Kh[t * headDim + i] = lc.K[t * d + h * headDim + i];
+            Vh[t * headDim + i] = lc.V[t * d + h * headDim + i];
+          }
+        }
+        weightsH.set(lc.attnWeights.subarray(h * T * T, (h + 1) * T * T));
+
+        const dVh = matmulTransA(weightsH, dAttnOutH, T, T, headDim);
+        const dWeights = matmulTransB(dAttnOutH, Vh, T, headDim, T);
+
+        const dScores = new Float64Array(T * T);
+        for (let i = 0; i < T; i++) {
+          let dotSum = 0;
+          for (let j = 0; j < T; j++) {
+            dotSum += dWeights[i * T + j] * weightsH[i * T + j];
+          }
+          for (let j = 0; j < T; j++) {
+            dScores[i * T + j] = weightsH[i * T + j] * (dWeights[i * T + j] - dotSum);
+          }
+        }
+
+        const scale = 1 / Math.sqrt(headDim);
+        for (let i = 0; i < dScores.length; i++) dScores[i] *= scale;
+
+        for (let i = 0; i < T; i++) {
+          for (let j = i + 1; j < T; j++) {
+            dScores[i * T + j] = 0;
+          }
+        }
+
+        const dQh = matmul(dScores, Kh, T, T, headDim);
+        const dKh = matmulTransA(dScores, Qh, T, T, headDim);
+
+        for (let t = 0; t < T; t++) {
+          for (let i = 0; i < headDim; i++) {
+            dQ[t * d + h * headDim + i] += dQh[t * headDim + i];
+            dK[t * d + h * headDim + i] += dKh[t * headDim + i];
+            dV[t * d + h * headDim + i] += dVh[t * headDim + i];
+          }
+        }
+      }
+
+      const dAttnLnOut = new Float64Array(T * d);
+      const dQProj = matmulTransA(lc.attnLnOut, dQ, T, d, d);
+      const dKProj = matmulTransA(lc.attnLnOut, dK, T, d, d);
+      const dVProj = matmulTransA(lc.attnLnOut, dV, T, d, d);
+      for (let i = 0; i < dQProj.length; i++) lg.qProj[i] += dQProj[i];
+      for (let i = 0; i < dKProj.length; i++) lg.kProj[i] += dKProj[i];
+      for (let i = 0; i < dVProj.length; i++) lg.vProj[i] += dVProj[i];
+
+      const dQ2 = matmulTransB(dQ, lw.qProj, T, d, d);
+      const dK2 = matmulTransB(dK, lw.kProj, T, d, d);
+      const dV2 = matmulTransB(dV, lw.vProj, T, d, d);
+      for (let i = 0; i < dAttnLnOut.length; i++) {
+        dAttnLnOut[i] = dQ2[i] + dK2[i] + dV2[i];
+      }
+
+      const dInput = new Float64Array(dPostAttn);
+      for (let t = 0; t < T; t++) {
+        const dRow = getRow(dAttnLnOut, t, d);
+        const { dx, dgamma, dbeta } = layerNormBackward(
+          dRow, lc.attnLnCaches[t], lw.attnLnGamma, d,
+        );
+        for (let i = 0; i < d; i++) {
+          dInput[t * d + i] += dx[i];
+          lg.attnLnGamma[i] += dgamma[i];
+          lg.attnLnBeta[i] += dbeta[i];
+        }
+      }
+
+      dH = dInput;
+    }
+
+    // Embedding gradients
+    for (let t = 0; t < T; t++) {
+      const tokId = cache.tokenIds[t];
+      for (let i = 0; i < d; i++) {
+        grad.tokenEmb[tokId * d + i] += dH[t * d + i];
+        grad.posEmb[t * d + i] += dH[t * d + i];
+      }
+    }
+
+    // Intent projection gradients
+    if (cache.intentVec && cache.intentVec.length === this.config.intentDim) {
+      const dPos0 = getRow(dH, 0, d);
+      for (let i = 0; i < d; i++) grad.intentBias[i] += dPos0[i];
+      for (let i = 0; i < this.config.intentDim; i++) {
+        for (let j = 0; j < d; j++) {
+          grad.intentProj[i * d + j] += cache.intentVec[i] * dPos0[j];
+        }
+      }
     }
 
     return grad;
