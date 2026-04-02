@@ -192,6 +192,15 @@ const startTime = Date.now();
 let requestCount = 0;
 let totalProcessingMs = 0;
 
+// Per-agent privacy counters (for dashboard)
+const privacy = {
+  obfuscationCalls: 0,
+  deobfuscationCalls: 0,
+  entitiesObfuscated: 0,
+  replacementsDeobfuscated: 0,
+  categoryCounts: {},
+};
+
 // ---------------------------------------------------------------------------
 // Stats dump helper
 // ---------------------------------------------------------------------------
@@ -225,6 +234,7 @@ function dumpSessionFile() {
       storeSize: getObfuscator().getStats().storeMappings ?? 0,
       classification: agentClassification,
       toolSequence: toolSequence.slice(-20),
+      privacy,
       updatedAt: new Date().toISOString(),
     };
     writeFileSync(APP_SESSIONS_FILE, JSON.stringify(session, null, 2) + "\n");
@@ -366,6 +376,13 @@ function handleObfuscate(id, params) {
     categories[e.category] = (categories[e.category] || 0) + 1;
   }
 
+  // Track per-agent privacy stats
+  privacy.obfuscationCalls++;
+  privacy.entitiesObfuscated += out.entities.length;
+  for (const [cat, count] of Object.entries(categories)) {
+    privacy.categoryCounts[cat] = (privacy.categoryCounts[cat] || 0) + count;
+  }
+
   const result = {
     text: out.obfuscated,
     entityCount: out.entities.length,
@@ -417,9 +434,16 @@ function handleDeobfuscate(id, params) {
 
   const stats = obf.getStats();
 
+  // Track per-agent privacy stats
+  const _deobCount = deobResult.replacementCount || 0;
+  if (_deobCount > 0) {
+    privacy.deobfuscationCalls++;
+    privacy.replacementsDeobfuscated += _deobCount;
+  }
+
   const result = {
     text: deobResult.text,
-    replacementCount: deobResult.replacementCount || 0,
+    replacementCount: _deobCount,
     replacementsByCategory: deobResult.replacementsByCategory || {},
     modified: deobResult.text !== text,
     storeSize: stats.storeMappings ?? 0,
