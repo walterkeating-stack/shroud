@@ -148,14 +148,6 @@ export interface ShroudConfig {
   /** Refresh interval in seconds for polling signature URL (default: 3600). */
   signaturesRefreshSec: number;
 
-  // --- LLM Event Grading ---
-  /** Enable LLM-based event grading (default: false). */
-  llmGradingEnabled: boolean;
-  /** Seconds between grading batches (default: 300). */
-  llmGradingIntervalSec: number;
-  /** Minimum events before triggering a grading batch (default: 5). */
-  llmGradingThreshold: number;
-
   // --- Dashboard ---
 
   // --- SIEM ---

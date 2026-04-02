@@ -157,15 +157,6 @@ export function startDashboard(
         const calls = deps.agentTracker.getCallLog();
         json(res, 200, { count: calls.length, calls: [...calls].reverse() });
       }
-      else if (url === "/api/grading") {
-        const grader = (globalThis as any).__shroudEventGrader;
-        json(res, 200, grader ? {
-          enabled: true,
-          stats: grader.getStats(),
-          graded: grader.getAllGraded().slice(-50),
-          batchLog: grader.getBatchLog(),
-        } : { enabled: false });
-      }
       else if (url === "/api/drift") {
         const dd = deps.driftDetector;
         json(res, 200, dd ? {
@@ -303,7 +294,7 @@ export function startDashboard(
         json(res, 404, { error: "Not found", endpoints: [
           "/health", "/api/overview", "/api/agents", "/api/agents/:buildId",
           "/api/events", "/api/events/stream", "/api/profiling",
-          "/api/profiling/:buildId", "/api/stats", "/api/calls", "/api/grading",
+          "/api/profiling/:buildId", "/api/stats", "/api/calls",
           "/api/drift", "/api/coherence", "/api/vectors", "/api/vectors/urls",
           "/api/vectors/:buildId/evolution", "/api/intent-chain",
           "/api/intent-chain/:buildId/events", "/api/viz/projection", "/viz",
@@ -395,9 +386,6 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
              (globalThis as any).__shroudExternalSigs.toolGuard.length,
       loadedAt: new Date((globalThis as any).__shroudExternalSigs.loadedAt).toISOString(),
     } : null,
-    grading: (globalThis as any).__shroudEventGrader
-      ? (globalThis as any).__shroudEventGrader.getStats()
-      : null,
     drift: {
       enabled: deps.config.driftEnabled,
       threshold: deps.config.driftThreshold,
@@ -634,14 +622,7 @@ function handleEvents(res: ServerResponse, deps: DashboardDeps, urlStr = "/api/e
     events = events.slice(-100);
   }
 
-  // Enrich events with LLM grading verdicts
-  const grader = (globalThis as any).__shroudEventGrader as import("./event-grader.js").EventGrader | undefined;
-  const enriched = grader ? events.map(e => {
-    const v = grader.getVerdict(e.timestamp);
-    return v ? { ...e, verdict: v.verdict, verdictReasoning: v.reasoning } : e;
-  }) : events;
-
-  json(res, 200, { stats, count: enriched.length, events: enriched });
+  json(res, 200, { stats, count: events.length, events });
 }
 
 function handleEventStream(req: IncomingMessage, res: ServerResponse, clients: Set<ServerResponse>) {
@@ -1472,7 +1453,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
-  <div class="tab" onclick="switchTab('calls')">Detection</div>
   <div class="tab" onclick="switchTab('transformer')">Transformer</div>
   <div class="tab" onclick="window.open('/viz','_blank')" style="margin-left:auto;border-color:#a855f7;color:#a855f7">Vector Space 3D</div>
 </div>
@@ -1481,7 +1461,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 </div>
 <div id="rulesContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
-<div id="callsContent" style="display:none"></div>
 <div id="transformerContent" style="display:none"></div>
 <div class="toast" id="toast"></div>
 
@@ -1858,24 +1837,6 @@ async function refresh() {
     }
     html += '</div>';
 
-    // LLM Grading (if enabled)
-    const grading = overview.grading;
-    if (grading) {
-      html += '<div class="card"><h2>LLM Event Grading</h2>';
-      if (grading.graded > 0) {
-        html += '<div class="stat" style="color:#58a6ff">' + grading.graded + '</div>';
-        html += '<div class="stat-label">Events graded</div>';
-        html += '<div class="row"><span class="label">True Positive</span><span class="value" style="color:#f85149">' + grading.truePositive + '</span></div>';
-        html += '<div class="row"><span class="label">False Positive</span><span class="value" style="color:#3fb950">' + grading.falsePositive + '</span></div>';
-        html += '<div class="row"><span class="label">Needs Review</span><span class="value" style="color:#d29922">' + grading.needsReview + '</span></div>';
-        html += '<div class="row"><span class="label">Pending</span><span class="value">' + grading.pending + '</span></div>';
-      } else {
-        html += '<div class="stat" style="color:#484f58">' + grading.pending + '</div>';
-        html += '<div class="stat-label">Events pending grading</div>';
-      }
-      html += '</div>';
-    }
-
     // Semantic Drift Detection
     const drift = overview.drift;
     html += '<div class="card"><h2>Semantic Drift</h2>';
@@ -1947,11 +1908,6 @@ async function refresh() {
       html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
       html += sigTooltip(e.signatureId) + ' ';
       html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || '', 40) + '</span>';
-      // LLM grading verdict badge (included in event data from API)
-      if (e.verdict) {
-        const vc = e.verdict === 'FALSE_POSITIVE' ? '#3fb950' : e.verdict === 'TRUE_POSITIVE' ? '#f85149' : '#d29922';
-        html += ' <span style="font-size:9px;color:' + vc + ';border:1px solid ' + vc + ';padding:0 4px;border-radius:3px">' + e.verdict.replace(/_/g, ' ') + '</span>';
-      }
       html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
       html += '<div id="' + eid + '" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">';
       html += '<table style="width:100%;color:#8b949e"><tbody>';
@@ -2059,12 +2015,10 @@ function switchTab(tab) {
   document.getElementById('content').style.display = tab === 'overview' ? 'grid' : 'none';
   document.getElementById('rulesContent').style.display = tab === 'rules' ? 'block' : 'none';
   document.getElementById('sigContent').style.display = tab === 'signatures' ? 'block' : 'none';
-  document.getElementById('callsContent').style.display = tab === 'calls' ? 'block' : 'none';
   document.getElementById('transformerContent').style.display = tab === 'transformer' ? 'block' : 'none';
   if (tab === 'overview') refresh();
   else if (tab === 'rules') refreshRules();
   else if (tab === 'signatures') renderSignatures();
-  else if (tab === 'calls') renderCalls();
   else if (tab === 'transformer') renderTransformer();
 }
 
@@ -2486,118 +2440,6 @@ function renderSignatures() {
   document.getElementById('sigContent').innerHTML = html;
 }
 
-async function renderCalls() {
-  try {
-    const gradingData = await fetchJson('/api/grading');
-    let html = '<div class="policy-section">';
-    html += '<h2 style="color:#c9d1d9;font-size:18px;margin-bottom:4px">LLM Detection</h2>';
-    html += '<p style="color:#484f58;font-size:12px;margin-bottom:16px">Shroud batches flagged security events and sends them to an LLM for grading. Each batch shows the question asked, the LLM response, and the verdicts applied.</p>';
-
-    if (!gradingData.enabled) {
-      html += '<div class="card">';
-      html += '<h2 style="color:#d29922">Not Enabled</h2>';
-      html += '<p style="color:#8b949e;margin-bottom:12px">LLM event grading is disabled. To enable:</p>';
-      html += '<pre style="background:#0d1117;padding:12px;border-radius:6px;color:#c9d1d9;font-size:12px">';
-      html += 'SHROUD_LLM_GRADING=true\\n';
-      html += 'SHROUD_LLM_GRADING_INTERVAL=300  # seconds between batches\\n';
-      html += 'SHROUD_LLM_GRADING_THRESHOLD=5   # min events before grading\\n';
-      html += '</pre>';
-      html += '<p style="color:#8b949e;margin-top:12px;font-size:12px">Add to systemd drop-in and restart the gateway.</p>';
-      html += '</div>';
-    } else {
-      // Verdict summary
-      const gs = gradingData.stats || {};
-      html += '<div class="card" style="margin-bottom:16px">';
-      html += '<div style="display:flex;gap:32px;margin-bottom:16px">';
-      html += '<div><span style="color:#f85149;font-size:32px;font-weight:bold">' + (gs.truePositive||0) + '</span><div style="font-size:12px;color:#8b949e">True Positive</div></div>';
-      html += '<div><span style="color:#3fb950;font-size:32px;font-weight:bold">' + (gs.falsePositive||0) + '</span><div style="font-size:12px;color:#8b949e">False Positive</div></div>';
-      html += '<div><span style="color:#d29922;font-size:32px;font-weight:bold">' + (gs.needsReview||0) + '</span><div style="font-size:12px;color:#8b949e">Needs Review</div></div>';
-      html += '<div><span style="color:#8b949e;font-size:32px;font-weight:bold">' + (gs.pending||0) + '</span><div style="font-size:12px;color:#8b949e">Pending</div></div>';
-      html += '<div><span style="color:#58a6ff;font-size:32px;font-weight:bold">' + (gs.graded||0) + '</span><div style="font-size:12px;color:#8b949e">Total Graded</div></div>';
-      html += '</div>';
-
-      // Verdicts table
-      if (gradingData.graded && gradingData.graded.length > 0) {
-        html += '<h3 style="color:var(--text-muted);font-size:13px;margin-bottom:8px">Recent Verdicts</h3>';
-        html += '<table class="data-table"><thead><tr>';
-        html += '<th>Agent</th>';
-        html += '<th>Signature</th>';
-        html += '<th>Matched Text</th>';
-        html += '<th>Verdict</th>';
-        html += '<th>LLM Reasoning</th>';
-        html += '</tr></thead><tbody>';
-        for (const g of gradingData.graded.slice(-30).reverse()) {
-          const vc = g.verdict === 'FALSE_POSITIVE' ? 'var(--success)' : g.verdict === 'TRUE_POSITIVE' ? 'var(--critical)' : 'var(--medium)';
-          html += '<tr>';
-          html += '<td>' + g.agentLabel + '</td>';
-          html += '<td><code>' + g.signatureId + '</code></td>';
-          html += '<td class="match" style="max-width:250px">' + (g.matchedText || '').replace(/</g, '&lt;') + '</td>';
-          html += '<td style="color:' + vc + ';font-weight:600">' + g.verdict.replace(/_/g,' ') + '</td>';
-          html += '<td style="color:var(--text-muted);font-size:11px">' + (g.reasoning || '') + '</td>';
-          html += '</tr>';
-        }
-        html += '</tbody></table>';
-      }
-      html += '</div>';
-
-      // Batch log — click to see full prompt/response/decisions
-      const batches = gradingData.batchLog || [];
-      html += '<div class="card"><h2>Detection Call Log</h2>';
-      if (batches.length > 0) {
-        html += '<p style="color:var(--text-muted);font-size:12px;margin-bottom:12px">Click a batch to see the prompt sent to the LLM, its response, and the decisions made.</p>';
-        for (const b of [...batches].reverse().slice(0, 20)) {
-          const statusColor = b.success ? 'var(--success)' : 'var(--critical)';
-          const bid = 'gbatch-' + b.timestamp;
-          html += '<div class="event batch-entry ' + (b.success ? 'low' : 'high') + '" onclick="var d=document.getElementById(\\'' + bid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
-          html += '<div class="batch-header">';
-          html += '<span class="time">' + timeAgo(b.timestamp) + '</span>';
-          html += '<span class="status" style="color:' + statusColor + '">' + (b.success ? 'OK' : 'FAILED') + '</span>';
-          html += '<span>' + b.eventCount + ' events graded</span>';
-          html += '<span style="color:var(--text-muted)">(' + b.trigger + ', ' + (b.responseTimeMs/1000).toFixed(1) + 's)</span>';
-          if (b.verdicts && b.verdicts.length > 0) {
-            const tp = b.verdicts.filter(v => v.verdict === 'TRUE_POSITIVE').length;
-            const fp = b.verdicts.filter(v => v.verdict === 'FALSE_POSITIVE').length;
-            const nr = b.verdicts.filter(v => v.verdict === 'NEEDS_REVIEW').length;
-            html += '<div class="verdicts"><span style="color:var(--critical)">' + tp + ' TP</span> <span style="color:var(--success)">' + fp + ' FP</span> <span style="color:var(--medium)">' + nr + ' REV</span></div>';
-          }
-          html += '</div>';
-          html += '<div id="' + bid + '" class="batch-detail">';
-          html += '<div style="margin-bottom:16px"><span class="detection-label">Question sent to LLM</span><pre class="detection-pre">' + (b.prompt || '').replace(/</g, '&lt;') + '</pre></div>';
-          html += '<div style="margin-bottom:16px"><span class="detection-label">LLM Response</span><pre class="detection-pre">' + (b.rawResponse || b.error || 'No response').replace(/</g, '&lt;') + '</pre></div>';
-          if (b.verdicts && b.verdicts.length > 0) {
-            html += '<div style="margin-top:12px"><span class="detection-label">Decisions / Actions</span>';
-            html += '<table class="data-table" style="margin-top:8px"><thead><tr>';
-            html += '<th>Agent</th>';
-            html += '<th>Signature</th>';
-            html += '<th>Verdict</th>';
-            html += '<th>Reasoning</th>';
-            html += '</tr></thead><tbody>';
-            for (const v of b.verdicts) {
-              const vc = v.verdict === 'FALSE_POSITIVE' ? 'var(--success)' : v.verdict === 'TRUE_POSITIVE' ? 'var(--critical)' : 'var(--medium)';
-              html += '<tr>';
-              html += '<td>' + v.agentLabel + '</td>';
-              html += '<td><code>' + v.signatureId + '</code></td>';
-              html += '<td style="color:' + vc + ';font-weight:600">' + v.verdict.replace(/_/g,' ') + '</td>';
-              html += '<td>' + v.reasoning + '</td>';
-              html += '</tr>';
-            }
-            html += '</tbody></table></div>';
-          }
-          html += '</div></div>';
-        }
-      } else {
-        html += '<p style="color:#484f58">No detection calls yet. Calls will appear when events are batched and sent to the LLM for grading.</p>';
-      }
-      html += '</div>';
-    }
-
-    html += '</div>';
-    document.getElementById('callsContent').innerHTML = html;
-  } catch(err) {
-    document.getElementById('callsContent').innerHTML = '<div class="card"><p style="color:#f85149">Error: ' + err.message + '</p></div>';
-  }
-}
-
 // ─── Transformer tab ───
 async function renderTransformer() {
   const el = document.getElementById('transformerContent');
@@ -2681,7 +2523,7 @@ async function renderTransformer() {
       html += '<span style="color:var(--critical)">Red</span> = anomalous (&gt; 0.85 = security event fired)</p>';
       html += '<p style="margin-top:8px"><strong style="color:var(--text-primary)">Training:</strong> Self-supervised — predicts next tool from completed sessions. Adam optimizer with cosine learning rate decay. Retrains every 50 new sessions. ~1 second on CPU. Zero external dependencies.</p>';
       if (!data.modelLoaded) {
-        html += '<p style="margin-top:12px;padding:10px;background:var(--medium-bg);border-radius:6px;color:var(--medium)"><strong>Cold start</strong> — accumulating session data (' + data.trainingSessions + ' workflows, need 30). Training activates automatically once enough data is available. Scoring is neutral until then.</p>';
+        html += '<p style="margin-top:12px;padding:10px;background:var(--medium-bg);border-radius:6px;color:var(--medium)"><strong>Cold start</strong> — accumulating session data (' + data.sessionsSinceLastTrain + '/' + data.minSessionsToTrain + ' sessions). Training activates automatically once enough data is available. Scoring is neutral until then.</p>';
       }
       html += '</div>';
       html += '</div>';

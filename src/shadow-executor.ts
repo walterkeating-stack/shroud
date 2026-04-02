@@ -9,7 +9,7 @@
  * The LLM thinks it's succeeding. Nothing real happened. Shroud observes
  * the full attack chain in simulation before any damage.
  *
- * Uses node:https directly (same as EventGrader) — bypasses all fetch
+ * Uses node:https directly — bypasses all fetch
  * wrappers to avoid triggering Shroud's own obfuscation interceptor.
  *
  * Zero external dependencies.
@@ -58,7 +58,7 @@ export interface ShadowExecutionOpts {
   lastLlmBody: any;
 }
 
-// ─── OAuth (shared pattern with event-grader) ───
+// ─── OAuth ───
 
 const CREDS_PATH = join(homedir(), ".claude", ".credentials.json");
 const OAUTH_TOKEN_URL = "https://platform.claude.com/v1/oauth/token";

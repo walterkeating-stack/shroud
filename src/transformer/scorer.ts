@@ -48,6 +48,10 @@ export interface TransformerStats {
   inferenceCount: number;
   avgInferenceMs: number;
   recentSurprises: number[];
+  /** Min sessions needed before first training (for cold start progress). */
+  minSessionsToTrain: number;
+  /** Sessions accumulated since last training (progress counter). */
+  sessionsSinceLastTrain: number;
 }
 
 interface PersistedMeta {
@@ -268,6 +272,8 @@ export class TransformerScorer {
         ? this._totalInferenceMs / this._inferenceCount
         : 0,
       recentSurprises: [...this._surpriseWindow],
+      minSessionsToTrain: this._config.minSessionsToTrain,
+      sessionsSinceLastTrain: this._sessionsSinceLastTrain,
     };
   }
 
@@ -294,8 +300,9 @@ export class TransformerScorer {
     }
   }
 
-  /** Save model to disk. */
+  /** Save model to disk. Only persists if model has been trained. */
   _saveModel(): void {
+    if (!this._modelLoaded) return;
     try {
       mkdirSync(this._profileDir, { recursive: true });
 

@@ -45,7 +45,6 @@ import type { TurnContext } from "./detectors/result-validator.js";
 import { PolicyEngine } from "./policy.js";
 import { AgentRegistry } from "./agent-registry.js";
 import * as sigLoaderMod from "./signature-loader.js";
-import { EventGrader, GRADING_SESSION_PREFIX, GRADING_AGENT_LABEL, captureModel } from "./event-grader.js";
 import { DriftDetector, buildDriftEvent } from "./detectors/drift-detector.js";
 import { ShadowExecutor, buildShadowEvent } from "./shadow-executor.js";
 import { CausalCoherenceTracker, buildCoherenceEvent } from "./causal-coherence.js";
@@ -348,28 +347,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       (globalThis as any).__shroudSigLoader = loader;
     }
 
-    // --- LLM Event Grading ---
-    // Always recreate — config may change between restarts
-    if (config.llmGradingEnabled) {
-      if ((globalThis as any).__shroudEventGrader) {
-        (globalThis as any).__shroudEventGrader.stop();
-      }
-      const grader = new EventGrader({
-        threshold: config.llmGradingThreshold,
-        intervalSec: config.llmGradingIntervalSec,
-        persistPath: join(config.profilingProfileDir.startsWith("~")
-          ? join(process.env.HOME || "/tmp", config.profilingProfileDir.slice(1))
-          : config.profilingProfileDir, "graded-events.jsonl"),
-      });
-      // Feed security events to the grader.
-      // Wire to BOTH the local bus AND the globalThis bus — covers all cases.
-      const graderCb = (event: any) => grader.addEvent(event);
-      if (securityBus) securityBus.onEvent(graderCb);
-      const gBus = (globalThis as any).__shroudSecurityBus;
-      if (gBus && gBus !== securityBus) gBus.onEvent(graderCb);
-      grader.start();
-      (globalThis as any).__shroudEventGrader = grader;
-    }
   }
 
   // Per-agent detector cache — avoids recreating for the same agent
@@ -1044,8 +1021,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               .join("\n");
           }
           if (textToScan.length > 0) {
-            const isGrading = agentTracker.getCurrentSession()?.agentLabel === GRADING_AGENT_LABEL;
-            const injEvents = isGrading ? [] : hookDetector.scanRequest(textToScan);
+            const injEvents = hookDetector.scanRequest(textToScan);
             const agentSession = agentTracker.getCurrentSession();
             for (const evt of injEvents) {
               if (agentSession) {
@@ -1541,7 +1517,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               params: event.params,
               intent: _currentIntent,
               honeypot: config.honeypotEnabled ? _honeypot : null,
-              model: (globalThis as any).__shroudGradingModel || null,
+              model: agentTracker.getCurrentSession()?.detectedModel || null,
               maxSteps: config.shadowExecutionMaxSteps,
               timeoutMs: config.shadowExecutionTimeoutMs,
               lastLlmBody: (globalThis as any).__shroudLastLlmBody || null,
@@ -1907,11 +1883,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           agentTracker.updateModel(body.model);
         }
 
-        // Capture model ID for the event grader (once — first LLM call)
-        if (typeof body.model === "string") {
-          captureModel(body.model);
-        }
-
         // Capture last LLM request body for shadow execution
         if (_shadowExecutor) {
           (globalThis as any).__shroudLastLlmBody = body;
@@ -2194,13 +2165,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
             const allText = textsToScan.join("\n");
 
-            // Self-whitelist: skip scanning for grading sessions (they contain
-            // real injection examples by definition).
-            // SECURITY: whitelist by agent LABEL match — the grading session's
-            // system prompt produces a known label via extractLabel().
-            // Not content-based — attacker can't inject the label into their text.
-            const isGradingSession = agentTracker.getCurrentSession()?.agentLabel === GRADING_AGENT_LABEL;
-            const events = isGradingSession ? [] : activeDetector.scanRequest(allText);
+            const events = activeDetector.scanRequest(allText);
 
             // Enrich events with agent identity
             const agentSession = agentTracker.getCurrentSession();

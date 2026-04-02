@@ -72,12 +72,17 @@ describe("HoneypotManager", () => {
   test("builds scattered context fragments containing all tokens", () => {
     hp.buildContextBlock(); // generates fragments
     const fragments = hp.getContextFragments();
-    expect(fragments.length).toBeGreaterThanOrEqual(4);
-    // Each fragment should contain exactly one honeypot value
+    expect(fragments.length).toBeGreaterThanOrEqual(3);
+    // Each fragment should contain at least one honeypot value
     const allValues = hp.getTokens().map(t => t.value);
     for (const frag of fragments) {
       const found = allValues.some(v => frag.includes(v));
       expect(found).toBe(true);
+    }
+    // All honeypot values should appear somewhere across fragments
+    const allFragText = fragments.join("\n");
+    for (const v of allValues) {
+      expect(allFragText).toContain(v);
     }
     // Fragments should be natural sentences, not KEY=VALUE format
     for (const frag of fragments) {

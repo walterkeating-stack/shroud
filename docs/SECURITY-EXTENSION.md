@@ -13,7 +13,7 @@ Shroud takes a different approach. Instead of trying to detect injection in natu
 3. **Watches behavior, not content** — monitors which tools the LLM calls, in what sequence, and whether they match what the user actually asked for. A "summarize this file" request that leads to a `web_fetch` to an unknown domain is suspicious regardless of what the text says.
 4. **Learns per-agent baselines** — each agent builds a behavioral profile over multiple sessions. A coaching bot that suddenly handles API keys, or a research agent that calls `message` for the first time, triggers anomaly detection tuned to that specific agent.
 
-The result: 11 detection layers, zero LLM overhead on the hot path, zero runtime dependencies, and the strongest layer (obfuscation) requires no detection at all.
+The result: 10 detection layers, zero LLM overhead on the hot path, zero runtime dependencies, and the strongest layer (obfuscation) requires no detection at all.
 
 ## Architecture
 
@@ -40,7 +40,6 @@ Tool result → category escalation (high-sensitivity PII from non-read tools?)
             → baseline deviation (novel sensitive categories?)
 
 Security events → dedup → SIEM export (webhook + JSONL)
-                → LLM grading (TP/FP/NEEDS_REVIEW)
                 → dashboard (real-time HTTP + SSE)
 ```
 
@@ -221,20 +220,7 @@ SHROUD_CANARY_SYSTEM=true        # inject into system prompts
 SHROUD_CANARY_BEHAVIOURAL=true   # false instruction tripwires
 ```
 
-### 11. LLM Event Grading
-
-Batches security events and sends them to the Anthropic API for classification as TRUE_POSITIVE, FALSE_POSITIVE, or NEEDS_REVIEW.
-
-Uses Claude Code OAuth token from `~/.claude/.credentials.json`. Calls `api.anthropic.com/v1/messages` via Node's native `https` module (bypasses fetch interceptor).
-
-**Config:**
-```
-SHROUD_LLM_GRADING=true
-SHROUD_LLM_GRADING_INTERVAL=300    # seconds between batches
-SHROUD_LLM_GRADING_THRESHOLD=5     # min events before grading
-```
-
-### 12. Security Dashboard
+### 11. Security Dashboard
 
 HTTP server on configurable port. Serves JSON API + embedded HTML dashboard.
 
@@ -253,7 +239,6 @@ HTTP server on configurable port. Serves JSON API + embedded HTML dashboard.
 | `/api/policy` | GET | Current firewall policy |
 | `/api/policy/default` | PUT | Update default policy |
 | `/api/policy/agent/:id` | PUT | Update per-agent policy |
-| `/api/grading` | GET | LLM grading stats + verdicts |
 | `/api/calls` | GET | LLM call log |
 
 **Config:**
@@ -263,7 +248,7 @@ SHROUD_DASHBOARD_PORT=9380
 SHROUD_DASHBOARD_BIND=127.0.0.1
 ```
 
-### 13. SIEM Integration
+### 12. SIEM Integration
 
 Ships security events via webhook and/or JSONL file. Events persist across gateway restarts (reloaded from JSONL on startup).
 
@@ -274,7 +259,7 @@ SHROUD_SIEM_WEBHOOK_AUTH=Bearer your-token
 SHROUD_SIEM_JSONL_PATH=/var/log/shroud-security-events.jsonl
 ```
 
-### 14. Security Event Dedup
+### 13. Security Event Dedup
 
 Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + agentLabel` within a 60-second window is suppressed. Prevents shared system prompt content from generating repeated events per LLM call.
 
@@ -311,13 +296,6 @@ Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + ag
 | `SHROUD_CANARY_ENABLED` | false | Enable canary tokens |
 | `SHROUD_CANARY_SYSTEM` | false | Inject into system prompts |
 | `SHROUD_CANARY_BEHAVIOURAL` | false | Behavioural canary monitoring |
-
-### LLM Grading
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SHROUD_LLM_GRADING` | false | Enable LLM event classification |
-| `SHROUD_LLM_GRADING_INTERVAL` | 300 | Seconds between grading batches |
-| `SHROUD_LLM_GRADING_THRESHOLD` | 5 | Min events before grading |
 
 ### Signatures
 | Variable | Default | Description |
@@ -356,7 +334,6 @@ Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + ag
 | `src/agent-registry.ts` | OpenClaw agent inventory + signal map |
 | `src/agent-session.ts` | Agent session tracking + identity extraction |
 | `src/security-event.ts` | SecurityEventBus + dedup + JSONL reload |
-| `src/event-grader.ts` | LLM-based event classification |
 | `src/profiler.ts` | Behavioural profiler |
 | `src/profiler-store.ts` | Baseline persistence (Welford's algorithm) |
 | `src/profiler-analysis.ts` | Z-score anomaly detection |

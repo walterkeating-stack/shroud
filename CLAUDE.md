@@ -65,9 +65,8 @@ LLM response → reverse-map fakes → deobfuscate (up to 3 recursive passes)
 | `src/generators/network.ts` | Format-preserving fakes: IPv4→CGNAT (100.64.0.0/10), IPv6→ULA (fd00::/8), subnet-aware deob |
 | `src/security-event.ts` | SecurityEvent interface, ThreatClass enum, SecurityEventBus (in-memory event accumulator) |
 | `src/detectors/injection.ts` | Injection detection engine — 40+ signatures for prompt injection, data exfil, encoding bypass |
-| `src/event-grader.ts` | LLM-based event grading — batches events, calls Anthropic API via OAuth, classifies as TP/FP/NEEDS_REVIEW |
 | `src/profiler.ts` | Behavioural profiler — learns agent patterns, detects anomalies |
-| `src/dashboard.ts` | Security dashboard (HTTP server on port 9380) — events, agents, grading, profiling |
+| `src/dashboard.ts` | Security dashboard (HTTP server on port 9380) — events, agents, profiling |
 | `src/policy.ts` | Per-agent security policy engine — allowlists, severity overrides |
 | `src/config.ts` | Config resolver. Env vars > plugin config > defaults. 33 options |
 | `src/store.ts` | Mapping store (real↔fake). LRU eviction support |
@@ -129,7 +128,7 @@ Full chain (execute without stopping unless tests fail):
 
 | Layer | What | Tests | Needs Docker |
 |-------|------|-------|--------------|
-| Unit (Vitest) | Obfuscator, detectors, generators, store, config, security, grading | 1,295 | No |
+| Unit (Vitest) | Obfuscator, detectors, generators, store, config, security | 1,295 | No |
 | APP Harness | 48 scenario files via mock LLM, no OpenClaw | 359 | No |
 | Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 192 | Yes |
 | Sandbox E2E | Docker-in-Docker, exec.host: sandbox, tool call deob | +8 | Yes (--sandbox) |
@@ -156,7 +155,6 @@ Full chain (execute without stopping unless tests fail):
 | `tests/harness/mock-slack/https-proxy.mjs` | HTTPS proxy on port 443 for Slack SDK TLS path |
 | `tests/harness/mock-whatsapp/intercept.cjs` | Patches Baileys `createWaSocket` to return mock socket |
 | `tests/harness/mock-whatsapp/server.mjs` | Mock WhatsApp message capture server |
-| `tests/event-grader.test.ts` | Event grader: bus wiring, model capture, self-whitelist |
 | `tests/integration-security.test.ts` | SecurityEventBus → injection detection pipeline |
 | `compat/versions.json` | Supported OpenClaw version registry |
 
@@ -189,9 +187,6 @@ Full chain (execute without stopping unless tests fail):
 | `SHROUD_CANARY_ENABLED` | Enable canary token injection (default: false) |
 | `SHROUD_CANARY_SYSTEM` | Inject canary into system prompts (default: false) |
 | `SHROUD_CANARY_BEHAVIOURAL` | Behavioural canary monitoring (default: false) |
-| `SHROUD_LLM_GRADING` | Enable LLM-based event grading (default: false) |
-| `SHROUD_LLM_GRADING_INTERVAL` | Seconds between grading batches (default: 300) |
-| `SHROUD_LLM_GRADING_THRESHOLD` | Min events before triggering a batch (default: 5) |
 | `SHROUD_SIGNATURES_URL` | URL for external injection signature JSON |
 | `SHROUD_SIGNATURES_REFRESH` | Signature poll interval in seconds (default: 3600) |
 | `SHROUD_SIEM_WEBHOOK_URL` | Webhook URL for shipping security events |
@@ -275,38 +270,6 @@ Learned next-tool predictor for tool-call anomaly detection. Pure TypeScript, ze
 
 **Persistence**: `~/.shroud/profiles/transformer-weights.bin` (Float64 binary) + `transformer-config.json` (vocab, model config, training metadata).
 
-### LLM Event Grading
-
-The grader batches security events and sends them to the Anthropic API for classification as TRUE_POSITIVE, FALSE_POSITIVE, or NEEDS_REVIEW.
-
-**Authentication**: Reads the Claude Code OAuth token directly from `~/.claude/.credentials.json`. Uses the same approach as the NCG agent — `Authorization: Bearer <token>` with `anthropic-beta: claude-code-20250219,oauth-2025-04-20` headers.
-
-**Critical requirement**: OAuth tokens require `"You are Claude Code, Anthropic's official CLI for Claude."` as the first system prompt block. Without this, the API returns `400 invalid_request_error`. This is enforced by the Claude Code OAuth scope.
-
-**How it works**:
-1. On plugin load, `EventGrader` reads OAuth creds from disk
-2. The fetch intercept captures the agent's model ID on first LLM call (`captureModel`)
-3. When events accumulate past threshold (or timer fires), a batch is sent
-4. The grader calls `api.anthropic.com/v1/messages` via Node's native `https` module (bypasses all fetch wrappers)
-5. On 401, auto-refreshes the OAuth token via `platform.claude.com/v1/oauth/token`
-6. Verdicts are stored in memory and shown on the dashboard
-
-**Key files**:
-
-| File | What |
-|------|------|
-| `src/event-grader.ts` | EventGrader class, OAuth token management, LLM API call |
-| `src/security-event.ts` | SecurityEvent interface, event bus |
-| `src/dashboard.ts` | Dashboard with grading page (`/api/grading`) |
-
-**Config** (env vars in systemd drop-in `shroud-security.conf`):
-
-```bash
-SHROUD_LLM_GRADING=true           # Enable grading
-SHROUD_LLM_GRADING_THRESHOLD=1    # Grade every event immediately
-SHROUD_LLM_GRADING_INTERVAL=300   # Timer fallback (seconds)
-```
-
 ### Dashboard
 
 HTTP server on `SHROUD_DASHBOARD_PORT` (default 9380). Endpoints:
@@ -318,19 +281,5 @@ HTTP server on `SHROUD_DASHBOARD_PORT` (default 9380). Endpoints:
 | `/api/agents` | Agent inventory with identity, tools, model |
 | `/api/events` | Security event list |
 | `/api/events/stream` | SSE stream of real-time events |
-| `/api/grading` | Grading stats, verdicts, batch log |
 | `/api/profiling` | Behavioural profiling data |
 | `/api/calls` | LLM call log |
-
-### Self-Whitelisting
-
-Grading sessions contain real injection examples. To prevent Shroud's own scanner from flagging them:
-- Grading session keys use prefix `shroud-grading-` (filtered in `addEvent`)
-- Agent label check: `GRADING_AGENT_LABEL = "Security Event Grader"` (filtered in fetch intercept injection scan)
-
-### What NOT to do
-
-- **Do NOT call the Anthropic API with `x-api-key`** — OAuth tokens use `Authorization: Bearer`
-- **Do NOT omit the Claude Code identity prefix** — `"You are Claude Code..."` is required for OAuth scope
-- **Do NOT route grading through OpenClaw gateway sessions** — creates ghost agents, deadlocks, polling nightmares
-- **Do NOT use `globalThis.fetch` for grading calls** — it goes through Shroud's obfuscation interceptor. Use `node:https` directly
