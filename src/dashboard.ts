@@ -2777,6 +2777,7 @@ async function renderEvents() {
   }
 
   eventsAutoRefreshTimer = setInterval(() => { if (currentTab === 'events') renderEvents(); }, 30000);
+}
 
 
 // ─── Tripwires tab ───
@@ -2882,6 +2883,7 @@ async function renderTripwires() {
   } catch (e) {
     el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
   }
+}
 
 
 // ─── Timeline tab ───
@@ -3025,6 +3027,7 @@ function toggleSession(key) {
   if (expandedSessions.has(key)) expandedSessions.delete(key);
   else expandedSessions.add(key);
   renderTimeline();
+}
 
 // Auto-refresh every 3 seconds (only overview tab)
 refresh();
