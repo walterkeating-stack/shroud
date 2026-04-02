@@ -78,6 +78,7 @@ export class Runner {
       if (this.#opts.verbose) console.log(`Mock LLM on port ${this.#mockLlmPort}`);
 
       await this.#startApp();
+      await this.#appClient.identify({ agent: "shroud-test-harness", version: "1.0.0", channel: "test" });
       if (this.#opts.verbose) console.log("APP engine connected");
 
       const scenarioFiles = this.#loadScenarioFiles();
@@ -94,6 +95,7 @@ export class Runner {
           try { await this.#appClient.shutdown(); } catch {}
         }
         await this.#startApp();
+        await this.#appClient.identify({ agent: "shroud-test-harness", version: "1.0.0", channel: "test" });
 
         const result = await this.#runScenario(sf);
         scenarioResults.push(result);

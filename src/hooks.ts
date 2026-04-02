@@ -877,6 +877,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
     let totalEntities = 0;
+    const _obfCategoryCounts: Record<string, number> = {};
 
     // Obfuscate the system prompt
     const prompt = event?.prompt;
@@ -887,6 +888,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (result.entities.length > 0 || cleaned !== prompt) {
         obfuscatedPrompt = result.entities.length > 0 ? result.obfuscated : cleaned;
         totalEntities += result.entities.length;
+        for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
       }
     }
 
@@ -906,9 +908,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           const cleaned = stripSlackLinksForHook(text);
           const result = ob().obfuscate(cleaned);
           totalEntities += result.entities.length;
+          for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
           // Do NOT mutate — just creating mappings in the store
         }
       }
+    }
+
+    // Record per-agent obfuscation stats
+    if (totalEntities > 0) {
+      agentTracker.recordObfuscation(totalEntities, _obfCategoryCounts);
     }
 
     if (totalEntities === 0 && !config.honeypotEnabled) return;
@@ -990,6 +998,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content);
         if (deobfuscated === msg.content) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
+        if (replacementCount > 0) agentTracker.recordDeobfuscation(replacementCount);
         if (auditActive && replacementCount > 0) {
           try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount); } catch {}
         }
@@ -998,21 +1007,24 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
       if (Array.isArray(msg.content)) {
         let changed = false;
+        let _deobCount = 0;
         const newContent = msg.content.map((block: any) => {
           if (block && typeof block === "object") {
             // Handle blocks with .text (text content blocks)
             if (typeof block.text === "string") {
-              const deobfuscated = ob().deobfuscate(block.text);
+              const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(block.text);
               if (deobfuscated !== block.text) {
                 changed = true;
+                _deobCount += rc;
                 return { ...block, text: deobfuscated };
               }
             }
             // Handle blocks with .content as string (tool_result blocks)
             if (typeof block.content === "string") {
-              const deobfuscated = ob().deobfuscate(block.content);
+              const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(block.content);
               if (deobfuscated !== block.content) {
                 changed = true;
+                _deobCount += rc;
                 return { ...block, content: deobfuscated };
               }
             }
@@ -1021,9 +1033,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               let innerChanged = false;
               const newInner = block.content.map((inner: any) => {
                 if (inner && typeof inner === "object" && typeof inner.text === "string") {
-                  const deobfuscated = ob().deobfuscate(inner.text);
+                  const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(inner.text);
                   if (deobfuscated !== inner.text) {
                     innerChanged = true;
+                    _deobCount += rc;
                     return { ...inner, text: deobfuscated };
                   }
                 }
@@ -1038,6 +1051,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           return block;
         });
         if (!changed) return;
+        if (_deobCount > 0) agentTracker.recordDeobfuscation(_deobCount);
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
         dumpStatsFile(obfuscator);
         return { message: { ...msg, content: newContent } };
@@ -1084,6 +1098,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (typeof msg.content === "string") {
       const result = ob().obfuscate(msg.content);
       if (result.entities.length === 0) return;
+      const _cats: Record<string, number> = {};
+      for (const e of result.entities) _cats[e.category] = (_cats[e.category] || 0) + 1;
+      agentTracker.recordObfuscation(result.entities.length, _cats);
       dumpStatsFile(obfuscator);
       if (auditActive) {
         try {
@@ -1142,6 +1159,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         return block;
       });
       if (!changed) return;
+      {
+        const _cats: Record<string, number> = {};
+        let _totalEnt = 0;
+        for (const result of allResults) {
+          _totalEnt += result.entities.length;
+          for (const e of result.entities) _cats[e.category] = (_cats[e.category] || 0) + 1;
+        }
+        if (_totalEnt > 0) agentTracker.recordObfuscation(_totalEnt, _cats);
+      }
       dumpStatsFile(obfuscator);
       if (auditActive) {
         for (const result of allResults) {

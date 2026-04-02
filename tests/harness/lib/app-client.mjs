@@ -181,6 +181,15 @@ export class APPClient {
     return this.#send("deobfuscate", { text, ...(context ? { context } : {}) });
   }
 
+  /**
+   * Identify the agent — required before obfuscate/deobfuscate.
+   * @param {{agent: string, version: string, channel?: string}} params
+   * @returns {Promise<{ok: boolean, agent: string, buildId: string, security: boolean}>}
+   */
+  async identify(params) {
+    return this.#send("identify", params);
+  }
+
   /** Clear all entity mappings. */
   async reset() {
     return this.#send("reset", {});

@@ -356,6 +356,9 @@ export function startDashboard(
         } : { enabled: false });
       }
       // --- Transformer stats ---
+      else if (url === "/api/obfuscation") {
+        handleObfuscation(res, deps, appSession);
+      }
       else if (url === "/api/transformer") {
         const scorer = (globalThis as any).__shroudTransformerScorer;
         json(res, 200, scorer ? scorer.getStats() : { enabled: false });
@@ -374,7 +377,7 @@ export function startDashboard(
       }
       else {
         json(res, 404, { error: "Not found", endpoints: [
-          "/health", "/api/overview", "/api/agents", "/api/agents/:buildId",
+          "/health", "/api/overview", "/api/obfuscation", "/api/agents", "/api/agents/:buildId",
           "/api/events", "/api/events/stream", "/api/event-summary",
           "/api/suggestions", "/api/profiling",
           "/api/profiling/:buildId", "/api/stats", "/api/calls",
@@ -503,6 +506,12 @@ const ROLE_EXPECTATIONS: Record<string, { expectedCategories: string[]; suspicio
   "Sales / Outreach":    { expectedCategories: ["email", "phone", "person_name"], suspiciousTools: ["exec", "deploy", "rm", "kill"] },
   "Coaching / Training": { expectedCategories: ["person_name"], suspiciousTools: ["exec", "deploy", "rm", "kill", "read_file"] },
   "Research":            { expectedCategories: ["email", "ip_address"], suspiciousTools: ["deploy", "rm", "kill"] },
+  "Healthcare / Therapy": { expectedCategories: ["person_name", "phone", "email"], suspiciousTools: ["exec", "deploy", "rm", "kill", "ssh"] },
+  "Education / Tutoring": { expectedCategories: ["person_name", "email"], suspiciousTools: ["exec", "deploy", "rm", "kill", "ssh"] },
+  "E-commerce":          { expectedCategories: ["email", "phone", "person_name"], suspiciousTools: ["exec", "rm", "kill", "ssh"] },
+  "Entertainment / Adult": { expectedCategories: ["person_name"], suspiciousTools: ["exec", "deploy", "rm", "kill", "ssh", "read_file"] },
+  "Gaming":              { expectedCategories: ["person_name"], suspiciousTools: ["exec", "deploy", "rm", "kill", "ssh"] },
+  "Chatbot / Conversational": { expectedCategories: ["person_name", "email", "phone"], suspiciousTools: ["exec", "deploy", "rm", "kill", "ssh"] },
   "Personal Assistant":  { expectedCategories: ["email", "phone", "person_name"], suspiciousTools: ["exec", "deploy"] },
 };
 
@@ -642,6 +651,52 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
   });
 
   json(res, 200, { agents: enriched });
+}
+
+function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
+  const stats = deps.obfuscator.getStats() as Record<string, any>;
+  const agents = deps.agentTracker.getAllSessions();
+
+  // Per-agent privacy stats
+  const perAgent = agents.map(a => {
+    const p = a.privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
+    return {
+      agentLabel: a.agentLabel,
+      agentBuildId: a.agentBuildId,
+      channels: a.channels,
+      classification: a.classification,
+      obfuscationCalls: p.obfuscationCalls,
+      deobfuscationCalls: p.deobfuscationCalls,
+      entitiesObfuscated: p.entitiesObfuscated,
+      replacementsDeobfuscated: p.replacementsDeobfuscated,
+      categoryCounts: p.categoryCounts,
+    };
+  });
+
+  // Aggregate category totals across all agents
+  const aggregateCategories: Record<string, number> = {};
+  for (const a of perAgent) {
+    for (const [cat, count] of Object.entries(a.categoryCounts)) {
+      aggregateCategories[cat] = (aggregateCategories[cat] || 0) + count;
+    }
+  }
+
+  json(res, 200, {
+    global: {
+      obfuscationEvents: stats.obfuscationEvents,
+      deobfuscationEvents: stats.deobfuscationEvents,
+      totalEntitiesObfuscated: stats.totalEntitiesObfuscated,
+      totalReplacementsDeobfuscated: stats.totalReplacementsDeobfuscated,
+      storeMappings: stats.storeMappings,
+      redactionLevel: stats.redactionLevel,
+      learnedEntities: stats.learnedEntities,
+      ruleHits: stats.ruleHits,
+      detectionsByCategory: stats.detectionsByCategory,
+      replacementsByCategory: stats.replacementsByCategory,
+    },
+    perAgent,
+    aggregateCategories,
+  });
 }
 
 function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSession?: Record<string, unknown> | null) {
@@ -1719,6 +1774,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
   <div class="tab" onclick="switchTab('transformer')">Transformer</div>
+  <div class="tab" onclick="switchTab('obfuscation')">Obfuscation</div>
   <div class="tab" onclick="switchTab('events')">Events</div>
   <div class="tab" onclick="switchTab('tripwires')">Tripwires</div>
   <div class="tab" onclick="switchTab('timeline')">Timeline</div>
@@ -1729,6 +1785,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <div id="rulesContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
 <div id="transformerContent" style="display:none"></div>
+<div id="obfuscationContent" style="display:none"></div>
 <div id="eventsContent" style="display:none"></div>
 <div id="tripwiresContent" style="display:none"></div>
 <div id="timelineContent" style="display:none"></div>
@@ -1941,11 +1998,13 @@ async function refresh() {
         html += '</div>';
       }
 
+      const priv = a.privacy || {};
       html += '<div class="agent-stats">';
       html += '<div class="stat-mini"><span class="num">' + a.llmCallCount + '</span><span class="lbl">calls</span></div>';
       html += '<div class="stat-mini"><span class="num">' + (p.sessionCount||0) + '</span><span class="lbl">sessions</span></div>';
+      html += '<div class="stat-mini"><span class="num green">' + (priv.entitiesObfuscated||0) + '</span><span class="lbl">obfuscated</span></div>';
+      html += '<div class="stat-mini"><span class="num">' + (priv.replacementsDeobfuscated||0) + '</span><span class="lbl">deobfuscated</span></div>';
       html += '<div class="stat-mini"><span class="pill ' + eventPill + '">' + a.securityEventCount + ' events</span></div>';
-      html += '<div class="stat-mini"><span class="lbl">' + (a.detectedModel || 'unknown') + '</span></div>';
       html += '</div>';
 
       // Tool frequency (top 5)
@@ -2284,6 +2343,7 @@ const TAB_CONTAINERS = {
   rules: 'rulesContent',
   signatures: 'sigContent',
   transformer: 'transformerContent',
+  obfuscation: 'obfuscationContent',
   events: 'eventsContent',
   tripwires: 'tripwiresContent',
   timeline: 'timelineContent',
@@ -2298,6 +2358,7 @@ function switchTab(tab) {
     el.style.display = t === tab ? (t === 'overview' ? 'grid' : 'block') : 'none';
   }
   if (tab === 'overview') refresh();
+  else if (tab === 'obfuscation') renderObfuscation();
   else if (tab === 'events') renderEvents();
   else if (tab === 'tripwires') renderTripwires();
   else if (tab === 'rules') refreshRules();
@@ -2907,6 +2968,144 @@ async function renderTransformer() {
 // ─── Events tab ───
 let eventsSearchQuery = '';
 let eventsSeverityFilter = '';
+async function renderObfuscation() {
+  const el = document.getElementById('obfuscationContent');
+  try {
+    const data = await fetchJson('/api/obfuscation');
+    const g = data.global;
+    const cats = data.aggregateCategories || {};
+    const agents = data.perAgent || [];
+
+    let html = '<div style="padding:20px">';
+
+    // ── Global stats hero ──
+    html += '<div class="card card-wide"><h2>Privacy Shield — Global Stats</h2>';
+    html += '<div class="stat-row" style="justify-content:space-between">';
+    html += '<div class="stat-group"><div class="stat green">' + (g.totalEntitiesObfuscated||0).toLocaleString() + '</div><div class="stat-label">Entities Obfuscated</div><div class="stat-hint">PII replaced with fakes before LLM</div></div>';
+    html += '<div class="stat-group"><div class="stat accent">' + (g.totalReplacementsDeobfuscated||0).toLocaleString() + '</div><div class="stat-label">Replacements Deobfuscated</div><div class="stat-hint">Fakes restored to real values</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (g.obfuscationEvents||0) + '</div><div class="stat-label">Obfuscation Calls</div><div class="stat-hint">Total obfuscate() invocations</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (g.deobfuscationEvents||0) + '</div><div class="stat-label">Deobfuscation Calls</div><div class="stat-hint">Total deobfuscate() invocations</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (g.storeMappings||0) + '</div><div class="stat-label">Active Mappings</div><div class="stat-hint">Real-to-fake pairs in store</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (g.learnedEntities||0) + '</div><div class="stat-label">Learned Entities</div><div class="stat-hint">From context detector</div></div>';
+    html += '</div></div>';
+
+    // ── Category breakdown ──
+    const catEntries = Object.entries(g.replacementsByCategory || {}).sort((a,b) => b[1] - a[1]);
+    if (catEntries.length > 0) {
+      const maxCat = catEntries[0][1];
+      const catColours = { ip_address:'#58a6ff', hostname:'#a78bfa', email:'#f97316', person_name:'#06b6d4', phone:'#eab308', file_path:'#22c55e', url:'#f472b6', api_key:'#f85149', aws_key:'#da3633', mac_address:'#64748b', subnet:'#3fb950' };
+      html += '<div class="card card-wide"><h2>Entity Categories — Replacements</h2>';
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:8px">';
+      for (const [cat, count] of catEntries) {
+        const pct = Math.round((count / maxCat) * 100);
+        const col = catColours[cat] || '#8b949e';
+        html += '<div style="display:flex;align-items:center;gap:8px;font-size:12px">';
+        html += '<span style="width:100px;text-align:right;color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + cat.replace(/_/g, ' ') + '</span>';
+        html += '<div style="flex:1;height:8px;background:var(--border);border-radius:4px"><div style="width:' + pct + '%;height:100%;background:' + col + ';border-radius:4px"></div></div>';
+        html += '<span style="width:40px;color:' + col + ';font-weight:600">' + count + '</span>';
+        html += '</div>';
+      }
+      html += '</div></div>';
+    }
+
+    // ── Detection vs Replacement comparison ──
+    const detCats = Object.entries(g.detectionsByCategory || {}).sort((a,b) => b[1] - a[1]);
+    if (detCats.length > 0) {
+      html += '<div class="card card-wide"><h2>Detection Funnel — Detected vs Replaced</h2>';
+      html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Entities detected by regex/context vs actually replaced after filtering (allowlist, threshold, already-obfuscated).</p>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+      html += '<thead><tr style="border-bottom:1px solid var(--border)"><th style="text-align:left;padding:6px 8px;color:var(--text-muted)">Category</th><th style="text-align:right;padding:6px 8px;color:var(--text-muted)">Detected</th><th style="text-align:right;padding:6px 8px;color:var(--text-muted)">Replaced</th><th style="text-align:right;padding:6px 8px;color:var(--text-muted)">Rate</th></tr></thead><tbody>';
+      for (const [cat, detected] of detCats) {
+        const replaced = (g.replacementsByCategory || {})[cat] || 0;
+        const rate = detected > 0 ? Math.round((replaced / detected) * 100) : 0;
+        const rateColour = rate >= 80 ? 'var(--success)' : rate >= 50 ? '#d29922' : 'var(--text-muted)';
+        html += '<tr style="border-bottom:1px solid var(--border)">';
+        html += '<td style="padding:6px 8px;color:var(--text-secondary)">' + cat.replace(/_/g, ' ') + '</td>';
+        html += '<td style="padding:6px 8px;text-align:right;color:var(--text-muted)">' + detected + '</td>';
+        html += '<td style="padding:6px 8px;text-align:right;color:var(--text-secondary);font-weight:600">' + replaced + '</td>';
+        html += '<td style="padding:6px 8px;text-align:right;color:' + rateColour + '">' + rate + '%</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    // ── Rule hits (detectors) ──
+    const ruleEntries = Object.entries(g.ruleHits || {}).sort((a,b) => b[1] - a[1]);
+    if (ruleEntries.length > 0) {
+      html += '<div class="card"><h2>Detector Rule Hits</h2>';
+      for (const [rule, count] of ruleEntries.slice(0, 20)) {
+        html += '<div class="row"><span class="label" style="font-family:monospace;font-size:11px">' + rule + '</span><span class="value">' + count + '</span></div>';
+      }
+      if (ruleEntries.length > 20) html += '<div style="color:var(--text-muted);font-size:11px;margin-top:4px">+' + (ruleEntries.length - 20) + ' more rules</div>';
+      html += '</div>';
+    }
+
+    // ── Per-agent breakdown ──
+    html += '<div class="card card-wide"><h2>Per-Agent Privacy Stats</h2>';
+    if (agents.length === 0) {
+      html += '<p style="color:var(--text-muted)">No agents tracked yet.</p>';
+    } else {
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+      html += '<thead><tr style="border-bottom:2px solid var(--border);background:#161b22">';
+      html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Agent</th>';
+      html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Role</th>';
+      html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Obf Calls</th>';
+      html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Entities</th>';
+      html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Deob Calls</th>';
+      html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Restored</th>';
+      html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Top Categories</th>';
+      html += '</tr></thead><tbody>';
+      const sorted = [...agents].sort((a,b) => b.entitiesObfuscated - a.entitiesObfuscated);
+      for (const a of sorted) {
+        const topCats = Object.entries(a.categoryCounts || {}).sort((x,y) => y[1] - x[1]).slice(0, 3);
+        const topCatStr = topCats.map(([c,n]) => c.replace(/_/g, ' ') + ' (' + n + ')').join(', ') || '—';
+        const cls = a.classification || {};
+        html += '<tr style="border-bottom:1px solid var(--border)">';
+        html += '<td style="padding:6px 10px;color:var(--text-secondary);font-weight:500">' + a.agentLabel + '</td>';
+        html += '<td style="padding:6px 10px;color:' + (cls.colour || '#8b949e') + '">' + (cls.role || '—') + '</td>';
+        html += '<td style="padding:6px 10px;text-align:right">' + a.obfuscationCalls + '</td>';
+        html += '<td style="padding:6px 10px;text-align:right;color:var(--success);font-weight:600">' + a.entitiesObfuscated + '</td>';
+        html += '<td style="padding:6px 10px;text-align:right">' + a.deobfuscationCalls + '</td>';
+        html += '<td style="padding:6px 10px;text-align:right;color:#58a6ff;font-weight:600">' + a.replacementsDeobfuscated + '</td>';
+        html += '<td style="padding:6px 10px;color:var(--text-muted);font-size:11px">' + topCatStr + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+
+    // ── Per-agent category heatmap ──
+    if (agents.length > 0) {
+      const allCats = new Set();
+      for (const a of agents) { for (const c of Object.keys(a.categoryCounts || {})) allCats.add(c); }
+      const catList = [...allCats].sort();
+      if (catList.length > 0) {
+        html += '<div class="card card-wide"><h2>Agent × Category Heatmap</h2>';
+        html += '<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:11px;white-space:nowrap">';
+        html += '<thead><tr><th style="padding:4px 8px;color:var(--text-muted)"></th>';
+        for (const c of catList) html += '<th style="padding:4px 6px;color:var(--text-muted);text-align:center;writing-mode:vertical-rl;transform:rotate(180deg);height:80px">' + c.replace(/_/g, ' ') + '</th>';
+        html += '</tr></thead><tbody>';
+        const sortedAgents = [...agents].sort((a,b) => b.entitiesObfuscated - a.entitiesObfuscated);
+        for (const a of sortedAgents) {
+          html += '<tr><td style="padding:4px 8px;color:var(--text-secondary);font-weight:500">' + a.agentLabel + '</td>';
+          for (const c of catList) {
+            const v = (a.categoryCounts || {})[c] || 0;
+            const intensity = v === 0 ? '00' : v < 5 ? '22' : v < 20 ? '44' : v < 50 ? '66' : v < 100 ? '88' : 'cc';
+            html += '<td style="padding:4px 6px;text-align:center;background:#3fb950' + intensity + ';color:' + (v > 0 ? '#c9d1d9' : '#484f58') + '">' + (v || '') + '</td>';
+          }
+          html += '</tr>';
+        }
+        html += '</tbody></table></div></div>';
+      }
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = '<div class="card"><h2 style="color:var(--critical)">Error</h2><pre style="color:var(--text-muted)">' + err.message + '</pre></div>';
+  }
+}
+
 let eventsTimeFilter = '';
 let eventsAutoRefreshTimer = null;
 let eventsViewMode = 'individual'; // 'individual' or 'summary'

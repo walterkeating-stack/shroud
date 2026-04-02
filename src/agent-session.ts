@@ -95,6 +95,22 @@ export interface AgentSession {
   heartbeat: AgentHeartbeat;
   /** Accumulated behavioral profile for archetype mapping. */
   behavior: AgentBehaviorProfile;
+  /** Per-agent obfuscation/deobfuscation stats. */
+  privacy: AgentPrivacyStats;
+}
+
+/** Per-agent obfuscation and deobfuscation counters. */
+export interface AgentPrivacyStats {
+  /** Number of obfuscation calls attributed to this agent. */
+  obfuscationCalls: number;
+  /** Number of deobfuscation calls attributed to this agent. */
+  deobfuscationCalls: number;
+  /** Total entities obfuscated. */
+  entitiesObfuscated: number;
+  /** Total replacements deobfuscated. */
+  replacementsDeobfuscated: number;
+  /** Per-category entity counts (category → count). */
+  categoryCounts: Record<string, number>;
 }
 
 /** Per-agent heartbeat tracking. */
@@ -208,6 +224,7 @@ export class AgentSessionTracker {
         channels: [],
         heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
         behavior: { ...DEFAULT_BEHAVIOR, toolFrequency: {} },
+        privacy: { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
       };
     }
 
@@ -243,11 +260,16 @@ export class AgentSessionTracker {
           lastAt: 0, status: "unknown", lastResponse: "",
         },
         behavior: { ...DEFAULT_BEHAVIOR, toolFrequency: {} },
+        privacy: { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
       };
       this._sessions.set(key, session);
     } else {
       // Update build ID to latest (prompt may evolve, label stays stable)
       session.agentBuildId = buildId;
+      // Ensure privacy stats exist for sessions created before this field existed
+      if (!session.privacy) {
+        session.privacy = { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
+      }
     }
 
     return session;
@@ -494,6 +516,33 @@ export class AgentSessionTracker {
     }
   }
 
+  /** Record obfuscation stats for the current agent. */
+  recordObfuscation(entityCount: number, categories?: Record<string, number>): void {
+    const session = this._sessions.get(this._currentLabel);
+    if (!session) return;
+    if (!session.privacy) {
+      session.privacy = { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
+    }
+    session.privacy.obfuscationCalls++;
+    session.privacy.entitiesObfuscated += entityCount;
+    if (categories) {
+      for (const [cat, count] of Object.entries(categories)) {
+        session.privacy.categoryCounts[cat] = (session.privacy.categoryCounts[cat] || 0) + count;
+      }
+    }
+  }
+
+  /** Record deobfuscation stats for the current agent. */
+  recordDeobfuscation(replacementCount: number): void {
+    const session = this._sessions.get(this._currentLabel);
+    if (!session) return;
+    if (!session.privacy) {
+      session.privacy = { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
+    }
+    session.privacy.deobfuscationCalls++;
+    session.privacy.replacementsDeobfuscated += replacementCount;
+  }
+
   /** Get the current active agent session. */
   getCurrentSession(): AgentSession | null {
     return this._sessions.get(this._currentLabel) ?? null;
@@ -577,6 +626,7 @@ export class AgentSessionTracker {
           cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
           heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
           behavior: (entry.behavior as AgentBehaviorProfile) || { ...DEFAULT_BEHAVIOR, toolFrequency: {} },
+          privacy: (entry as any).privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
         });
       }
       // Set _currentLabel to the most recently active loaded session so that
@@ -1069,6 +1119,12 @@ const ROLE_TAXONOMY: { role: string; keywords: RegExp }[] = [
   { role: "Writing / Content",    keywords: /writing|writer|copywriting|ghostwrit|content\s*creat|blog|article|copy\s*edit|editor|journalist|marketing\s*content/i },
   { role: "Legal / Compliance",   keywords: /legal|compliance|regulat|audit|policy|gdpr|hipaa|sox\b|contract/i },
   { role: "Finance",              keywords: /financ|accounting|budget|invest|portfolio|trading|revenue|forecast/i },
+  { role: "Healthcare / Therapy", keywords: /therap|counsel|mental\s*health|psycholog|wellbeing|well-being|mindful|meditat|symptom|diagnos|patient|clinical|healthcare|medical/i },
+  { role: "Education / Tutoring", keywords: /tutor|teach|educat|learn|student|lesson|curriculum|homework|quiz|exam|instruct|classroom|professor|lecture/i },
+  { role: "E-commerce",           keywords: /shop|e-?commerce|product|cart|checkout|order|catalog|merchant|storefront|retail|inventory|pricing/i },
+  { role: "Entertainment / Adult", keywords: /roleplay|erotic|nsfw|adult|companion|intimat|flirt|seduct|sexual|dating|girlfriend|boyfriend|waifu/i },
+  { role: "Gaming",               keywords: /game|gaming|rpg|dungeon|quest|player|npc|character\s*sheet|inventory|combat|level\s*up|multiplayer/i },
+  { role: "Chatbot / Conversational", keywords: /chatbot|chat\s*bot|conversat|companion|friend|casual\s*chat|social|chit-?chat|talk\s*to\s*me/i },
   { role: "Personal Assistant",   keywords: /personal|assistant|scheduler|organiz|reminder|task\s*manag|daily|general\s*purpose/i },
 ];
 
@@ -1235,6 +1291,10 @@ const TOOL_ROLE_SIGNALS: { role: string; tools: RegExp }[] = [
   { role: "Sales / Outreach",     tools: /salesforce|hubspot|outreach|email.*send|linkedin|prospect/i },
   { role: "Research",             tools: /search|web_fetch|browser|scrape|crawl|arxiv|scholar/i },
   { role: "Writing / Content",    tools: /publish|wordpress|medium|draft|edit.*doc|notion/i },
+  { role: "Healthcare / Therapy", tools: /symptom|diagnos|patient|prescri|appointment|medical|health_record/i },
+  { role: "Education / Tutoring", tools: /quiz|grade|lesson|flashcard|curriculum|assignment|enroll/i },
+  { role: "E-commerce",           tools: /cart|checkout|order|product|catalog|payment|shipping|inventory/i },
+  { role: "Gaming",               tools: /game|inventory|combat|quest|character|equip|level|spawn/i },
   { role: "Personal Assistant",   tools: /calendar|schedule|remind|todo|weather|timer/i },
 ];
 
