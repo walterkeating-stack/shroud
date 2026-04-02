@@ -704,12 +704,21 @@ function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?
     }
   }
 
+  // Aggregate totals from per-agent data (includes APP agents like NCG)
+  let totalObfCalls = 0, totalDeobCalls = 0, totalEntObf = 0, totalRepDeob = 0;
+  for (const a of perAgent) {
+    totalObfCalls += a.obfuscationCalls;
+    totalDeobCalls += a.deobfuscationCalls;
+    totalEntObf += a.entitiesObfuscated;
+    totalRepDeob += a.replacementsDeobfuscated;
+  }
+
   json(res, 200, {
     global: {
-      obfuscationEvents: stats.obfuscationEvents,
-      deobfuscationEvents: stats.deobfuscationEvents,
-      totalEntitiesObfuscated: stats.totalEntitiesObfuscated,
-      totalReplacementsDeobfuscated: stats.totalReplacementsDeobfuscated,
+      obfuscationEvents: Math.max(stats.obfuscationEvents ?? 0, totalObfCalls),
+      deobfuscationEvents: Math.max(stats.deobfuscationEvents ?? 0, totalDeobCalls),
+      totalEntitiesObfuscated: Math.max(stats.totalEntitiesObfuscated ?? 0, totalEntObf),
+      totalReplacementsDeobfuscated: Math.max(stats.totalReplacementsDeobfuscated ?? 0, totalRepDeob),
       storeMappings: stats.storeMappings,
       redactionLevel: stats.redactionLevel,
       learnedEntities: stats.learnedEntities,
