@@ -52,6 +52,7 @@ import { VectorStore, buildNovelWorkflowEvent, buildUrlCorrelationEvent } from "
 import { IntentChain, buildDelegationDriftEvent } from "./intent-chain.js";
 import { TransformerScorer } from "./transformer/scorer.js";
 import type { AttackTrace } from "./transformer/contrastive.js";
+import { computeAdaptiveThresholds, isSignatureSuppressed } from "./adaptive-thresholds.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -1390,12 +1391,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         agentTracker.recordToolCall(event.toolName ?? "unknown");
       }
 
+      // --- Adaptive thresholds: compute per-agent adjustments from profiler baselines ---
+      const _agentSession = agentTracker.getCurrentSession();
+      const _agentBaseline = _agentSession?.agentBuildId && profiler
+        ? profiler.getBaselineStore().load(_agentSession.agentBuildId)
+        : null;
+      const _adaptiveThresholds = computeAdaptiveThresholds(_agentBaseline, config);
+
       // --- Semantic drift detection + behavioral archetype tracking ---
       if (_driftDetector && _currentIntent) {
         const drift = _driftDetector.checkDrift(event.toolName ?? "unknown", event.params);
         // Record tool call for per-agent behavioral archetype mapping
         agentTracker.recordToolCall(event.toolName ?? "unknown", drift.similarity);
-        if (drift.drifted || drift.suddenTurn) {
+        // Use adaptive drift threshold: only flag if similarity is below the per-agent threshold
+        const effectiveDrifted = drift.similarity < _adaptiveThresholds.driftThreshold;
+        if ((effectiveDrifted || drift.suddenTurn) && !isSignatureSuppressed(drift.drifted ? "semantic_drift" : "sudden_turn", _adaptiveThresholds)) {
           const evt = buildDriftEvent(event.toolName ?? "unknown", drift,
             config.injectionDetection === "block" ? "blocked" : "flagged");
           const agentSession = agentTracker.getCurrentSession();
@@ -1416,20 +1426,25 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       // --- Causal coherence: check result→action pair distance ---
       if (_coherenceTracker && _currentIntent) {
         const coherence = _coherenceTracker.checkCoherence(event.toolName ?? "unknown", event.params);
-        if (coherence && !coherence.coherent) {
-          const evt = buildCoherenceEvent(coherence,
-            config.injectionDetection === "block" ? "blocked" : "flagged");
-          const agentSession = agentTracker.getCurrentSession();
-          evt.agentBuildId = agentSession?.agentBuildId;
-          evt.agentLabel = agentSession?.agentLabel;
-          evt.agentSessionId = agentSession?.sessionId;
-          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
-          agentTracker.recordSecurityEvent(1);
-          if (config.injectionDetection === "block" && coherence.severity === "high") {
-            api.logger?.warn(`[shroud] BLOCKED causal incoherence: ${coherence.reason}`);
-            return { block: true, blockReason: `Shroud security: ${coherence.reason}` };
+        if (coherence && !coherence.coherent && !isSignatureSuppressed("causal_incoherence", _adaptiveThresholds)) {
+          // Check if the z-score exceeds the adaptive threshold (coherenceTracker may use global;
+          // we post-filter here using the per-agent adaptive z-score)
+          const exceedsAdaptive = !coherence.zScore || Math.abs(coherence.zScore) >= _adaptiveThresholds.coherenceZScore;
+          if (exceedsAdaptive) {
+            const evt = buildCoherenceEvent(coherence,
+              config.injectionDetection === "block" ? "blocked" : "flagged");
+            const agentSession = agentTracker.getCurrentSession();
+            evt.agentBuildId = agentSession?.agentBuildId;
+            evt.agentLabel = agentSession?.agentLabel;
+            evt.agentSessionId = agentSession?.sessionId;
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+            agentTracker.recordSecurityEvent(1);
+            if (config.injectionDetection === "block" && coherence.severity === "high") {
+              api.logger?.warn(`[shroud] BLOCKED causal incoherence: ${coherence.reason}`);
+              return { block: true, blockReason: `Shroud security: ${coherence.reason}` };
+            }
+            api.logger?.info(`[shroud] Causal incoherence (flagged): ${coherence.reason}`);
           }
-          api.logger?.info(`[shroud] Causal incoherence (flagged): ${coherence.reason}`);
         }
       }
 
@@ -1457,7 +1472,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           const topStr = prediction.topK.map(k => `${k.tool}=${(k.prob * 100).toFixed(1)}%`).join(" ");
           api.logger?.info(`[shroud] Transformer: ${event.toolName} surprise=${prediction.surprise.toFixed(3)} session=${prediction.sessionAnomalyScore.toFixed(3)} intent_attn=${prediction.intentAttention.toFixed(4)} top=[${topStr}]`);
         }
-        if (anomalyEvt) {
+        // Use adaptive transformer threshold: suppress if below per-agent threshold
+        if (anomalyEvt && prediction.surprise >= _adaptiveThresholds.transformerThreshold
+            && !isSignatureSuppressed(anomalyEvt.signatureId, _adaptiveThresholds)) {
           const agentSession = agentTracker.getCurrentSession();
           anomalyEvt.agentBuildId = agentSession?.agentBuildId;
           anomalyEvt.agentSessionId = agentSession?.sessionId;

@@ -33,6 +33,8 @@ import type { CausalCoherenceTracker } from "./causal-coherence.js";
 import type { VectorStore } from "./vector-store.js";
 import type { IntentChain } from "./intent-chain.js";
 import { pca } from "./pca.js";
+import { RuleSuggestionEngine } from "./rule-suggestions.js";
+import { computeAdaptiveThresholds } from "./adaptive-thresholds.js";
 
 export interface DashboardDeps {
   securityBus: SecurityEventBus | null;
@@ -57,6 +59,7 @@ export function startDashboard(
   deps: DashboardDeps,
 ): ReturnType<typeof createServer> {
   const sseClients: Set<ServerResponse> = new Set();
+  const suggestionEngine = new RuleSuggestionEngine();
 
   // Subscribe to security events for real-time SSE streaming
   if (deps.securityBus) {
@@ -78,7 +81,7 @@ export function startDashboard(
 
     // CORS headers for dashboard UIs
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
     if (method === "OPTIONS") {
@@ -108,6 +111,34 @@ export function startDashboard(
       return;
     }
 
+    // POST /api/suggestions/:action — accept or dismiss a suggestion
+    if (method === "POST" && url?.startsWith("/api/suggestions/")) {
+      let body = "";
+      req.on("data", (chunk: string) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const action = url!.slice("/api/suggestions/".length);
+          const parsed = JSON.parse(body);
+          if (action === "accept") {
+            if (!deps.policyEngine) {
+              json(res, 400, { error: "Policy engine not initialized" });
+              return;
+            }
+            const ok = suggestionEngine.acceptSuggestion(parsed, deps.policyEngine);
+            json(res, 200, { accepted: ok });
+          } else if (action === "dismiss") {
+            suggestionEngine.dismissSuggestion(parsed.id);
+            json(res, 200, { dismissed: true });
+          } else {
+            json(res, 404, { error: "Unknown action: " + action });
+          }
+        } catch (err: any) {
+          json(res, 500, { error: err.message });
+        }
+      });
+      return;
+    }
+
     if (method !== "GET") {
       json(res, 405, { error: "Method not allowed" });
       return;
@@ -130,6 +161,12 @@ export function startDashboard(
       else if (url?.startsWith("/api/agents/")) {
         const buildId = url.slice("/api/agents/".length);
         handleAgentDetail(res, deps, buildId);
+      }
+      else if (url === "/api/event-summary") {
+        handleEventSummary(res, deps);
+      }
+      else if (url === "/api/suggestions") {
+        handleSuggestions(res, deps, suggestionEngine);
       }
       else if (url?.startsWith("/api/events?") || url === "/api/events") {
         handleEvents(res, deps, url);
@@ -297,7 +334,8 @@ export function startDashboard(
       else {
         json(res, 404, { error: "Not found", endpoints: [
           "/health", "/api/overview", "/api/agents", "/api/agents/:buildId",
-          "/api/events", "/api/events/stream", "/api/profiling",
+          "/api/events", "/api/events/stream", "/api/event-summary",
+          "/api/suggestions", "/api/profiling",
           "/api/profiling/:buildId", "/api/stats", "/api/calls",
           "/api/drift", "/api/coherence", "/api/vectors", "/api/vectors/urls",
           "/api/vectors/:buildId/evolution", "/api/intent-chain",
@@ -632,6 +670,86 @@ function handleEvents(res: ServerResponse, deps: DashboardDeps, urlStr = "/api/e
   }
 
   json(res, 200, { stats, count: events.length, events });
+}
+
+function handleEventSummary(res: ServerResponse, deps: DashboardDeps) {
+  const events = deps.securityBus?.getEvents() ?? [];
+
+  // Group by signature
+  const bySig = new Map<string, { count: number; agents: Set<string>; severities: Record<string, number>; lastSeen: number; timestamps: number[] }>();
+  for (const e of events) {
+    if (!bySig.has(e.signatureId)) {
+      bySig.set(e.signatureId, { count: 0, agents: new Set(), severities: {}, lastSeen: 0, timestamps: [] });
+    }
+    const entry = bySig.get(e.signatureId)!;
+    entry.count++;
+    entry.agents.add(e.agentLabel || e.agentBuildId || "unknown");
+    entry.severities[e.severity] = (entry.severities[e.severity] || 0) + 1;
+    entry.lastSeen = Math.max(entry.lastSeen, e.timestamp);
+    entry.timestamps.push(e.timestamp);
+  }
+
+  const bySignature = [...bySig.entries()]
+    .map(([signatureId, data]) => ({
+      signatureId,
+      count: data.count,
+      agents: [...data.agents],
+      severities: data.severities,
+      lastSeen: data.lastSeen,
+      trend: computeTrend(data.timestamps),
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  // Group by agent
+  const byAgentMap = new Map<string, { totalEvents: number; signatures: Map<string, number>; timestamps: number[] }>();
+  for (const e of events) {
+    const agent = e.agentLabel || e.agentBuildId || "unknown";
+    if (!byAgentMap.has(agent)) {
+      byAgentMap.set(agent, { totalEvents: 0, signatures: new Map(), timestamps: [] });
+    }
+    const entry = byAgentMap.get(agent)!;
+    entry.totalEvents++;
+    entry.signatures.set(e.signatureId, (entry.signatures.get(e.signatureId) || 0) + 1);
+    entry.timestamps.push(e.timestamp);
+  }
+
+  const byAgent = [...byAgentMap.entries()]
+    .map(([agent, data]) => {
+      const topSignatures = [...data.signatures.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([sig, count]) => ({ signatureId: sig, count }));
+      const span = data.timestamps.length >= 2
+        ? data.timestamps[data.timestamps.length - 1] - data.timestamps[0]
+        : 0;
+      const eventRate = span > 0 ? data.totalEvents / (span / 3600000) : 0;
+      return { agent, totalEvents: data.totalEvents, topSignatures, eventRate: Math.round(eventRate * 100) / 100 };
+    })
+    .sort((a, b) => b.totalEvents - a.totalEvents);
+
+  json(res, 200, { bySignature, byAgent });
+}
+
+function computeTrend(timestamps: number[]): "increasing" | "decreasing" | "stable" {
+  if (timestamps.length < 4) return "stable";
+  const sorted = [...timestamps].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const firstHalf = sorted.slice(0, mid);
+  const secondHalf = sorted.slice(mid);
+  // Compare event density: more events in second half = increasing
+  const firstSpan = firstHalf.length > 1 ? firstHalf[firstHalf.length - 1] - firstHalf[0] : 1;
+  const secondSpan = secondHalf.length > 1 ? secondHalf[secondHalf.length - 1] - secondHalf[0] : 1;
+  const firstRate = firstHalf.length / Math.max(firstSpan, 1);
+  const secondRate = secondHalf.length / Math.max(secondSpan, 1);
+  if (secondRate > firstRate * 1.5) return "increasing";
+  if (secondRate < firstRate * 0.67) return "decreasing";
+  return "stable";
+}
+
+function handleSuggestions(res: ServerResponse, deps: DashboardDeps, engine: RuleSuggestionEngine) {
+  const events = deps.securityBus?.getEvents() ?? [];
+  const suggestions = engine.generateSuggestions(events, deps.baselineStore, deps.config);
+  json(res, 200, { count: suggestions.length, suggestions });
 }
 
 function handleEventStream(req: IncomingMessage, res: ServerResponse, clients: Set<ServerResponse>) {
@@ -2276,6 +2394,42 @@ async function refreshRules() {
     html += '<div style="padding:4px 8px;font-size:11px;color:#484f58;margin-top:4px">Use prefix in Exceptions to disable a group</div>';
     html += '</div></div>';
 
+    // Suggested Rules section
+    try {
+      const sugData = await fetchJson('/api/suggestions');
+      const suggestions = sugData.suggestions || [];
+      if (suggestions.length > 0) {
+        html += '<div style="margin-top:24px">';
+        html += '<h2 style="color:#c9d1d9;font-size:16px;margin-bottom:12px">Suggested Rules (' + suggestions.length + ')</h2>';
+        html += '<div style="color:#484f58;font-size:11px;margin-bottom:12px">Auto-generated from event analysis and profiler baselines</div>';
+        for (var si = 0; si < suggestions.length; si++) {
+          var sg = suggestions[si];
+          var confColor = sg.confidence > 0.8 ? '#3fb950' : sg.confidence > 0.5 ? '#d29922' : '#8b949e';
+          html += '<div style="background:#0d1117;border:1px solid #30363d;border-left:3px solid ' + confColor + ';border-radius:6px;padding:12px 16px;margin-bottom:8px">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
+          html += '<div style="flex:1">';
+          html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">';
+          html += '<span style="background:#238636;color:#fff;padding:1px 6px;border-radius:3px;font-size:10px">' + sg.type.replace(/_/g, ' ').toUpperCase() + '</span>';
+          html += '<span style="color:#58a6ff;font-weight:600;font-size:12px">' + (sg.agentLabel || '').replace(/</g, '&lt;') + '</span>';
+          if (sg.signatureId) html += '<code style="font-size:10px;color:#8b949e;background:#161b22;padding:1px 4px;border-radius:2px">' + sg.signatureId + '</code>';
+          html += '</div>';
+          html += '<div style="color:#8b949e;font-size:11px;margin-bottom:4px">' + sg.reason.replace(/</g, '&lt;') + '</div>';
+          html += '<div style="display:flex;gap:12px;font-size:10px;color:#484f58">';
+          html += '<span>Confidence: <span style="color:' + confColor + '">' + Math.round(sg.confidence * 100) + '%</span></span>';
+          html += '<span>' + sg.impact.replace(/</g, '&lt;') + '</span>';
+          html += '</div>';
+          html += '</div>';
+          html += '<div style="display:flex;gap:6px;margin-left:12px;flex-shrink:0">';
+          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="acceptSuggestion(' + JSON.stringify(JSON.stringify(sg)).replace(/'/g, "\\\\'") + ')">Accept</button>';
+          html += '<button class="btn btn-secondary" style="padding:4px 10px;font-size:11px" onclick="dismissSuggestion(\\'' + sg.id.replace(/'/g, "\\\\'") + '\\')">Dismiss</button>';
+          html += '</div>';
+          html += '</div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+    } catch(sugErr) { /* suggestions are optional */ }
+
     html += '</div>';
     document.getElementById('rulesContent').innerHTML = html;
   } catch(err) {
@@ -2680,6 +2834,7 @@ let eventsSearchQuery = '';
 let eventsSeverityFilter = '';
 let eventsTimeFilter = '';
 let eventsAutoRefreshTimer = null;
+let eventsViewMode = 'individual'; // 'individual' or 'summary'
 
 async function renderEvents() {
   const el = document.getElementById('eventsContent');
@@ -2709,8 +2864,11 @@ async function renderEvents() {
     html += '<button class="btn btn-primary" onclick="eventsSearchQuery=document.getElementById(\\'evtSearch\\').value;renderEvents()">Search</button>';
     html += '</div>';
 
-    // Severity filter buttons
+    // View mode toggle + severity/time filters
     html += '<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">';
+    html += '<button class="btn ' + (eventsViewMode === 'individual' ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsViewMode=\\'individual\\';renderEvents()">Individual Events</button>';
+    html += '<button class="btn ' + (eventsViewMode === 'summary' ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsViewMode=\\'summary\\';renderEvents()">Summary View</button>';
+    html += '<span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>';
     const sevOptions = [['', 'All'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']];
     for (const [val, label] of sevOptions) {
       const active = eventsSeverityFilter === val;
@@ -2732,46 +2890,150 @@ async function renderEvents() {
     html += '</div>';
     html += '</div>';
 
-    // Event list
-    html += '<div style="max-height:calc(100vh - 280px);overflow-y:auto">';
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
-      const eid = 'evt-tab-' + i;
-      html += '<div class="event event-clickable ' + e.severity + '" style="margin:0 0 4px 0" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
-      html += '<div class="event-header">';
-      html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
-      html += sigTooltip(e.signatureId) + ' ';
-      html += '<span class="pill pill-' + e.severity + '">' + e.severity + '</span>';
-      html += '<span class="pill pill-' + (e.action === 'blocked' ? 'blocked' : 'flagged') + '">' + e.action + '</span>';
-      html += '</div>';
-      html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
-      html += '</div>';
-      html += '<div style="display:flex;justify-content:space-between;margin-top:4px">';
-      html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || 'unknown', 40) + '</span>';
-      html += '<span style="color:var(--text-muted);font-size:10px">' + (e.threatClass || '').replace(/_/g, ' ') + '</span>';
-      html += '</div>';
-      html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
-      html += '<div id="' + eid + '" class="event-detail">';
-      html += '<table class="event-detail-table"><tbody>';
-      html += '<tr><td class="detail-label">Signature</td><td class="detail-accent">' + e.signatureId + '</td></tr>';
-      html += '<tr><td>Threat Class</td><td>' + (e.threatClass || '').replace(/_/g, ' ') + '</td></tr>';
-      html += '<tr><td>Severity</td><td class="' + (e.severity === 'high' ? 'sev-high' : e.severity === 'medium' ? 'sev-medium' : 'sev-low') + '">' + e.severity + '</td></tr>';
-      html += '<tr><td>Direction</td><td>' + (e.direction || '') + '</td></tr>';
-      html += '<tr><td>Action</td><td>' + (e.action || '') + '</td></tr>';
-      html += '<tr><td>Agent</td><td>' + (e.agentLabel || e.agentBuildId || 'unknown') + '</td></tr>';
-      html += '<tr><td>Session</td><td style="font-family:monospace;font-size:11px">' + (e.agentSessionId || '') + '</td></tr>';
-      html += '<tr><td>Match Position</td><td>' + (e.matchStart || 0) + '-' + (e.matchEnd || 0) + ' of ' + (e.textLength || 0) + ' chars</td></tr>';
-      html += '<tr><td>Description</td><td class="detail-text">' + (e.description || '') + '</td></tr>';
-      html += '<tr><td>Full Match</td><td class="detail-mono">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
-      html += '<tr><td>Timestamp</td><td>' + new Date(e.timestamp).toLocaleString() + '</td></tr>';
-      html += '</tbody></table>';
-      html += '</div>';
+    if (eventsViewMode === 'summary') {
+      // Summary view: grouped by signature and agent with suggestions
+      const [summaryData, suggestionsData] = await Promise.all([
+        fetchJson('/api/event-summary'),
+        fetchJson('/api/suggestions'),
+      ]);
+
+      // Suggestion cards
+      const suggestions = suggestionsData.suggestions || [];
+      if (suggestions.length > 0) {
+        html += '<div class="card" style="margin-bottom:16px">';
+        html += '<h2 style="color:var(--text-primary);font-size:14px;margin-bottom:12px">Suggestions (' + suggestions.length + ')</h2>';
+        for (const s of suggestions) {
+          html += '<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px">';
+          html += '<div style="display:flex;justify-content:space-between;align-items:flex-start">';
+          html += '<div style="flex:1">';
+          html += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">';
+          html += '<span class="pill" style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:3px;font-size:10px">' + s.type.replace(/_/g, ' ') + '</span>';
+          html += '<span style="color:var(--text-primary);font-weight:600;font-size:12px">' + (s.agentLabel || '').replace(/</g, '&lt;') + '</span>';
+          if (s.signatureId) html += '<code style="font-size:10px;color:var(--text-muted)">' + s.signatureId + '</code>';
+          html += '</div>';
+          html += '<div style="color:var(--text-muted);font-size:11px;margin-bottom:6px">' + s.reason.replace(/</g, '&lt;') + '</div>';
+          html += '<div style="display:flex;gap:12px;font-size:10px;color:var(--text-muted)">';
+          html += '<span>Confidence: ' + Math.round(s.confidence * 100) + '%</span>';
+          html += '<span>' + s.impact.replace(/</g, '&lt;') + '</span>';
+          html += '</div>';
+          html += '</div>';
+          html += '<div style="display:flex;gap:6px;margin-left:12px">';
+          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="acceptSuggestion(' + JSON.stringify(JSON.stringify(s)).replace(/'/g, "\\\\'") + ')">Accept</button>';
+          html += '<button class="btn btn-secondary" style="padding:4px 10px;font-size:11px" onclick="dismissSuggestion(\\'' + s.id.replace(/'/g, "\\\\'") + '\\')">Dismiss</button>';
+          html += '</div>';
+          html += '</div>';
+          html += '</div>';
+        }
+        html += '</div>';
+      }
+
+      // By Signature table
+      const bySignature = summaryData.bySignature || [];
+      if (bySignature.length > 0) {
+        html += '<div class="card" style="margin-bottom:16px">';
+        html += '<h2 style="color:var(--text-primary);font-size:14px;margin-bottom:12px">Events by Signature</h2>';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+        html += '<thead><tr style="background:var(--bg-secondary);border-bottom:2px solid var(--border)">';
+        html += '<th style="padding:8px 12px;text-align:left;color:var(--text-muted)">Signature</th>';
+        html += '<th style="padding:8px 12px;text-align:right;color:var(--text-muted);width:60px">Count</th>';
+        html += '<th style="padding:8px 12px;text-align:left;color:var(--text-muted)">Agents</th>';
+        html += '<th style="padding:8px 12px;text-align:left;color:var(--text-muted)">Severities</th>';
+        html += '<th style="padding:8px 12px;text-align:left;color:var(--text-muted);width:70px">Trend</th>';
+        html += '<th style="padding:8px 12px;text-align:right;color:var(--text-muted);width:100px">Last Seen</th>';
+        html += '</tr></thead><tbody>';
+        for (const row of bySignature) {
+          const trendIcon = row.trend === 'increasing' ? '&#x2191;' : row.trend === 'decreasing' ? '&#x2193;' : '&#x2192;';
+          const trendColor = row.trend === 'increasing' ? 'var(--critical)' : row.trend === 'decreasing' ? 'var(--success)' : 'var(--text-muted)';
+          html += '<tr style="border-bottom:1px solid var(--border)">';
+          html += '<td style="padding:8px 12px">' + sigTooltip(row.signatureId) + '</td>';
+          html += '<td style="padding:8px 12px;text-align:right;font-weight:600;color:var(--text-primary)">' + row.count + '</td>';
+          html += '<td style="padding:8px 12px;color:var(--text-muted);font-size:11px">' + row.agents.map(function(a) { return truncate(a, 20); }).join(', ') + '</td>';
+          html += '<td style="padding:8px 12px;font-size:11px">';
+          if (row.severities.high) html += '<span class="pill pill-high" style="margin-right:4px">' + row.severities.high + ' high</span>';
+          if (row.severities.medium) html += '<span class="pill pill-medium" style="margin-right:4px">' + row.severities.medium + ' med</span>';
+          if (row.severities.low) html += '<span class="pill pill-low">' + row.severities.low + ' low</span>';
+          html += '</td>';
+          html += '<td style="padding:8px 12px;color:' + trendColor + ';font-size:11px">' + trendIcon + ' ' + row.trend + '</td>';
+          html += '<td style="padding:8px 12px;text-align:right;font-size:11px;color:var(--text-muted)">' + timeAgo(row.lastSeen) + '</td>';
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+        html += '</div>';
+      }
+
+      // By Agent table
+      const byAgent = summaryData.byAgent || [];
+      if (byAgent.length > 0) {
+        html += '<div class="card" style="margin-bottom:16px">';
+        html += '<h2 style="color:var(--text-primary);font-size:14px;margin-bottom:12px">Events by Agent</h2>';
+        html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+        html += '<thead><tr style="background:var(--bg-secondary);border-bottom:2px solid var(--border)">';
+        html += '<th style="padding:8px 12px;text-align:left;color:var(--text-muted)">Agent</th>';
+        html += '<th style="padding:8px 12px;text-align:right;color:var(--text-muted);width:60px">Events</th>';
+        html += '<th style="padding:8px 12px;text-align:right;color:var(--text-muted);width:80px">Rate/hr</th>';
+        html += '<th style="padding:8px 12px;text-align:left;color:var(--text-muted)">Top Signatures</th>';
+        html += '</tr></thead><tbody>';
+        for (const row of byAgent) {
+          html += '<tr style="border-bottom:1px solid var(--border)">';
+          html += '<td style="padding:8px 12px;color:var(--accent);font-weight:600">' + truncate(row.agent, 30).replace(/</g, '&lt;') + '</td>';
+          html += '<td style="padding:8px 12px;text-align:right;font-weight:600;color:var(--text-primary)">' + row.totalEvents + '</td>';
+          html += '<td style="padding:8px 12px;text-align:right;color:var(--text-muted)">' + row.eventRate.toFixed(1) + '</td>';
+          html += '<td style="padding:8px 12px;font-size:11px;color:var(--text-muted)">';
+          for (const ts of row.topSignatures.slice(0, 3)) {
+            html += '<span style="margin-right:8px">' + ts.signatureId + ' (' + ts.count + ')</span>';
+          }
+          html += '</td>';
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+        html += '</div>';
+      }
+
+      if (bySignature.length === 0 && byAgent.length === 0) {
+        html += '<div class="card" style="text-align:center;padding:40px"><h2 style="color:var(--text-muted)">No events to summarize</h2></div>';
+      }
+    } else {
+      // Individual events view (original)
+      html += '<div style="max-height:calc(100vh - 280px);overflow-y:auto">';
+      for (let i = events.length - 1; i >= 0; i--) {
+        const e = events[i];
+        const eid = 'evt-tab-' + i;
+        html += '<div class="event event-clickable ' + e.severity + '" style="margin:0 0 4px 0" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
+        html += '<div class="event-header">';
+        html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
+        html += sigTooltip(e.signatureId) + ' ';
+        html += '<span class="pill pill-' + e.severity + '">' + e.severity + '</span>';
+        html += '<span class="pill pill-' + (e.action === 'blocked' ? 'blocked' : 'flagged') + '">' + e.action + '</span>';
+        html += '</div>';
+        html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
+        html += '</div>';
+        html += '<div style="display:flex;justify-content:space-between;margin-top:4px">';
+        html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || 'unknown', 40) + '</span>';
+        html += '<span style="color:var(--text-muted);font-size:10px">' + (e.threatClass || '').replace(/_/g, ' ') + '</span>';
+        html += '</div>';
+        html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
+        html += '<div id="' + eid + '" class="event-detail">';
+        html += '<table class="event-detail-table"><tbody>';
+        html += '<tr><td class="detail-label">Signature</td><td class="detail-accent">' + e.signatureId + '</td></tr>';
+        html += '<tr><td>Threat Class</td><td>' + (e.threatClass || '').replace(/_/g, ' ') + '</td></tr>';
+        html += '<tr><td>Severity</td><td class="' + (e.severity === 'high' ? 'sev-high' : e.severity === 'medium' ? 'sev-medium' : 'sev-low') + '">' + e.severity + '</td></tr>';
+        html += '<tr><td>Direction</td><td>' + (e.direction || '') + '</td></tr>';
+        html += '<tr><td>Action</td><td>' + (e.action || '') + '</td></tr>';
+        html += '<tr><td>Agent</td><td>' + (e.agentLabel || e.agentBuildId || 'unknown') + '</td></tr>';
+        html += '<tr><td>Session</td><td style="font-family:monospace;font-size:11px">' + (e.agentSessionId || '') + '</td></tr>';
+        html += '<tr><td>Match Position</td><td>' + (e.matchStart || 0) + '-' + (e.matchEnd || 0) + ' of ' + (e.textLength || 0) + ' chars</td></tr>';
+        html += '<tr><td>Description</td><td class="detail-text">' + (e.description || '') + '</td></tr>';
+        html += '<tr><td>Full Match</td><td class="detail-mono">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
+        html += '<tr><td>Timestamp</td><td>' + new Date(e.timestamp).toLocaleString() + '</td></tr>';
+        html += '</tbody></table>';
+        html += '</div>';
+        html += '</div>';
+      }
+      if (events.length === 0) {
+        html += '<div class="card" style="text-align:center;padding:40px"><h2 style="color:var(--text-muted)">No events match your filters</h2></div>';
+      }
       html += '</div>';
     }
-    if (events.length === 0) {
-      html += '<div class="card" style="text-align:center;padding:40px"><h2 style="color:var(--text-muted)">No events match your filters</h2></div>';
-    }
-    html += '</div>';
 
     html += '</div>';
     el.innerHTML = html;
@@ -3030,6 +3292,31 @@ function toggleSession(key) {
   if (expandedSessions.has(key)) expandedSessions.delete(key);
   else expandedSessions.add(key);
   renderTimeline();
+}
+
+// ─── Suggestion accept/dismiss ───
+async function acceptSuggestion(suggestionJson) {
+  try {
+    const s = JSON.parse(suggestionJson);
+    await fetch(BASE + '/api/suggestions/accept', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(s),
+    });
+    showToast('Suggestion accepted');
+    renderEvents();
+    if (currentTab === 'rules') refreshRules();
+  } catch(e) { showToast('Error: ' + e.message, true); }
+}
+
+async function dismissSuggestion(id) {
+  try {
+    await fetch(BASE + '/api/suggestions/dismiss', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ id: id }),
+    });
+    showToast('Suggestion dismissed');
+    renderEvents();
+  } catch(e) { showToast('Error: ' + e.message, true); }
 }
 
 // Auto-refresh every 3 seconds (only overview tab)
