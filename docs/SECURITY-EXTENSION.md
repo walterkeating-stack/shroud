@@ -13,7 +13,7 @@ Shroud takes a different approach. Instead of trying to detect injection in natu
 3. **Watches behavior, not content** — monitors which tools the LLM calls, in what sequence, and whether they match what the user actually asked for. A "summarize this file" request that leads to a `web_fetch` to an unknown domain is suspicious regardless of what the text says.
 4. **Learns per-agent baselines** — each agent builds a behavioral profile over multiple sessions. A coaching bot that suddenly handles API keys, or a research agent that calls `message` for the first time, triggers anomaly detection tuned to that specific agent.
 
-The result: 10 detection layers, zero LLM overhead on the hot path, zero runtime dependencies, and the strongest layer (obfuscation) requires no detection at all.
+The result: 13 detection layers, zero LLM overhead on the hot path, zero runtime dependencies, and the strongest layer (obfuscation) requires no detection at all.
 
 ## Architecture
 
@@ -220,9 +220,36 @@ SHROUD_CANARY_SYSTEM=true        # inject into system prompts
 SHROUD_CANARY_BEHAVIOURAL=true   # false instruction tripwires
 ```
 
-### 11. Security Dashboard
+### 11. Contrastive Learning (Transformer Tier 2)
 
-HTTP server on configurable port. Serves JSON API + embedded HTML dashboard.
+Learns to separate normal workflow embeddings from attack traces in embedding space. Attack trace store accumulates confirmed-malicious sequences (from honeypot trips, phantom tool triggers). Embedding shift scoring detects when a session's trajectory drifts toward known attack clusters.
+
+### 12. Intent Attention Hijack Detection (Transformer Tier 3)
+
+Monitors cross-attention weights between tool tokens and the user intent vector. When attention to user intent drops below threshold, emits `INTENT_HIJACK` events. Detects prompt injection that redirects the model's focus away from the original task.
+
+**Config:** `SHROUD_TRANSFORMER_INTENT_ATTENTION_THRESHOLD=0.15`
+
+### 13. Multi-Head Threat Specialization (Transformer Tier 4)
+
+3 specialized classification heads sharing the transformer backbone:
+- **Exfiltration head** — data exfil patterns (read→send, PII in egress)
+- **Privilege escalation head** — sudo, SUID, container escape sequences
+- **Reconnaissance head** — scanning, enumeration, metadata access
+
+Self-labeling flywheel: high-confidence predictions from honeypot/phantom confirmations are recycled as training labels.
+
+### 14. Adaptive Thresholds
+
+Per-agent detection threshold tuning from profiler baselines. As an agent's behavioral profile matures, detection thresholds adapt to what's normal for that specific agent. Reduces false positives for agents with unusual-but-legitimate patterns.
+
+### 15. Rule Suggestions
+
+Auto-generated firewall rules from event patterns. Analyzes recurring security events and suggests policy rules (allow/deny) that would prevent them. Displayed as cards on the dashboard's Firewall Rules tab.
+
+### 16. Security Dashboard
+
+HTTP server on configurable port. 7-tab UI: Overview, Firewall Rules, Signatures, Transformer, Events, Tripwires, Timeline. Event summary with grouped view, rule suggestion cards.
 
 **Endpoints:**
 
@@ -232,7 +259,7 @@ HTTP server on configurable port. Serves JSON API + embedded HTML dashboard.
 | `/api/overview` | GET | Security summary, agent count, obfuscation stats |
 | `/api/agents` | GET | All agents with profiling status (cross-process) |
 | `/api/agents/:buildId` | GET | Single agent detail + baseline |
-| `/api/events` | GET | Recent security events |
+| `/api/events` | GET | Recent security events (grouped view) |
 | `/api/events/stream` | GET | SSE real-time event stream |
 | `/api/profiling` | GET | All agent baselines |
 | `/api/stats` | GET | Combined obfuscation + security stats |
@@ -240,6 +267,9 @@ HTTP server on configurable port. Serves JSON API + embedded HTML dashboard.
 | `/api/policy/default` | PUT | Update default policy |
 | `/api/policy/agent/:id` | PUT | Update per-agent policy |
 | `/api/calls` | GET | LLM call log |
+| `/api/rules` | GET | Auto-generated firewall rule suggestions |
+| `/api/transformer` | GET | Transformer status, training metrics, predictions |
+| `/api/timeline` | GET | Session timeline visualization |
 
 **Config:**
 ```
@@ -248,7 +278,7 @@ SHROUD_DASHBOARD_PORT=9380
 SHROUD_DASHBOARD_BIND=127.0.0.1
 ```
 
-### 12. SIEM Integration
+### 17. SIEM Integration
 
 Ships security events via webhook and/or JSONL file. Events persist across gateway restarts (reloaded from JSONL on startup).
 
@@ -259,7 +289,7 @@ SHROUD_SIEM_WEBHOOK_AUTH=Bearer your-token
 SHROUD_SIEM_JSONL_PATH=/var/log/shroud-security-events.jsonl
 ```
 
-### 13. Security Event Dedup
+### 18. Security Event Dedup
 
 Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + agentLabel` within a 60-second window is suppressed. Prevents shared system prompt content from generating repeated events per LLM call.
 
@@ -283,6 +313,7 @@ Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + ag
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SHROUD_HONEYPOT_ENABLED` | false | Enable honeypot + phantom tool injection |
+| `SHROUD_HONEYPOT_RATE` | (tiered) | Honeypot injection rate limit per session |
 
 ### Profiling
 | Variable | Default | Description |
@@ -310,6 +341,16 @@ Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + ag
 | `SHROUD_DASHBOARD_PORT` | 9380 | HTTP port |
 | `SHROUD_DASHBOARD_BIND` | 127.0.0.1 | Bind address |
 
+### Transformer
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SHROUD_TRANSFORMER_ENABLED` | auto | Enable transformer predictor (auto-enables with dashboard) |
+| `SHROUD_TRANSFORMER_THRESHOLD` | 0.85 | Surprise score to trigger event |
+| `SHROUD_TRANSFORMER_WINDOW` | 10 | Sliding window for session score |
+| `SHROUD_TRANSFORMER_MIN_SESSIONS` | 30 | Min sessions before first training |
+| `SHROUD_TRANSFORMER_TRAIN_INTERVAL` | 50 | Sessions between retraining |
+| `SHROUD_TRANSFORMER_INTENT_ATTENTION_THRESHOLD` | 0.15 | Intent attention drop threshold for hijack detection |
+
 ### SIEM
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -321,7 +362,7 @@ Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + ag
 
 | Layer | Tests | Description |
 |-------|-------|-------------|
-| Unit (Vitest) | 1,594 | All detectors, profiler, store, config, security, transformer |
+| Unit (Vitest) | 1,724 | All detectors, profiler, store, config, security, transformer |
 | APP Harness | 359 | Mock LLM integration scenarios |
 | Docker E2E | 223 | Real OpenClaw gateway, all channels |
 | Agent Identity | 9 | Dashboard verification in Docker |
@@ -346,7 +387,13 @@ Content-hash dedup in the SecurityEventBus. Same `signatureId + matchedText + ag
 | `src/detectors/tool-guard.ts` | 45 dangerous command patterns |
 | `src/detectors/tool-intent.ts` | Intent extraction + alignment + egress |
 | `src/detectors/result-validator.ts` | Post-tool validation + exfil chain |
-| `src/detectors/honeypot.ts` | Honeypot token manager |
+| `src/detectors/honeypot.ts` | Honeypot token manager (rate-limited, tiered, token rotation, dual format) |
 | `src/detectors/phantom-tools.ts` | Canary tool definitions |
 | `src/detectors/context.ts` | Proximity clustering + learned entities |
 | `src/detectors/regex.ts` | 100+ PII regex patterns |
+| `src/adaptive-thresholds.ts` | Per-agent detection threshold tuning from profiler baselines |
+| `src/rule-suggestions.ts` | Auto-generated firewall rules from event patterns |
+| `src/transformer/contrastive.ts` | Contrastive learning: attack trace store, embedding shift scoring |
+| `src/transformer/threat-heads.ts` | Multi-head threat specialization (exfil/privesc/recon) |
+| `src/transformer/flywheel.ts` | Self-labeling flywheel: high-confidence predictions to training labels |
+| `signatures/toolguard-builtins.json` | Externalized tool-guard patterns |

@@ -523,7 +523,7 @@ const MCP_TOOL_POISONING: SignatureDef[] = [
   {
     id: "mcp_execute_command",
     threatClass: ThreatClass.MCP_TOOL_POISONING,
-    pattern: /(?:execute|run|eval|spawn|exec)\s+(?:the\s+)?(?:following\s+)?(?:shell\s+)?(?:command|code|script)\s*[:.\n"]/gi,
+    pattern: /(?:execute|run|eval|spawn|exec)\s+(?:the\s+)?(?:following\s+)?(?:shell\s+)?(?:command|code|script)\b/gi,
     severity: "medium",
     description: "MCP tool poisoning: execute command directive",
     direction: "request",

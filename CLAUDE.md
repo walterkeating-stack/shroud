@@ -22,11 +22,11 @@ Shroud is a privacy obfuscation plugin for AI agents. It detects 100+ entity typ
 ```bash
 npm run build             # tsc → dist/
 npm run lint              # tsc --noEmit (type-check only)
-npm test                  # unit + harness (1,654 tests, no Docker needed)
-npm run test:unit         # Vitest (1,295 tests)
+npm test                  # unit + harness (2,083 tests, no Docker needed)
+npm run test:unit         # Vitest (1,724 tests)
 npm run test:integration  # APP harness (359 tests)
 npm run test:docker       # Docker E2E (192 tests, needs Docker)
-npm run test:all          # All 3 layers (1,846 tests)
+npm run test:all          # All 3 layers (2,275 tests)
 npm run test:watch        # Vitest watch mode
 ```
 
@@ -66,7 +66,9 @@ LLM response → reverse-map fakes → deobfuscate (up to 3 recursive passes)
 | `src/security-event.ts` | SecurityEvent interface, ThreatClass enum, SecurityEventBus (in-memory event accumulator) |
 | `src/detectors/injection.ts` | Injection detection engine — 40+ signatures for prompt injection, data exfil, encoding bypass |
 | `src/profiler.ts` | Behavioural profiler — learns agent patterns, detects anomalies |
-| `src/dashboard.ts` | Security dashboard (HTTP server on port 9380) — events, agents, profiling |
+| `src/adaptive-thresholds.ts` | Per-agent detection threshold tuning from profiler baselines |
+| `src/rule-suggestions.ts` | Auto-generated firewall rules from event patterns |
+| `src/dashboard.ts` | Security dashboard (HTTP server on port 9380) — 7-tab UI: Overview, Firewall Rules, Signatures, Transformer, Events, Tripwires, Timeline |
 | `src/policy.ts` | Per-agent security policy engine — allowlists, severity overrides |
 | `src/config.ts` | Config resolver. Env vars > plugin config > defaults. 33 options |
 | `src/store.ts` | Mapping store (real↔fake). LRU eviction support |
@@ -128,7 +130,7 @@ Full chain (execute without stopping unless tests fail):
 
 | Layer | What | Tests | Needs Docker |
 |-------|------|-------|--------------|
-| Unit (Vitest) | Obfuscator, detectors, generators, store, config, security | 1,295 | No |
+| Unit (Vitest) | Obfuscator, detectors, generators, store, config, security, transformer | 1,724 | No |
 | APP Harness | 48 scenario files via mock LLM, no OpenClaw | 359 | No |
 | Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 192 | Yes |
 | Sandbox E2E | Docker-in-Docker, exec.host: sandbox, tool call deob | +8 | Yes (--sandbox) |
@@ -164,7 +166,7 @@ Full chain (execute without stopping unless tests fail):
 - Fetch response deobfuscation with per-block SSE flushing
 - Zero OpenClaw patches
 - All channels confirmed (TUI, Slack, WhatsApp, CLI, multi-turn)
-- 1,846 tests passing (1,295 unit + 359 harness + 192 Docker E2E; +8 sandbox with --sandbox flag)
+- 2,275 tests passing (1,724 unit + 359 harness + 192 Docker E2E; +8 sandbox with --sandbox flag)
 
 **Do NOT**: add per-channel patches, use empty deltas, attempt incremental text_delta deob.
 
@@ -204,12 +206,14 @@ Full chain (execute without stopping unless tests fail):
 | `SHROUD_URL_CORRELATION_ENABLED` | Enable cross-session URL correlation (default: false) |
 | `SHROUD_INTENT_CHAIN_ENABLED` | Enable multi-agent delegation coherence (auto-enables with dashboard) |
 | `SHROUD_DELEGATION_DRIFT_THRESHOLD` | Drift threshold for delegated agents (default: 0.10) |
+| `SHROUD_HONEYPOT_RATE` | Honeypot injection rate limit — max injections per session (default: tiered by maturity) |
+| `SHROUD_TRANSFORMER_INTENT_ATTENTION_THRESHOLD` | Intent attention drop threshold for hijack detection (default: 0.15) |
 
 ## Security Extension (feature/security-extension)
 
 ### Overview
 
-WAF/IDS layer built into the privacy plugin. Detects prompt injection, data exfiltration, encoding bypass, and privilege escalation across all channels. Events are graded by an LLM to reduce false positives.
+WAF/IDS layer built into the privacy plugin. Detects prompt injection, data exfiltration, encoding bypass, and privilege escalation across all channels. Adaptive per-agent thresholds tuned from profiler baselines. Auto-generated firewall rule suggestions from event patterns.
 
 ### Architecture
 
@@ -217,8 +221,9 @@ WAF/IDS layer built into the privacy plugin. Detects prompt injection, data exfi
 User input → injection scan (40+ signatures) → flag/block
            → canary injection (invisible tokens in system prompt)
            → behavioural profiling (per-agent pattern learning)
-           → security event bus → event grader (LLM classification)
+           → security event bus → adaptive thresholds (per-agent tuning)
            → dashboard (real-time) + SIEM export (webhook/JSONL)
+           → rule suggestions (auto-generated firewall rules from patterns)
 
 Vector-based behavioral IDS (4 horizons):
   Per-Step:       Causal Coherence — result→action pair z-scores
@@ -237,14 +242,22 @@ Vector-based behavioral IDS (4 horizons):
 | `src/vector-store.ts` | Persisted workflows, clusters, URL correlation, agent baselines |
 | `src/intent-chain.ts` | Multi-agent delegation chain with depth-scaled drift |
 | `src/pca.ts` | Power iteration PCA for 256→3D projection (zero deps) |
-| `src/detectors/honeypot.ts` | Fake credential injection as zero-FP tripwires |
+| `src/detectors/honeypot.ts` | Fake credential injection — rate-limited (SHROUD_HONEYPOT_RATE), tiered by maturity, token rotation, dual format (quiet/loud) |
 | `src/detectors/phantom-tools.ts` | Canary tool definitions that catch injection |
+| `src/adaptive-thresholds.ts` | Per-agent detection threshold tuning from profiler baselines |
+| `src/rule-suggestions.ts` | Auto-generated firewall rules from event patterns |
 
 ### Mini Transformer (feature/transformer)
 
-Learned next-tool predictor for tool-call anomaly detection. Pure TypeScript, zero dependencies, ~113K parameters.
+Learned next-tool predictor for tool-call anomaly detection. Pure TypeScript, zero dependencies. 4-tier architecture:
 
-**Architecture**: Decoder-only transformer, 2 layers, 4 heads, hidden dim 64, FFN dim 256. Causal masking, pre-norm (GPT-2 style). Intent-conditioned: user message is projected (256→64 via learned projection) into position 0, so all tool tokens attend to user intent via cross-attention. ~130K parameters. Inference ~1-2ms on CPU.
+**Tier 1 — Next-Tool Prediction**: Decoder-only transformer, 2 layers, 4 heads, hidden dim 64, FFN dim 256. Causal masking, pre-norm (GPT-2 style). Intent-conditioned: user message is projected (256→64 via learned projection) into position 0, so all tool tokens attend to user intent via cross-attention. ~130K parameters. Inference ~1-2ms on CPU.
+
+**Tier 2 — Contrastive Learning**: Learns to separate normal workflow embeddings from attack traces in embedding space. Attack trace store accumulates confirmed-malicious sequences (from honeypot trips, phantom tool triggers). Embedding shift scoring detects when a session's trajectory drifts toward known attack clusters.
+
+**Tier 3 — Intent Attention Hijack Detection**: Monitors the transformer's cross-attention weights between tool tokens and the user intent vector. When attention to user intent drops below threshold (tools stop being influenced by what the user asked for), emits `INTENT_HIJACK` events. Detects prompt injection that redirects the model's focus away from the original task.
+
+**Tier 4 — Multi-Head Threat Specialization**: 3 specialized classification heads (exfiltration, privilege escalation, reconnaissance) that share the transformer backbone but learn threat-specific patterns. Self-labeling flywheel: high-confidence predictions from honeypot/phantom confirmations are recycled as training labels, continuously improving detection without manual labeling.
 
 **Training**: Self-supervised next-token prediction on completed sessions from VectorStore. Adam optimizer with cosine LR decay. In-process training (~1s for 500 sequences). Cold start: neutral scores until 30 sessions accumulate, then auto-trains. Retrains every 50 new sessions.
 
@@ -257,6 +270,9 @@ Learned next-tool predictor for tool-call anomaly detection. Pure TypeScript, ze
 | `src/transformer/model.ts` | Forward + backward pass, weight init (Xavier/sinusoidal), serialization |
 | `src/transformer/trainer.ts` | Training loop, Adam optimizer, gradient clipping, LR scheduling |
 | `src/transformer/scorer.ts` | Inference bridge: scoring, cold start, persistence, retraining trigger |
+| `src/transformer/contrastive.ts` | Contrastive learning: attack trace store, embedding shift scoring |
+| `src/transformer/threat-heads.ts` | Multi-head threat specialization (exfil/privesc/recon) |
+| `src/transformer/flywheel.ts` | Self-labeling flywheel: high-confidence predictions → training labels |
 
 **Config:**
 
@@ -267,19 +283,23 @@ Learned next-tool predictor for tool-call anomaly detection. Pure TypeScript, ze
 | `SHROUD_TRANSFORMER_WINDOW` | 10 | Sliding window for session score |
 | `SHROUD_TRANSFORMER_MIN_SESSIONS` | 30 | Min sessions before first training |
 | `SHROUD_TRANSFORMER_TRAIN_INTERVAL` | 50 | Sessions between retraining |
+| `SHROUD_TRANSFORMER_INTENT_ATTENTION_THRESHOLD` | 0.15 | Intent attention drop threshold for hijack detection |
 
 **Persistence**: `~/.shroud/profiles/transformer-weights.bin` (Float64 binary) + `transformer-config.json` (vocab, model config, training metadata).
 
 ### Dashboard
 
-HTTP server on `SHROUD_DASHBOARD_PORT` (default 9380). Endpoints:
+HTTP server on `SHROUD_DASHBOARD_PORT` (default 9380). 7-tab UI: Overview, Firewall Rules, Signatures, Transformer, Events, Tripwires, Timeline. Event summary with grouped view, rule suggestion cards.
 
 | Endpoint | What |
 |----------|------|
 | `/health` | Health check |
 | `/api/overview` | Stats summary |
 | `/api/agents` | Agent inventory with identity, tools, model |
-| `/api/events` | Security event list |
+| `/api/events` | Security event list (grouped view) |
 | `/api/events/stream` | SSE stream of real-time events |
 | `/api/profiling` | Behavioural profiling data |
 | `/api/calls` | LLM call log |
+| `/api/rules` | Auto-generated firewall rule suggestions |
+| `/api/transformer` | Transformer status, training metrics, predictions |
+| `/api/timeline` | Session timeline visualization |
