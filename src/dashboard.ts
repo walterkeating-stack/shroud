@@ -675,6 +675,27 @@ function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?
     };
   });
 
+  // Merge APP server agent (NCG etc.)
+  if (appSession && typeof appSession === "object" && (appSession as any).agentLabel) {
+    const app = appSession as any;
+    const appLabel = (app.agentLabel as string || "").toLowerCase().trim();
+    const alreadyPresent = perAgent.some(a => a.agentLabel.toLowerCase().trim() === appLabel);
+    if (!alreadyPresent && app.privacy) {
+      const p = app.privacy;
+      perAgent.push({
+        agentLabel: app.agentLabel,
+        agentBuildId: app.agentBuildId || "",
+        channels: [app.channel || "app"],
+        classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+        obfuscationCalls: p.obfuscationCalls || 0,
+        deobfuscationCalls: p.deobfuscationCalls || 0,
+        entitiesObfuscated: p.entitiesObfuscated || 0,
+        replacementsDeobfuscated: p.replacementsDeobfuscated || 0,
+        categoryCounts: p.categoryCounts || {},
+      });
+    }
+  }
+
   // Aggregate category totals across all agents
   const aggregateCategories: Record<string, number> = {};
   for (const a of perAgent) {
