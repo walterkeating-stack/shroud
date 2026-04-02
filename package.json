@@ -7,6 +7,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist/",
+    "signatures/",
     "app-server.mjs",
     "clients/python/shroud_client.py",
     "scripts/shroud-stats.mjs",

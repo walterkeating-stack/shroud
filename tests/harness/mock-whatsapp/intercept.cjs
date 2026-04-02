@@ -92,6 +92,11 @@ if (process.env.MOCK_WHATSAPP_PORT) {
   // This accepts POST /inject to emit messages.upsert on the mock socket.
   const _injectPort = parseInt(process.env.MOCK_WHATSAPP_INJECT_PORT || '9301');
   const _injectServer = (_http.createServer || _http.default.createServer)((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, {'Content-Type':'application/json'});
+      res.end(JSON.stringify({ok:true}));
+      return;
+    }
     if (req.method === 'POST' && req.url === '/inject') {
       const chunks = [];
       req.on('data', c => chunks.push(c));
@@ -111,11 +116,20 @@ if (process.env.MOCK_WHATSAPP_PORT) {
       res.end('Not found');
     }
   });
+  // Retry bind on EADDRINUSE (stale server from prior run)
+  let _bindAttempts = 0;
   _injectServer.on('error', function(err) {
-    console.error('[mock-whatsapp] Inject server failed to bind on ' + _injectPort + ': ' + err.message);
+    if (err.code === 'EADDRINUSE' && _bindAttempts < 5) {
+      _bindAttempts++;
+      console.error('[mock-whatsapp] Port ' + _injectPort + ' in use, retrying in 500ms (attempt ' + _bindAttempts + '/5)');
+      setTimeout(function() { _injectServer.listen(_injectPort, '127.0.0.1'); }, 500);
+    } else {
+      console.error('[mock-whatsapp] Inject server failed to bind on ' + _injectPort + ': ' + err.message);
+    }
   });
   _injectServer.listen(_injectPort, '127.0.0.1', function() {
     globalThis.__mockWhatsAppInjectReady = true;
+    console.log('[mock-whatsapp] Inject server ready on port ' + _injectPort);
   });
 
   // Message injection function

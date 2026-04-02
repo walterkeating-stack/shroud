@@ -180,17 +180,40 @@ describe("Phone generation", () => {
     expect(fake).toMatch(/^\+1\d+$/);
   });
 
-  test("international with dashes preserves dashes", () => {
+  test("international with dashes produces compact E.164", () => {
     const engine = new MappingEngine("test-secret", "fixed-salt");
     const fake = engine.mapValue("+1-555-886-4315", Category.PHONE);
-    expect(fake).toContain("-");
-    expect(fake).toMatch(/^\+1-/);
+    // International numbers must be E.164 compact — no separators.
+    expect(fake).not.toContain("-");
+    expect(fake).not.toContain(" ");
+    expect(fake).toMatch(/^\+1\d+$/);
   });
 
-  test("international with spaces preserves spaces", () => {
+  test("all international formats produce E.164 (no spaces/separators)", () => {
+    const engine = new MappingEngine("test-secret", "fixed-salt");
+    const inputs = [
+      "+43 200 200 1234",   // Austrian with spaces (the WhatsApp bug)
+      "+44 20 7946 0958",   // UK with spaces
+      "+49-69-1234-5678",   // German with dashes
+      "+33.1.42.68.53.00",  // French with dots
+      "+61 2 8765 4321",    // Australian with spaces
+      "+1 415 555 0101",    // US with spaces
+      "+14155550101",       // US already compact
+    ];
+    for (const input of inputs) {
+      const fake = engine.mapValue(input, Category.PHONE);
+      expect(fake).toMatch(/^\+\d+$/);  // "+" followed by only digits
+    }
+  });
+
+  test("international with spaces produces compact E.164", () => {
     const engine = new MappingEngine("test-secret", "fixed-salt");
     const fake = engine.mapValue("+1 555 886 4315", Category.PHONE);
-    expect(fake).toContain(" ");
-    expect(fake).toMatch(/^\+1 /);
+    // International numbers must be E.164 compact — no spaces, dashes, or dots.
+    // WhatsApp and other telephony APIs reject numbers with separators.
+    expect(fake).not.toContain(" ");
+    expect(fake).not.toContain("-");
+    expect(fake).not.toContain(".");
+    expect(fake).toMatch(/^\+1\d+$/);
   });
 });

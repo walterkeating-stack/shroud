@@ -1282,6 +1282,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .event .time { color: var(--text-muted); font-size: 10px; }
   .event .match { color: var(--text-secondary); font-family: 'JetBrains Mono', 'SF Mono', monospace; font-size: 11px; padding: 4px 8px; background: rgba(15,22,41,0.6); border-radius: 3px; word-break: break-all; }
   .event .verdict { font-size: 10px; font-weight: 600; }
+  .event-clickable { cursor: pointer; }
+  .event-detail { display: none; margin-top: 8px; padding-top: 8px; border-top: 1px solid #30363d; font-size: 11px; }
+  .event-detail-table { width: 100%; color: #8b949e; }
+  .event-detail-table td.detail-label { width: 120px; }
+  .event-detail-table .detail-accent { color: #58a6ff; }
+  .event-detail-table .detail-text { color: #c9d1d9; }
+  .event-detail-table .detail-mono { color: #c9d1d9; font-family: monospace; word-break: break-all; }
+  .event-detail-table .sev-high { color: #f85149; }
+  .event-detail-table .sev-medium { color: #d29922; }
+  .event-detail-table .sev-low { color: #3fb950; }
+  .sig-tooltip { position: relative; cursor: help; }
+  .sig-tooltip .sig-info-icon { color: #484f58; font-size: 9px; }
 
   /* ── Threat bars ── */
   .threat-bar { display: flex; gap: 3px; margin-top: 10px; border-radius: 4px; overflow: hidden; }
@@ -1596,7 +1608,7 @@ const SIG_HELP = {
 function sigTooltip(sigId) {
   const help = SIG_HELP[sigId] || SIG_HELP[sigId.replace(/_exact|_near/, '')] || '';
   if (!help) return sigId;
-  return '<span class="sig" style="position:relative;cursor:help" title="' + help.replace(/"/g, '&quot;') + '">' + sigId + ' <span style="color:#484f58;font-size:9px">&#9432;</span></span>';
+  return '<span class="sig sig-tooltip" title="' + help.replace(/"/g, '&quot;') + '">' + sigId + ' <span class="sig-info-icon">&#9432;</span></span>';
 }
 
 async function refresh() {
@@ -1900,26 +1912,26 @@ async function refresh() {
     }
 
     // Recent events
-    html += '<div class="card" style="grid-column: span 2"><h2>Recent Security Events</h2><div class="events-list">';
+    html += '<div class="card card-wide"><h2>Recent Security Events</h2><div class="events-list">';
     for (let i = 0; i < (events.events || []).length; i++) {
       const e = events.events[events.events.length - 1 - i];
       const eid = 'evt-' + i;
-      html += '<div class="event ' + e.severity + '" style="cursor:pointer" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
+      html += '<div class="event event-clickable ' + e.severity + '" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
       html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
       html += sigTooltip(e.signatureId) + ' ';
       html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || '', 40) + '</span>';
       html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
-      html += '<div id="' + eid + '" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid #30363d;font-size:11px">';
-      html += '<table style="width:100%;color:#8b949e"><tbody>';
-      html += '<tr><td style="width:120px">Signature</td><td style="color:#58a6ff">' + e.signatureId + '</td></tr>';
+      html += '<div id="' + eid + '" class="event-detail">';
+      html += '<table class="event-detail-table"><tbody>';
+      html += '<tr><td class="detail-label">Signature</td><td class="detail-accent">' + e.signatureId + '</td></tr>';
       html += '<tr><td>Threat Class</td><td>' + (e.threatClass || '').replace(/_/g, ' ') + '</td></tr>';
-      html += '<tr><td>Severity</td><td style="color:' + (e.severity === 'high' ? '#f85149' : e.severity === 'medium' ? '#d29922' : '#3fb950') + '">' + e.severity + '</td></tr>';
+      html += '<tr><td>Severity</td><td class="' + (e.severity === 'high' ? 'sev-high' : e.severity === 'medium' ? 'sev-medium' : 'sev-low') + '">' + e.severity + '</td></tr>';
       html += '<tr><td>Direction</td><td>' + (e.direction || '') + '</td></tr>';
       html += '<tr><td>Action</td><td>' + (e.action || '') + '</td></tr>';
       html += '<tr><td>Agent</td><td>' + (e.agentLabel || e.agentBuildId || 'unknown') + '</td></tr>';
       html += '<tr><td>Match Position</td><td>' + (e.matchStart || 0) + '-' + (e.matchEnd || 0) + ' of ' + (e.textLength || 0) + ' chars</td></tr>';
-      html += '<tr><td>Description</td><td style="color:#c9d1d9">' + (e.description || '') + '</td></tr>';
-      html += '<tr><td>Full Match</td><td style="color:#c9d1d9;font-family:monospace;word-break:break-all">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
+      html += '<tr><td>Description</td><td class="detail-text">' + (e.description || '') + '</td></tr>';
+      html += '<tr><td>Full Match</td><td class="detail-mono">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
       html += '<tr><td>Timestamp</td><td>' + new Date(e.timestamp).toLocaleString() + '</td></tr>';
       html += '</tbody></table>';
       html += '</div>';

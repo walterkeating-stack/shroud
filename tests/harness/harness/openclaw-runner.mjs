@@ -767,9 +767,23 @@ export class OpenClawRunner {
     const from = scenario.whatsAppFrom || "+353850000001";
     const jid = from.replace("+", "") + "@s.whatsapp.net";
     const injectPort = 9301; // MOCK_WHATSAPP_INJECT_PORT
-    // Retry inject — the server inside the gateway may take a moment to bind
+
+    // Wait for inject server health endpoint before attempting injection
+    let injectReady = false;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try {
+        const health = await this._httpReq("GET", `http://127.0.0.1:${injectPort}/health`);
+        if (health && health.ok) { injectReady = true; break; }
+      } catch {
+        // ECONNREFUSED — server not yet listening
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (!injectReady) throw new Error(`WhatsApp inject server not ready after 15s (port ${injectPort})`);
+
+    // Inject the message (server is confirmed listening)
     let injected = false;
-    for (let attempt = 0; attempt < 10; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
         await this._httpReq("POST", `http://127.0.0.1:${injectPort}/inject`, {
           from: jid,
@@ -779,10 +793,10 @@ export class OpenClawRunner {
         injected = true;
         break;
       } catch {
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise(r => setTimeout(r, 500));
       }
     }
-    if (!injected) throw new Error(`Failed to inject WhatsApp message after 10 attempts (port ${injectPort})`);
+    if (!injected) throw new Error(`Failed to inject WhatsApp message after 3 attempts (port ${injectPort})`);
 
     // Wait for mock WhatsApp to receive outbound message (agent response)
     await this._waitFor(

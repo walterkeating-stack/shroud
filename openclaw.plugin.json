@@ -204,6 +204,6 @@
     "protocol": "app-1.0"
   },
   "compatibility": {
-    "minOpenClawVersion": "2026.3.24"
+    "minOpenClawVersion": "2026.3.22"
   }
 }

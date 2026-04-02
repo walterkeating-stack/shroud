@@ -204,14 +204,12 @@ export class CodeGenerator implements BaseGenerator {
           : "";
 
     if (hasCountry) {
-      // International format — preserve original separator style (or none)
+      // International format — always E.164 compact (no separators).
+      // WhatsApp and other telephony systems require pure digits after "+".
+      // Spaces/dashes break E.164 validation and deobfuscation roundtrip.
       const countryMatch = original.match(/^\+(\d{1,3})/);
       const cc = countryMatch ? countryMatch[1] : "1";
-      if (!hasSep) {
-        // Original had no separators (e.g. +15551234567) — keep it compact
-        return `+${cc}${area}${mid}${lastStr}`;
-      }
-      return `+${cc}${sep}${area}${sep}${mid}${sep}${lastStr}`;
+      return `+${cc}${area}${mid}${lastStr}`;
     } else if (hasParens) {
       return `(${area}) ${mid}-${lastStr}`;
     } else {
