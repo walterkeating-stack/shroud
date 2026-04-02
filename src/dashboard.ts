@@ -1405,6 +1405,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   .stat.red { color: var(--critical); }
   .stat.yellow { color: var(--medium); }
   .stat-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+  .stat-hint { font-size: 9px; color: var(--text-muted); opacity: 0.6; margin-top: 1px; max-width: 140px; line-height: 1.2; }
   .stat-row { display: flex; gap: 28px; align-items: flex-end; }
   .stat-group { }
 
@@ -1811,12 +1812,12 @@ async function refresh() {
     // Command Center hero row
     html += '<div class="card card-wide"><h2>Agent Command Center</h2>';
     html += '<div class="stat-row" style="margin-bottom:16px;justify-content:space-between">';
-    html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
-    html += '<div class="stat-group"><div class="stat ' + ((ag.eventsLastHour||0) > 0 ? 'yellow' : 'green') + '">' + (ag.eventsLastHour||0) + '</div><div class="stat-label">Events (1h)</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + (ag.eventsLastDay||0) + '</div><div class="stat-label">Today</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + (ag.eventsLastWeek||0) + '</div><div class="stat-label">This Week</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">Baselined</div></div>';
+    html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div><div class="stat-hint">Unique agents across all channels</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div><div class="stat-hint">Total API calls by all agents</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + ((ag.eventsLastHour||0) > 0 ? 'yellow' : 'green') + '">' + (ag.eventsLastHour||0) + '</div><div class="stat-label">Events (1h)</div><div class="stat-hint">Security events last hour</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (ag.eventsLastDay||0) + '</div><div class="stat-label">Today</div><div class="stat-hint">Security events last 24h</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (ag.eventsLastWeek||0) + '</div><div class="stat-label">This Week</div><div class="stat-hint">Security events last 7 days</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">Baselined</div><div class="stat-hint">Agents with learned baseline</div></div>';
     html += '</div>';
     // Per-agent cards (inline in hero)
     html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">';
@@ -1984,17 +1985,17 @@ async function refresh() {
     const modeColor = sec.injectionDetection === 'block' ? 'pill-critical' : sec.injectionDetection === 'flag' ? 'pill-medium' : 'pill-info';
     html += '<div class="card"><h2>Threat Detection</h2>';
     html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div><div class="stat-label">Events</div></div>';
-    html += '<div class="stat-group"><div class="stat red">' + sec.blockedCount + '</div><div class="stat-label">Blocked</div></div>';
-    html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div><div class="stat-label">Events</div><div class="stat-hint">Injections, anomalies, violations</div></div>';
+    html += '<div class="stat-group"><div class="stat red">' + sec.blockedCount + '</div><div class="stat-label">Blocked</div><div class="stat-hint">Actively stopped by firewall</div></div>';
+    html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div><div class="stat-hint">Suspicious, not blocked</div></div>';
     html += '</div>';
     html += '<div class="row" style="margin-top:12px"><span class="label">Firewall Mode</span><span class="pill ' + modeColor + '">' + sec.injectionDetection.toUpperCase() + '</span></div>';
     html += '</div>';
 
     html += '<div class="card"><h2>Zero-FP Tripwires</h2>';
     html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat ' + (sec.honeypotTrips > 0 ? 'red' : 'green') + '">' + (sec.honeypotTrips||0) + '</div><div class="stat-label">Honeypot Trips</div></div>';
-    html += '<div class="stat-group"><div class="stat ' + (sec.phantomTrips > 0 ? 'red' : 'green') + '">' + (sec.phantomTrips||0) + '</div><div class="stat-label">Phantom Tool Trips</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (sec.honeypotTrips > 0 ? 'red' : 'green') + '">' + (sec.honeypotTrips||0) + '</div><div class="stat-label">Honeypot Trips</div><div class="stat-hint">Fake secrets used = confirmed injection</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (sec.phantomTrips > 0 ? 'red' : 'green') + '">' + (sec.phantomTrips||0) + '</div><div class="stat-label">Phantom Tool Trips</div><div class="stat-hint">Fake tools called = confirmed injection</div></div>';
     html += '</div>';
     html += '<div class="row" style="margin-top:12px"><span class="label">Honeypots</span><span class="pill ' + (sec.honeypotEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.honeypotEnabled ? 'ARMED' : 'OFF') + '</span></div>';
     html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">5 fake secrets + 5 phantom tools planted in context. Any use = 100% confirmed injection.</p>';
@@ -2002,8 +2003,8 @@ async function refresh() {
 
     html += '<div class="card"><h2>Privacy Shield</h2>';
     html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat green">' + obf.totalObfuscated.toLocaleString() + '</div><div class="stat-label">Entities Protected</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + obf.storeMappings + '</div><div class="stat-label">Active Mappings</div></div>';
+    html += '<div class="stat-group"><div class="stat green">' + obf.totalObfuscated.toLocaleString() + '</div><div class="stat-label">Entities Protected</div><div class="stat-hint">PII replaced with fakes before LLM</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + obf.storeMappings + '</div><div class="stat-label">Active Mappings</div><div class="stat-hint">Real-to-fake pairs for deobfuscation</div></div>';
     html += '</div>';
     html += '<div class="row" style="margin-top:12px"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
     html += '</div>';
@@ -2038,8 +2039,8 @@ async function refresh() {
     html += '<div class="card"><h2>Semantic Drift</h2>';
     if (drift.enabled) {
       html += '<div class="stat-row">';
-      html += '<div class="stat-group"><div class="stat ' + (drift.events > 0 ? 'yellow' : 'green') + '">' + drift.events + '</div><div class="stat-label">Drift Events</div></div>';
-      html += '<div class="stat-group"><div class="stat accent">' + drift.trajectoryLength + '</div><div class="stat-label">Steps Tracked</div></div>';
+      html += '<div class="stat-group"><div class="stat ' + (drift.events > 0 ? 'yellow' : 'green') + '">' + drift.events + '</div><div class="stat-label">Drift Events</div><div class="stat-hint">Agent deviated from stated intent</div></div>';
+      html += '<div class="stat-group"><div class="stat accent">' + drift.trajectoryLength + '</div><div class="stat-label">Steps Tracked</div><div class="stat-hint">Tool calls in current trajectory</div></div>';
       html += '</div>';
       html += '<div class="row" style="margin-top:12px"><span class="label">Threshold</span><span class="value">' + drift.threshold + '</span></div>';
       if (drift.reference) {
@@ -2071,9 +2072,9 @@ async function refresh() {
     html += '<div class="card"><h2>Shadow Execution</h2>';
     if (shadow.enabled) {
       html += '<div class="stat-row">';
-      html += '<div class="stat-group"><div class="stat ' + (shadow.blocked > 0 ? 'red' : 'green') + '">' + shadow.blocked + '</div><div class="stat-label">Blocked</div></div>';
-      html += '<div class="stat-group"><div class="stat green">' + shadow.allowed + '</div><div class="stat-label">Allowed</div></div>';
-      html += '<div class="stat-group"><div class="stat accent">' + shadow.executions + '</div><div class="stat-label">Total Runs</div></div>';
+      html += '<div class="stat-group"><div class="stat ' + (shadow.blocked > 0 ? 'red' : 'green') + '">' + shadow.blocked + '</div><div class="stat-label">Blocked</div><div class="stat-hint">Stopped after shadow revealed intent</div></div>';
+      html += '<div class="stat-group"><div class="stat green">' + shadow.allowed + '</div><div class="stat-label">Allowed</div><div class="stat-hint">Passed shadow — no malice found</div></div>';
+      html += '<div class="stat-group"><div class="stat accent">' + shadow.executions + '</div><div class="stat-label">Total Runs</div><div class="stat-hint">Suspicious calls replayed in fake sandbox</div></div>';
       html += '</div>';
       html += '<div class="row" style="margin-top:12px"><span class="label">Max Steps</span><span class="value">' + shadow.maxSteps + '</span></div>';
       html += '<div class="row"><span class="label">Timeout</span><span class="value">' + (shadow.timeoutMs / 1000) + 's</span></div>';
@@ -2420,8 +2421,8 @@ async function refreshRules() {
           html += '</div>';
           html += '</div>';
           html += '<div style="display:flex;gap:6px;margin-left:12px;flex-shrink:0">';
-          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="acceptSuggestion(' + JSON.stringify(JSON.stringify(sg)).replace(/'/g, "\\\\'") + ')">Accept</button>';
-          html += '<button class="btn btn-secondary" style="padding:4px 10px;font-size:11px" onclick="dismissSuggestion(\\'' + sg.id.replace(/'/g, "\\\\'") + '\\')">Dismiss</button>';
+          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="acceptSuggestion(atob(\\'' + btoa(JSON.stringify(sg)) + '\\'))">Accept</button>';
+          html += '<button class="btn btn-secondary" style="padding:4px 10px;font-size:11px" onclick="dismissSuggestion(atob(\\'' + btoa(sg.id) + '\\'))">Dismiss</button>';
           html += '</div>';
           html += '</div>';
           html += '</div>';
@@ -2704,14 +2705,14 @@ async function renderTransformer() {
       html += '<div class="card" style="margin-bottom:16px">';
       html += '<h2>Next-Tool Predictor</h2>';
       html += '<div style="display:flex;gap:32px;flex-wrap:wrap;margin-bottom:16px">';
-      html += '<div><span class="stat" style="color:' + statusColor + '">' + statusText + '</span><div class="stat-label">Model Status</div></div>';
-      html += '<div><span class="stat accent">' + data.totalParams.toLocaleString() + '</span><div class="stat-label">Parameters</div></div>';
-      html += '<div><span class="stat">' + data.vocabSize + '</span><div class="stat-label">Tool Vocabulary</div></div>';
-      html += '<div><span class="stat">' + data.inferenceCount + '</span><div class="stat-label">Inferences</div></div>';
-      html += '<div><span class="stat">' + (data.avgInferenceMs > 0 ? data.avgInferenceMs.toFixed(1) + 'ms' : '-') + '</span><div class="stat-label">Avg Latency</div></div>';
-      html += '<div><span class="stat accent">' + (data.attackTraceCount || 0) + '</span><div class="stat-label">Attack Traces</div></div>';
+      html += '<div><span class="stat" style="color:' + statusColor + '">' + statusText + '</span><div class="stat-label">Model Status</div><div class="stat-hint">Trained = baseline learned, Cold Start = waiting for data</div></div>';
+      html += '<div><span class="stat accent">' + data.totalParams.toLocaleString() + '</span><div class="stat-label">Parameters</div><div class="stat-hint">Total trainable weights in the model</div></div>';
+      html += '<div><span class="stat">' + data.vocabSize + '</span><div class="stat-label">Tool Vocabulary</div><div class="stat-hint">Unique tool names the model has seen</div></div>';
+      html += '<div><span class="stat">' + data.inferenceCount + '</span><div class="stat-label">Inferences</div><div class="stat-hint">Predictions made (one per tool call)</div></div>';
+      html += '<div><span class="stat">' + (data.avgInferenceMs > 0 ? data.avgInferenceMs.toFixed(1) + 'ms' : '-') + '</span><div class="stat-label">Avg Latency</div><div class="stat-hint">Time per prediction — must stay under 5ms</div></div>';
+      html += '<div><span class="stat accent">' + (data.attackTraceCount || 0) + '</span><div class="stat-label">Attack Traces</div><div class="stat-hint">Confirmed attack sequences for contrastive learning</div></div>';
       if (data.threatHeads) {
-        html += '<div><span class="stat">' + data.threatHeads.labelCount + '</span><div class="stat-label">Threat Labels</div></div>';
+        html += '<div><span class="stat">' + data.threatHeads.labelCount + '</span><div class="stat-label">Threat Labels</div><div class="stat-hint">Labeled examples for threat classification heads</div></div>';
       }
       html += '</div>';
 
@@ -2918,8 +2919,8 @@ async function renderEvents() {
           html += '</div>';
           html += '</div>';
           html += '<div style="display:flex;gap:6px;margin-left:12px">';
-          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="acceptSuggestion(' + JSON.stringify(JSON.stringify(s)).replace(/'/g, "\\\\'") + ')">Accept</button>';
-          html += '<button class="btn btn-secondary" style="padding:4px 10px;font-size:11px" onclick="dismissSuggestion(\\'' + s.id.replace(/'/g, "\\\\'") + '\\')">Dismiss</button>';
+          html += '<button class="btn btn-primary" style="padding:4px 10px;font-size:11px" onclick="acceptSuggestion(atob(\\'' + btoa(JSON.stringify(s)) + '\\'))">Accept</button>';
+          html += '<button class="btn btn-secondary" style="padding:4px 10px;font-size:11px" onclick="dismissSuggestion(atob(\\'' + btoa(s.id) + '\\'))">Dismiss</button>';
           html += '</div>';
           html += '</div>';
           html += '</div>';
