@@ -1523,23 +1523,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 </div>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
-  <div class="tab" onclick="switchTab('agents')">Agents</div>
-  <div class="tab" onclick="switchTab('events')">Events</div>
-  <div class="tab" onclick="switchTab('tripwires')">Tripwires</div>
-  <div class="tab" onclick="switchTab('transformer')">Transformer</div>
-  <div class="tab" onclick="switchTab('timeline')">Timeline</div>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
+  <div class="tab" onclick="switchTab('transformer')">Transformer</div>
+  <div class="tab" onclick="switchTab('events')">Events</div>
+  <div class="tab" onclick="switchTab('tripwires')">Tripwires</div>
+  <div class="tab" onclick="switchTab('timeline')">Timeline</div>
 </div>
 <div class="grid" id="content">
   <div class="card"><h2>Initializing...</h2></div>
 </div>
-<div id="agentsContent" style="display:none"></div>
-<div id="eventsContent" style="display:none"></div>
-<div id="tripwiresContent" style="display:none"></div>
 <div id="rulesContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
 <div id="transformerContent" style="display:none"></div>
+<div id="eventsContent" style="display:none"></div>
+<div id="tripwiresContent" style="display:none"></div>
 <div id="timelineContent" style="display:none"></div>
 <div class="toast" id="toast"></div>
 
@@ -1677,10 +1675,13 @@ function sigTooltip(sigId) {
   if (!help) return sigId;
   return '<span class="sig sig-tooltip" title="' + help.replace(/"/g, '&quot;') + '">' + sigId + ' <span class="sig-info-icon">&#9432;</span></span>';
 }
-
 async function refresh() {
   try {
-    const overview = await fetchJson('/api/overview');
+    const [overview, agents, events] = await Promise.all([
+      fetchJson('/api/overview'),
+      fetchJson('/api/agents'),
+      fetchJson('/api/events?limit=30'),
+    ]);
 
     const sec = overview.security;
     const ag = overview.agents;
@@ -1688,169 +1689,56 @@ async function refresh() {
 
     let html = '';
 
-    // ═══ KEY METRICS — clean hero row ═══
-    html += '<div class="card card-wide"><h2>Command Center</h2>';
-    html += '<div class="stat-row" style="margin-bottom:12px">';
+
+    // Command Center hero row
+    html += '<div class="card card-wide"><h2>Agent Command Center</h2>';
+    html += '<div class="stat-row" style="margin-bottom:16px">';
     html += '<div class="stat-group"><div class="stat accent">' + ag.total + '</div><div class="stat-label">Agents</div></div>';
     html += '<div class="stat-group"><div class="stat">' + ag.totalLlmCalls + '</div><div class="stat-label">LLM Calls</div></div>';
-    html += '<div class="stat-group"><div class="stat ' + (ag.eventsLastHour > 0 ? 'yellow' : 'green') + '">' + ag.eventsLastHour + '</div><div class="stat-label">Events (1h)</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">' + ag.eventsLastDay + ' today &middot; ' + ag.eventsLastWeek + ' week</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">Baselined</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + ((ag.eventsLastHour||0) > 0 ? 'yellow' : 'green') + '">' + (ag.eventsLastHour||0) + '</div><div class="stat-label">Events (1h)</div><div style="font-size:11px;color:var(--text-muted);margin-top:2px">' + (ag.eventsLastDay||0) + ' today &middot; ' + (ag.eventsLastWeek||0) + ' week</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + ag.withBaseline + '<span style="font-size:16px;color:var(--text-muted)">/' + ag.total + '</span></div><div class="stat-label">With Baseline</div></div>';
     html += '</div>';
-    html += '</div>';
-
-    // ═══ OBFUSCATION STATS ═══
-    html += '<div class="card"><h2>Privacy Shield</h2>';
-    html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat green">' + obf.totalObfuscated.toLocaleString() + '</div><div class="stat-label">Entities Protected</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + obf.storeMappings + '</div><div class="stat-label">Active Mappings</div></div>';
-    html += '</div>';
-    html += '<div class="row" style="margin-top:12px"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
-    html += '</div>';
-
-    // ═══ FIREWALL MODE BADGE ═══
-    const modeColor = sec.injectionDetection === 'block' ? 'pill-critical' : sec.injectionDetection === 'flag' ? 'pill-medium' : 'pill-info';
-    html += '<div class="card"><h2>Firewall</h2>';
-    html += '<div style="display:flex;align-items:center;gap:12px;margin-bottom:12px">';
-    html += '<span class="pill ' + modeColor + '" style="font-size:14px;padding:4px 14px">' + sec.injectionDetection.toUpperCase() + '</span>';
-    html += '<span style="color:var(--text-muted);font-size:12px">' + (sec.injectionDetection === 'block' ? 'Injections blocked' : sec.injectionDetection === 'flag' ? 'Injections flagged' : 'Detection disabled') + '</span>';
-    html += '</div>';
-    html += '<div class="stat-row">';
-    html += '<div class="stat-group"><div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div><div class="stat-label">Total Events</div></div>';
-    html += '<div class="stat-group"><div class="stat red">' + sec.blockedCount + '</div><div class="stat-label">Blocked</div></div>';
-    html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div></div>';
-    html += '</div>';
-    html += '<div class="row" style="margin-top:10px"><span class="label">Honeypots</span><span class="pill ' + (sec.honeypotEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.honeypotEnabled ? 'ARMED' : 'OFF') + '</span></div>';
-    html += '<div class="row"><span class="label">Profiling</span><span class="pill ' + (sec.profilingEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.profilingEnabled ? sec.profilingMode.toUpperCase() : 'OFF') + '</span></div>';
-    html += '</div>';
-
-    document.getElementById('content').innerHTML = html;
-    document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
-  } catch (err) {
-    document.getElementById('lastUpdate').textContent = 'Error: ' + err.message;
-  }
-}
-
-// ─── Agents tab ───
-async function renderAgents() {
-  const el = document.getElementById('agentsContent');
-  try {
-    const [agents, spaceData] = await Promise.all([
-      fetchJson('/api/agents'),
-      fetchJson('/api/agent-space'),
-    ]);
-    let html = '<div style="padding:20px 28px">';
-
-    // ── Agent Behavioral Space graph ──
-    var spaceAgents = spaceData.agents || [];
-    if (spaceAgents.length > 0) {
-      html += '<div class="card" style="margin-bottom:16px"><h2 style="font-size:14px;margin-bottom:4px">Agent Behavioral Space</h2>';
-      html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">' + spaceAgents.length + ' agent' + (spaceAgents.length !== 1 ? 's' : '') + ' mapped &middot; position = behavioral profile</p>';
-      html += '<div style="position:relative;width:100%;height:300px;background:var(--bg-primary);border:1px solid var(--border);border-radius:8px;overflow:hidden">';
-      for (var gi = 1; gi <= 3; gi++) {
-        var gp = gi * 25;
-        html += '<div style="position:absolute;left:' + gp + '%;top:0;bottom:0;width:1px;background:var(--border);opacity:0.5"></div>';
-        html += '<div style="position:absolute;top:' + (100 - gp) + '%;left:0;right:0;height:1px;background:var(--border);opacity:0.5"></div>';
-      }
-      html += '<div style="position:absolute;left:8px;bottom:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Focused Reader</div>';
-      html += '<div style="position:absolute;right:8px;bottom:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Focused Actor</div>';
-      html += '<div style="position:absolute;left:8px;top:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Diverse Researcher</div>';
-      html += '<div style="position:absolute;right:8px;top:8px;font-size:9px;color:var(--text-muted);opacity:0.5">Autonomous Agent</div>';
-      html += '<div style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--text-muted);white-space:nowrap">Read-only \\u2192 Write/Execute</div>';
-      html += '<div style="position:absolute;left:2px;top:50%;transform:translateY(-50%) rotate(-90deg);font-size:9px;color:var(--text-muted);white-space:nowrap;transform-origin:left center">Focused \\u2192 Diverse</div>';
-      for (var ai = 0; ai < spaceAgents.length; ai++) {
-        var sa = spaceAgents[ai];
-        var px = 5 + (sa.x / 100) * 90;
-        var py = 95 - (sa.y / 100) * 90;
-        var dotSize = Math.max(10, Math.min(28, 8 + Math.sqrt(sa.sessions) * 2));
-        var dotColor = sa.securityEvents === 0 ? 'var(--success)' : sa.securityEvents <= 5 ? 'var(--medium)' : 'var(--critical)';
-        if (sa.trajectory && sa.trajectory.length >= 2) {
-          var lastTraj = sa.trajectory[sa.trajectory.length - 1];
-          var firstTraj = sa.trajectory[0];
-          var tx1 = 5 + (firstTraj.x / 100) * 90;
-          var ty1 = 95 - (firstTraj.y / 100) * 90;
-          var tx2 = 5 + (lastTraj.x / 100) * 90;
-          var ty2 = 95 - (lastTraj.y / 100) * 90;
-          html += '<svg style="position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible">';
-          html += '<defs><marker id="arrow' + ai + '" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto"><polygon points="0 0, 6 2, 0 4" fill="' + dotColor + '" opacity="0.4"/></marker></defs>';
-          html += '<line x1="' + tx1 + '%" y1="' + ty1 + '%" x2="' + tx2 + '%" y2="' + ty2 + '%" stroke="' + dotColor + '" stroke-width="1.5" stroke-dasharray="4,3" opacity="0.35" marker-end="url(#arrow' + ai + ')"/>';
-          html += '<circle cx="' + tx1 + '%" cy="' + ty1 + '%" r="3" fill="' + dotColor + '" opacity="0.25"/>';
-          html += '</svg>';
-        }
-        var tooltip = sa.label + '\\n' + (sa.role || 'Unknown') + '\\nSessions: ' + sa.sessions + '\\nSecurity events: ' + sa.securityEvents + '\\nMaturity: ' + sa.maturity + '\\nTop tools: ' + (sa.topTools || []).join(', ');
-        html += '<div style="position:absolute;left:' + px + '%;top:' + py + '%;transform:translate(-50%,-50%);text-align:center;cursor:default" title="' + tooltip.replace(/"/g, '&quot;') + '">';
-        html += '<div style="width:' + dotSize + 'px;height:' + dotSize + 'px;border-radius:50%;background:' + dotColor + ';opacity:0.85;margin:0 auto;box-shadow:0 0 6px ' + dotColor + '"></div>';
-        html += '<div style="font-size:9px;color:var(--text-secondary);margin-top:2px;white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis">' + sa.label.replace(/</g, '&lt;').slice(0, 20) + '</div>';
-        html += '</div>';
-      }
-      html += '</div>';
-      html += '<div style="display:flex;gap:16px;margin-top:8px;font-size:10px;color:var(--text-muted);flex-wrap:wrap">';
-      html += '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--success);vertical-align:middle"></span> No events</span>';
-      html += '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--medium);vertical-align:middle"></span> Few events</span>';
-      html += '<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--critical);vertical-align:middle"></span> Many events</span>';
-      html += '<span style="margin-left:8px">Dot size = session count &middot; Dashed line = behavioral shift</span>';
-      html += '</div>';
-      html += '</div>';
-    }
-
-    // ── Behavioral Archetypes ──
-    const archCounts = {};
-    const archColourMap = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
-    for (const a of agents.agents || []) {
-      const arch = (a.behavior || {}).archetype || 'Unknown';
-      archCounts[arch] = (archCounts[arch] || 0) + 1;
-    }
-    const totalAgents = (agents.agents || []).length || 1;
-
-    html += '<div class="card" style="margin-bottom:16px"><h2>Behavioral Archetypes</h2>';
-    html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Derived from runtime tool call patterns. Builds over time.</p>';
-    html += '<div style="display:flex;height:28px;border-radius:6px;overflow:hidden;gap:1px">';
-    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
-      const col = archColourMap[arch] || '#484f58';
-      html += '<div style="flex:' + count + ';background:' + col + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0d1117;min-width:40px" title="' + arch + ': ' + count + '">' + arch + '</div>';
-    }
-    html += '</div>';
-    html += '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:12px">';
-    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
-      const col = archColourMap[arch] || '#484f58';
-      const archAgents = (agents.agents || []).filter(a => ((a.behavior || {}).archetype || 'Unknown') === arch);
-      html += '<div style="font-size:11px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + col + ';margin-right:4px"></span>';
-      html += '<span style="color:' + col + ';font-weight:600">' + arch + '</span> ';
-      html += '<span style="color:var(--text-muted)">' + archAgents.map(a => a.agentLabel).join(', ') + '</span>';
-      html += '</div>';
-    }
-    html += '</div></div>';
-
-    // ── Per-agent cards ──
-    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">';
+    // Per-agent cards (inline in hero)
+    html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:12px">';
     for (const a of agents.agents || []) {
       const p = a.profiling || {};
       const maturity = p.maturity || 'none';
+      const cats = (p.knownCategories || []).join(', ') || 'none yet';
+      const tools = (p.knownTools || []).join(', ') || 'none';
       const sessNeeded = p.sessionsUntilActive || 0;
-      const statusText = maturity === 'none' ? 'No baseline'
-        : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more'
-        : maturity + ' baseline';
+      const statusText = maturity === 'none' ? 'No baseline - first session'
+        : sessNeeded > 0 ? 'Learning - ' + sessNeeded + ' more sessions needed'
+        : 'Active - ' + maturity + ' baseline';
+
       const cls = a.classification || {};
       const roleLabel = cls.role || 'Unclassified';
       const rolePct = cls.confidencePct ?? 0;
+
       const h = a.health || {};
+      const healthIcon = h.status === 'healthy' ? '&#x25CF;' : h.status === 'warning' ? '&#x25B2;' : '&#x25CF;';
+      const healthColour = h.colour || '#8b949e';
       const complianceText = h.compliant === false ? 'non-compliant' : h.compliant === true ? 'compliant' : 'pending';
       const compliancePill = h.compliant === false ? 'pill-critical' : h.compliant === true ? 'pill-healthy' : 'pill-info';
       const eventPill = a.securityEventCount > 5 ? 'pill-critical' : a.securityEventCount > 0 ? 'pill-medium' : 'pill-low';
+
       const healthCls = h.status === 'critical' ? 'critical' : h.status === 'warning' ? 'warning' : maturity;
+
+      // Behavioral archetype
       const beh = a.behavior || {};
       const archetype = beh.archetype || 'Unknown';
       const archConf = beh.archetypeConfidence || 0;
       const archColours = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
       const archColour = archColours[archetype] || '#484f58';
 
-      html += '<div class="agent-card ' + healthCls + '" onclick="switchTab(\\'overview\\');showAgent(&quot;' + a.agentBuildId + '&quot;)">';
+      html += '<div class="agent-card ' + healthCls + '" onclick="showAgent(&quot;' + a.agentBuildId + '&quot;)">';
       html += '<div class="agent-header">';
       html += '<div class="agent-name">' + (a.agentLabel || a.agentBuildId) + '</div>';
       html += '<div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">';
       html += '<span class="agent-role">' + roleLabel + ' ' + rolePct + '%</span>';
       html += '<span style="font-size:10px;padding:1px 6px;border-radius:3px;background:' + archColour + '22;color:' + archColour + ';font-weight:500;border:1px solid ' + archColour + '44">' + archetype + (archConf > 0 ? ' ' + archConf + '%' : '') + '</span>';
       html += '<span class="pill ' + compliancePill + '">' + complianceText + '</span>';
-      html += '</div></div>';
+      html += '</div>';
+      html += '</div>';
 
       if (h.issues && h.issues.length > 0) {
         html += '<div style="margin-top:4px;font-size:11px;color:var(--critical)">';
@@ -1906,7 +1794,6 @@ async function renderAgents() {
         html += '<span class="pill ' + chCls + '">' + ch + '</span>';
       }
       html += '</div>';
-
       const hb = a.heartbeat || {};
       if (hb.enabled) {
         const hbColor = hb.status === 'alive' ? '#3fb950' : hb.status === 'stale' ? '#d29922' : hb.status === 'dead' ? '#f85149' : '#8b949e';
@@ -1916,99 +1803,187 @@ async function renderAgents() {
         html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
         html += 'Heartbeat: <span style="color:' + hbColor + '">' + hbIcon + ' ' + hb.status + '</span>';
         html += ' (every ~' + hbInterval + ', last: ' + hbLast + ')';
+        if (hb.lastResponse && !hb.lastResponse.includes('HEARTBEAT_OK')) {
+          html += ' <span style="color:#f85149">ALERT: ' + hb.lastResponse.slice(0, 60) + '</span>';
+        }
         html += '</div>';
       }
-
+      const ac = a.cache || {};
+      if (ac.callsWithCache > 0) {
+        const hitPct = Math.round((ac.avgHitRatio || 0) * 100);
+        const cacheColour = hitPct >= 70 ? '#3fb950' : hitPct >= 30 ? '#d29922' : '#f85149';
+        const basePct = ac.baselineHitRatio >= 0 ? Math.round(ac.baselineHitRatio * 100) + '%' : 'learning';
+        html += '<div style="margin-top:4px;font-size:11px;color:#8b949e">';
+        html += 'Cache: <span style="color:' + cacheColour + ';font-weight:600">' + hitPct + '% hit</span>';
+        html += ' (baseline: ' + basePct + ', ' + ac.callsWithCache + ' calls, ';
+        html += (ac.totalCacheRead || 0).toLocaleString() + ' read / ' + (ac.totalCacheWrite || 0).toLocaleString() + ' write tokens)';
+        html += '</div>';
+      }
       html += '<div style="display:flex;align-items:center;gap:8px;margin-top:8px">';
       html += '<div class="progress" style="flex:1"><div class="progress-bar" style="width:' + (p.learningProgress||0) + '%;background:' + (maturity==='mature'?'#3fb950':maturity==='reliable'?'#58a6ff':'#d29922') + '"></div></div>';
       html += '<span style="font-size:11px;color:#8b949e">' + statusText + '</span>';
       html += '</div>';
       html += '</div>';
     }
-    html += '</div>';
+    html += '</div>'; // grid
+    html += '</div>'; // card
 
-    html += '</div>';
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
-  }
-}
-
-// ─── Events tab ───
-let eventsSearchQuery = '';
-let eventsSeverityFilter = '';
-let eventsTimeFilter = '';
-let eventsAutoRefreshTimer = null;
-
-async function renderEvents() {
-  const el = document.getElementById('eventsContent');
-  if (eventsAutoRefreshTimer) clearInterval(eventsAutoRefreshTimer);
-
-  try {
-    // Build query params
-    let qp = '?limit=200';
-    if (eventsSearchQuery) qp += '&q=' + encodeURIComponent(eventsSearchQuery);
-    if (eventsSeverityFilter) qp += '&severity=' + eventsSeverityFilter;
-    if (eventsTimeFilter) {
-      const now = Date.now();
-      const sinceMap = { '1h': now - 3600000, 'today': now - 86400000, 'week': now - 604800000 };
-      if (sinceMap[eventsTimeFilter]) qp += '&since=' + sinceMap[eventsTimeFilter];
+    // ═══ BEHAVIORAL ARCHETYPE MAP ═══
+    const archCounts = {};
+    const archColourMap = { 'Deep Researcher': '#a78bfa', 'Builder': '#f97316', 'Conversationalist': '#06b6d4', 'Explorer': '#eab308', 'Operator': '#22c55e', 'General': '#64748b', 'Unknown': '#484f58' };
+    for (const a of agents.agents || []) {
+      const arch = (a.behavior || {}).archetype || 'Unknown';
+      archCounts[arch] = (archCounts[arch] || 0) + 1;
     }
+    const totalAgents = (agents.agents || []).length || 1;
 
-    const data = await fetchJson('/api/events' + qp);
-    const events = data.events || [];
-    const stats = data.stats || {};
-
-    let html = '<div style="padding:20px 28px">';
-
-    // Controls bar
-    html += '<div class="card" style="margin-bottom:16px">';
-    html += '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">';
-    html += '<input id="evtSearch" type="text" placeholder="Search signature, agent, description..." value="' + (eventsSearchQuery || '').replace(/"/g, '&quot;') + '" style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:7px 12px;border-radius:6px;font-size:12px" onkeydown="if(event.key===\\'Enter\\'){eventsSearchQuery=this.value;renderEvents()}">';
-    html += '<button class="btn btn-primary" onclick="eventsSearchQuery=document.getElementById(\\'evtSearch\\').value;renderEvents()">Search</button>';
-    html += '</div>';
-
-    // Severity filter buttons
-    html += '<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">';
-    const sevOptions = [['', 'All'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']];
-    for (const [val, label] of sevOptions) {
-      const active = eventsSeverityFilter === val;
-      html += '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsSeverityFilter=\\'' + val + '\\';renderEvents()">' + label + '</button>';
-    }
-    html += '<span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>';
-    const timeOptions = [['', 'All time'], ['1h', 'Last hour'], ['today', 'Today'], ['week', 'This week']];
-    for (const [val, label] of timeOptions) {
-      const active = eventsTimeFilter === val;
-      html += '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsTimeFilter=\\'' + val + '\\';renderEvents()">' + label + '</button>';
+    html += '<div class="card card-wide"><h2>Behavioral Archetypes</h2>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Derived from runtime tool call patterns — what agents actually do, not what they are labelled as. Builds over time.</p>';
+    // Stacked bar
+    html += '<div style="display:flex;height:28px;border-radius:6px;overflow:hidden;gap:1px">';
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
+      const pct = Math.round(count / totalAgents * 100);
+      const col = archColourMap[arch] || '#484f58';
+      html += '<div style="flex:' + count + ';background:' + col + ';display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0d1117;min-width:40px" title="' + arch + ': ' + count + ' agent(s)">' + arch + '</div>';
     }
     html += '</div>';
-
-    // Stats summary
-    html += '<div style="display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--text-muted)">';
-    html += '<span>' + events.length + ' events shown</span>';
-    if (stats.totalEvents !== undefined) html += '<span>' + stats.totalEvents + ' total</span>';
-    if (stats.blockedCount) html += '<span style="color:var(--critical)">' + stats.blockedCount + ' blocked</span>';
-    html += '</div>';
-    html += '</div>';
-
-    // Event list
-    html += '<div style="max-height:calc(100vh - 280px);overflow-y:auto">';
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i];
-      const eid = 'evt-tab-' + i;
-      html += '<div class="event event-clickable ' + e.severity + '" style="margin:0 0 4px 0" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
-      html += '<div class="event-header">';
-      html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
-      html += sigTooltip(e.signatureId) + ' ';
-      html += '<span class="pill pill-' + e.severity + '">' + e.severity + '</span>';
-      html += '<span class="pill pill-' + (e.action === 'blocked' ? 'blocked' : 'flagged') + '">' + e.action + '</span>';
+    // Legend with agent names
+    html += '<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:12px">';
+    for (const [arch, count] of Object.entries(archCounts).sort((a,b) => b[1] - a[1])) {
+      const col = archColourMap[arch] || '#484f58';
+      const archAgents = (agents.agents || []).filter(a => ((a.behavior || {}).archetype || 'Unknown') === arch);
+      html += '<div style="font-size:11px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + col + ';margin-right:4px"></span>';
+      html += '<span style="color:' + col + ';font-weight:600">' + arch + '</span> ';
+      html += '<span style="color:var(--text-muted)">' + archAgents.map(a => a.agentLabel).join(', ') + '</span>';
       html += '</div>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    // ═══ SECURITY OVERVIEW ═══
+    const modeColor = sec.injectionDetection === 'block' ? 'pill-critical' : sec.injectionDetection === 'flag' ? 'pill-medium' : 'pill-info';
+    html += '<div class="card"><h2>Threat Detection</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat ' + (sec.totalEvents > 0 ? 'yellow' : 'green') + '">' + sec.totalEvents + '</div><div class="stat-label">Events</div></div>';
+    html += '<div class="stat-group"><div class="stat red">' + sec.blockedCount + '</div><div class="stat-label">Blocked</div></div>';
+    html += '<div class="stat-group"><div class="stat yellow">' + sec.flaggedCount + '</div><div class="stat-label">Flagged</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Firewall Mode</span><span class="pill ' + modeColor + '">' + sec.injectionDetection.toUpperCase() + '</span></div>';
+    html += '</div>';
+
+    html += '<div class="card"><h2>Zero-FP Tripwires</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat ' + (sec.honeypotTrips > 0 ? 'red' : 'green') + '">' + (sec.honeypotTrips||0) + '</div><div class="stat-label">Honeypot Trips</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (sec.phantomTrips > 0 ? 'red' : 'green') + '">' + (sec.phantomTrips||0) + '</div><div class="stat-label">Phantom Tool Trips</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Honeypots</span><span class="pill ' + (sec.honeypotEnabled ? 'pill-low' : 'pill-info') + '">' + (sec.honeypotEnabled ? 'ARMED' : 'OFF') + '</span></div>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">5 fake secrets + 5 phantom tools planted in context. Any use = 100% confirmed injection.</p>';
+    html += '</div>';
+
+    html += '<div class="card"><h2>Privacy Shield</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat green">' + obf.totalObfuscated.toLocaleString() + '</div><div class="stat-label">Entities Protected</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + obf.storeMappings + '</div><div class="stat-label">Active Mappings</div></div>';
+    html += '</div>';
+    html += '<div class="row" style="margin-top:12px"><span class="label">Deobfuscated</span><span class="value">' + obf.totalDeobfuscated + '</span></div>';
+    html += '</div>';
+
+    // LLM Cache + External Signatures
+    const cache = overview.cache;
+    const extSigs = overview.externalSignatures;
+    html += '<div class="card"><h2>LLM Cache</h2>';
+    if (cache && cache.turns > 0) {
+      const hitPct = Math.round(cache.hitRatio * 100);
+      const hitCls = hitPct >= 70 ? 'green' : hitPct >= 30 ? 'yellow' : 'red';
+      html += '<div class="stat ' + hitCls + '">' + hitPct + '%</div>';
+      html += '<div class="stat-label">Cache hit ratio (' + cache.turns + ' turns)</div>';
+      html += '<div class="row"><span class="label">Input tokens</span><span class="value">' + cache.totalInput.toLocaleString() + '</span></div>';
+      html += '<div class="row"><span class="label">Cache read</span><span class="value" style="color:var(--success)">' + cache.totalCacheRead.toLocaleString() + '</span></div>';
+      html += '<div class="row"><span class="label">Cache write</span><span class="value">' + cache.totalCacheWrite.toLocaleString() + '</span></div>';
+      html += '<div class="row"><span class="label">Output tokens</span><span class="value">' + cache.totalOutput.toLocaleString() + '</span></div>';
+    } else {
+      html += '<div class="stat" style="color:var(--text-muted)">—</div>';
+      html += '<div class="stat-label">No LLM calls profiled yet</div>';
+    }
+    if (extSigs) {
+      html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border)">';
+      html += '<div class="row"><span class="label">External Sigs</span><span class="pill pill-info">' + extSigs.count + ' (v' + extSigs.version + ')</span></div>';
+      html += '<div class="row"><span class="label">Last refresh</span><span class="value">' + timeAgo(new Date(extSigs.loadedAt).getTime()) + '</span></div>';
+      html += '</div>';
+    }
+    html += '</div>';
+
+    // Semantic Drift Detection
+    const drift = overview.drift;
+    html += '<div class="card"><h2>Semantic Drift</h2>';
+    if (drift.enabled) {
+      html += '<div class="stat-row">';
+      html += '<div class="stat-group"><div class="stat ' + (drift.events > 0 ? 'yellow' : 'green') + '">' + drift.events + '</div><div class="stat-label">Drift Events</div></div>';
+      html += '<div class="stat-group"><div class="stat accent">' + drift.trajectoryLength + '</div><div class="stat-label">Steps Tracked</div></div>';
+      html += '</div>';
+      html += '<div class="row" style="margin-top:12px"><span class="label">Threshold</span><span class="value">' + drift.threshold + '</span></div>';
+      if (drift.reference) {
+        html += '<div class="row"><span class="label">Current Intent</span><span class="value" style="font-size:11px">' + truncate(drift.reference, 60) + '</span></div>';
+      }
+      // Trajectory sparkline
+      if (drift.trajectory && drift.trajectory.length > 0) {
+        html += '<div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--border)">';
+        html += '<div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">Trajectory</div>';
+        html += '<div style="display:flex;align-items:flex-end;gap:2px;height:40px">';
+        for (const p of drift.trajectory) {
+          const h = Math.max(2, Math.round(p.similarity * 38));
+          const c = p.similarity < 0.15 ? 'var(--critical)' : p.similarity < 0.3 ? 'var(--medium)' : 'var(--success)';
+          html += '<div title="Step ' + p.step + ': ' + p.toolName + ' (' + p.similarity.toFixed(2) + ')" style="flex:1;height:' + h + 'px;background:' + c + ';border-radius:2px 2px 0 0;min-width:4px"></div>';
+        }
+        html += '</div>';
+        html += '<div style="display:flex;justify-content:space-between;font-size:9px;color:var(--text-muted);margin-top:2px"><span>Step 1</span><span>Step ' + drift.trajectory.length + '</span></div>';
+        html += '</div>';
+      }
+      html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">TF-IDF cosine similarity tracks agent trajectory vs user intent. Cliff = injection point.</p>';
+    } else {
+      html += '<div class="stat" style="color:var(--text-muted)">&mdash;</div>';
+      html += '<div class="stat-label">Disabled &mdash; set SHROUD_DRIFT_ENABLED=true</div>';
+    }
+    html += '</div>';
+
+    // Shadow Execution
+    const shadow = overview.shadow;
+    html += '<div class="card"><h2>Shadow Execution</h2>';
+    if (shadow.enabled) {
+      html += '<div class="stat-row">';
+      html += '<div class="stat-group"><div class="stat ' + (shadow.blocked > 0 ? 'red' : 'green') + '">' + shadow.blocked + '</div><div class="stat-label">Blocked</div></div>';
+      html += '<div class="stat-group"><div class="stat green">' + shadow.allowed + '</div><div class="stat-label">Allowed</div></div>';
+      html += '<div class="stat-group"><div class="stat accent">' + shadow.executions + '</div><div class="stat-label">Total Runs</div></div>';
+      html += '</div>';
+      html += '<div class="row" style="margin-top:12px"><span class="label">Max Steps</span><span class="value">' + shadow.maxSteps + '</span></div>';
+      html += '<div class="row"><span class="label">Timeout</span><span class="value">' + (shadow.timeoutMs / 1000) + 's</span></div>';
+      html += '<p style="color:var(--text-muted);font-size:11px;margin-top:8px">Suspicious tool calls run on a treadmill &mdash; fake results, real LLM, observe the attack chain before any damage.</p>';
+    } else {
+      html += '<div class="stat" style="color:var(--text-muted)">&mdash;</div>';
+      html += '<div class="stat-label">Disabled &mdash; set SHROUD_SHADOW_EXECUTION=true</div>';
+    }
+    html += '</div>';
+
+    // Threat breakdown
+    if (events.stats && Object.keys(events.stats.byThreatClass || {}).length > 0) {
+      html += '<div class="card"><h2>Threats by Class</h2>';
+      const colors = { instruction_override: '#f85149', role_switch: '#da3633', prompt_extraction: '#d29922', conversation_mockup: '#d29922', encoding_bypass: '#58a6ff', data_exfiltration: '#f85149', privilege_escalation: '#da3633', mcp_tool_poisoning: '#bc4c00', semantic_drift: '#a78bfa', shadow_exfil_detected: '#f472b6' };
+      for (const [cls, count] of Object.entries(events.stats.byThreatClass)) {
+        const pct = Math.round(count / events.stats.totalEvents * 100);
+        html += '<div class="row"><span class="label">' + cls.replace(/_/g, ' ') + '</span><span class="value" style="color:' + (colors[cls]||'#c9d1d9') + '">' + count + ' (' + pct + '%)</span></div>';
+      }
+      html += '</div>';
+    }
+
+    // Recent events
+    html += '<div class="card card-wide"><h2>Recent Security Events</h2><div class="events-list">';
+    for (let i = 0; i < (events.events || []).length; i++) {
+      const e = events.events[events.events.length - 1 - i];
+      const eid = 'evt-' + i;
+      html += '<div class="event event-clickable ' + e.severity + '" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
       html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
-      html += '</div>';
-      html += '<div style="display:flex;justify-content:space-between;margin-top:4px">';
-      html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || 'unknown', 40) + '</span>';
-      html += '<span style="color:var(--text-muted);font-size:10px">' + (e.threatClass || '').replace(/_/g, ' ') + '</span>';
-      html += '</div>';
+      html += sigTooltip(e.signatureId) + ' ';
+      html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || '', 40) + '</span>';
       html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
       html += '<div id="' + eid + '" class="event-detail">';
       html += '<table class="event-detail-table"><tbody>';
@@ -2018,7 +1993,6 @@ async function renderEvents() {
       html += '<tr><td>Direction</td><td>' + (e.direction || '') + '</td></tr>';
       html += '<tr><td>Action</td><td>' + (e.action || '') + '</td></tr>';
       html += '<tr><td>Agent</td><td>' + (e.agentLabel || e.agentBuildId || 'unknown') + '</td></tr>';
-      html += '<tr><td>Session</td><td style="font-family:monospace;font-size:11px">' + (e.agentSessionId || '') + '</td></tr>';
       html += '<tr><td>Match Position</td><td>' + (e.matchStart || 0) + '-' + (e.matchEnd || 0) + ' of ' + (e.textLength || 0) + ' chars</td></tr>';
       html += '<tr><td>Description</td><td class="detail-text">' + (e.description || '') + '</td></tr>';
       html += '<tr><td>Full Match</td><td class="detail-mono">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
@@ -2027,125 +2001,14 @@ async function renderEvents() {
       html += '</div>';
       html += '</div>';
     }
-    if (events.length === 0) {
-      html += '<div class="card" style="text-align:center;padding:40px"><h2 style="color:var(--text-muted)">No events match your filters</h2></div>';
-    }
-    html += '</div>';
+    html += '</div></div>';
 
-    html += '</div>';
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
-  }
-
-  eventsAutoRefreshTimer = setInterval(() => { if (currentTab === 'events') renderEvents(); }, 30000);
-}
-
-// ─── Tripwires tab ───
-async function renderTripwires() {
-  const el = document.getElementById('tripwiresContent');
-  try {
-    const data = await fetchJson('/api/tripwires');
-    let html = '<div style="padding:20px 28px">';
-
-    // ═══ HONEYPOT STATS ═══
-    html += '<div class="card" style="margin-bottom:16px"><h2>Honeypot Tokens</h2>';
-    html += '<div class="stat-row" style="margin-bottom:12px">';
-    html += '<div class="stat-group"><div class="stat ' + (data.honeypot.totalTrips > 0 ? 'red' : 'green') + '">' + data.honeypot.totalTrips + '</div><div class="stat-label">Trips</div></div>';
-    html += '<div class="stat-group"><div class="stat">';
-    html += data.honeypot.enabled ? '<span style="color:var(--success)">ARMED</span>' : '<span style="color:var(--text-muted)">OFF</span>';
-    html += '</div><div class="stat-label">Status</div></div>';
-    html += '</div>';
-    // By type breakdown
-    const hpTypes = Object.entries(data.honeypot.byType || {});
-    if (hpTypes.length > 0) {
-      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">By Signature</div>';
-      for (const [sig, count] of hpTypes.sort((a,b) => b[1] - a[1])) {
-        html += '<div class="row"><span class="label">' + sig + '</span><span class="value" style="color:var(--critical)">' + count + '</span></div>';
-      }
-    }
-    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Fake credentials and internal-looking URLs planted in agent context. Any use = 100% confirmed injection. Zero false positives.</p>';
-    html += '</div>';
-
-    // ═══ PHANTOM TOOLS ═══
-    html += '<div class="card" style="margin-bottom:16px"><h2>Phantom Tools</h2>';
-    html += '<div class="stat-row" style="margin-bottom:12px">';
-    html += '<div class="stat-group"><div class="stat ' + (data.phantom.totalTrips > 0 ? 'red' : 'green') + '">' + data.phantom.totalTrips + '</div><div class="stat-label">Phantom Calls</div></div>';
-    html += '</div>';
-    const ptTools = Object.entries(data.phantom.byTool || {});
-    if (ptTools.length > 0) {
-      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">By Tool</div>';
-      for (const [tool, count] of ptTools.sort((a,b) => b[1] - a[1])) {
-        html += '<div class="row"><span class="label" style="font-family:monospace">' + tool + '</span><span class="value" style="color:var(--critical)">' + count + '</span></div>';
-      }
-    }
-    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">5 canary tool definitions registered in the agent runtime. No legitimate workflow uses them. Calls = confirmed injection.</p>';
-    html += '</div>';
-
-    // ═══ FLYWHEEL / ATTACK TRACES ═══
-    html += '<div class="card" style="margin-bottom:16px"><h2>Contrastive Flywheel</h2>';
-    html += '<div class="stat-row" style="margin-bottom:12px">';
-    html += '<div class="stat-group"><div class="stat accent">' + data.flywheel.attackTraceCount + '</div><div class="stat-label">Attack Traces</div></div>';
-    html += '<div class="stat-group"><div class="stat">' + data.flywheel.trainingSessions + '</div><div class="stat-label">Training Sessions</div></div>';
-    if (data.flywheel.threatHeads) {
-      html += '<div class="stat-group"><div class="stat">' + data.flywheel.threatHeads.labelCount + '</div><div class="stat-label">Threat Labels</div></div>';
-    }
-    html += '</div>';
-    // By source breakdown
-    const flySrc = Object.entries(data.flywheel.bySource || {});
-    if (flySrc.length > 0) {
-      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Trace Sources</div>';
-      const srcColors = { honeypot: 'var(--critical)', phantom: 'var(--high)', shadow: 'var(--accent)', other: 'var(--text-muted)' };
-      for (const [src, count] of flySrc.sort((a,b) => b[1] - a[1])) {
-        html += '<div class="row"><span class="label">' + src + '</span><span class="value" style="color:' + (srcColors[src] || 'var(--text-primary)') + '">' + count + '</span></div>';
-      }
-    }
-    if (data.flywheel.lastTrainedAt) {
-      html += '<div class="row" style="margin-top:8px"><span class="label">Last trained</span><span class="value">' + timeAgo(data.flywheel.lastTrainedAt) + '</span></div>';
-    }
-    // Threat head reliability
-    if (data.flywheel.threatHeads && data.flywheel.threatHeads.reliabilityScores) {
-      const scores = data.flywheel.threatHeads.reliabilityScores;
-      const validScores = scores.filter(s => s > 0);
-      if (validScores.length > 0) {
-        const avgReliability = validScores.reduce((a, b) => a + b, 0) / validScores.length;
-        html += '<div class="row"><span class="label">Threat head avg reliability</span><span class="value" style="color:' + (avgReliability > 0.7 ? 'var(--success)' : avgReliability > 0.4 ? 'var(--medium)' : 'var(--critical)') + '">' + (avgReliability * 100).toFixed(0) + '%</span></div>';
-      }
-    }
-    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Honeypot/phantom/shadow traces feed back into the transformer via contrastive learning. More traces = better anomaly detection.</p>';
-    html += '</div>';
-
-    // ═══ PER-AGENT TRIPWIRE HISTORY ═══
-    const agentBreakdown = Object.entries(data.agentBreakdown || {});
-    if (agentBreakdown.length > 0) {
-      html += '<div class="card"><h2>Per-Agent Tripwire History</h2>';
-      for (const [agent, trips] of agentBreakdown.sort((a,b) => b[1].length - a[1].length)) {
-        html += '<div style="margin-bottom:12px">';
-        html += '<div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">' + agent + ' <span style="color:var(--critical);font-size:11px">(' + trips.length + ' trips)</span></div>';
-        for (const t of trips.slice(-5)) {
-          const typeColor = t.type === 'honeypot' ? 'var(--critical)' : 'var(--high)';
-          html += '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:11px;border-bottom:1px solid rgba(30,41,59,0.3)">';
-          html += '<span class="pill ' + (t.severity === 'high' ? 'pill-high' : 'pill-medium') + '">' + t.type + '</span>';
-          html += '<span style="color:var(--accent);font-family:monospace;font-size:10px">' + t.signatureId + '</span>';
-          html += '<span style="flex:1;color:var(--text-muted)">' + truncate(t.description || '', 80) + '</span>';
-          html += '<span style="color:var(--text-muted);font-size:10px">' + timeAgo(t.timestamp) + '</span>';
-          html += '</div>';
-        }
-        if (trips.length > 5) {
-          html += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px">... and ' + (trips.length - 5) + ' more</div>';
-        }
-        html += '</div>';
-      }
-      html += '</div>';
-    }
-
-    html += '</div>';
-    el.innerHTML = html;
-  } catch (e) {
-    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
+    document.getElementById('content').innerHTML = html;
+    document.getElementById('lastUpdate').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById('lastUpdate').textContent = 'Error: ' + err.message;
   }
 }
-
 // Agent detail view
 async function showAgent(buildId) {
   viewingAgent = true;
@@ -2222,13 +2085,13 @@ async function showAgent(buildId) {
 let currentTab = 'overview';
 const TAB_CONTAINERS = {
   overview: 'content',
-  agents: 'agentsContent',
-  events: 'eventsContent',
-  tripwires: 'tripwiresContent',
   rules: 'rulesContent',
   signatures: 'sigContent',
   transformer: 'transformerContent',
+  events: 'eventsContent',
+  tripwires: 'tripwiresContent',
   timeline: 'timelineContent',
+};
 };
 function switchTab(tab) {
   currentTab = tab;
@@ -2247,7 +2110,6 @@ function switchTab(tab) {
   else if (tab === 'signatures') renderSignatures();
   else if (tab === 'transformer') renderTransformer();
   else if (tab === 'timeline') renderTimeline();
-}
 
 function showToast(msg, isError) {
   const t = document.getElementById('toast');
@@ -2667,6 +2529,7 @@ function renderSignatures() {
   document.getElementById('sigContent').innerHTML = html;
 }
 
+
 // ─── Transformer tab ───
 async function renderTransformer() {
   const el = document.getElementById('transformerContent');
@@ -2807,7 +2670,219 @@ async function renderTransformer() {
   } catch (e) {
     el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
   }
-}
+
+
+// ─── Events tab ───
+let eventsSearchQuery = '';
+let eventsSeverityFilter = '';
+let eventsTimeFilter = '';
+let eventsAutoRefreshTimer = null;
+
+async function renderEvents() {
+  const el = document.getElementById('eventsContent');
+  if (eventsAutoRefreshTimer) clearInterval(eventsAutoRefreshTimer);
+
+  try {
+    // Build query params
+    let qp = '?limit=200';
+    if (eventsSearchQuery) qp += '&q=' + encodeURIComponent(eventsSearchQuery);
+    if (eventsSeverityFilter) qp += '&severity=' + eventsSeverityFilter;
+    if (eventsTimeFilter) {
+      const now = Date.now();
+      const sinceMap = { '1h': now - 3600000, 'today': now - 86400000, 'week': now - 604800000 };
+      if (sinceMap[eventsTimeFilter]) qp += '&since=' + sinceMap[eventsTimeFilter];
+    }
+
+    const data = await fetchJson('/api/events' + qp);
+    const events = data.events || [];
+    const stats = data.stats || {};
+
+    let html = '<div style="padding:20px 28px">';
+
+    // Controls bar
+    html += '<div class="card" style="margin-bottom:16px">';
+    html += '<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">';
+    html += '<input id="evtSearch" type="text" placeholder="Search signature, agent, description..." value="' + (eventsSearchQuery || '').replace(/"/g, '&quot;') + '" style="flex:1;min-width:200px;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);padding:7px 12px;border-radius:6px;font-size:12px" onkeydown="if(event.key===\\'Enter\\'){eventsSearchQuery=this.value;renderEvents()}">';
+    html += '<button class="btn btn-primary" onclick="eventsSearchQuery=document.getElementById(\\'evtSearch\\').value;renderEvents()">Search</button>';
+    html += '</div>';
+
+    // Severity filter buttons
+    html += '<div style="display:flex;gap:6px;margin-top:10px;flex-wrap:wrap">';
+    const sevOptions = [['', 'All'], ['high', 'High'], ['medium', 'Medium'], ['low', 'Low']];
+    for (const [val, label] of sevOptions) {
+      const active = eventsSeverityFilter === val;
+      html += '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsSeverityFilter=\\'' + val + '\\';renderEvents()">' + label + '</button>';
+    }
+    html += '<span style="width:1px;height:20px;background:var(--border);margin:0 4px"></span>';
+    const timeOptions = [['', 'All time'], ['1h', 'Last hour'], ['today', 'Today'], ['week', 'This week']];
+    for (const [val, label] of timeOptions) {
+      const active = eventsTimeFilter === val;
+      html += '<button class="btn ' + (active ? 'btn-primary' : 'btn-secondary') + '" style="padding:4px 12px;font-size:11px" onclick="eventsTimeFilter=\\'' + val + '\\';renderEvents()">' + label + '</button>';
+    }
+    html += '</div>';
+
+    // Stats summary
+    html += '<div style="display:flex;gap:16px;margin-top:10px;font-size:11px;color:var(--text-muted)">';
+    html += '<span>' + events.length + ' events shown</span>';
+    if (stats.totalEvents !== undefined) html += '<span>' + stats.totalEvents + ' total</span>';
+    if (stats.blockedCount) html += '<span style="color:var(--critical)">' + stats.blockedCount + ' blocked</span>';
+    html += '</div>';
+    html += '</div>';
+
+    // Event list
+    html += '<div style="max-height:calc(100vh - 280px);overflow-y:auto">';
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i];
+      const eid = 'evt-tab-' + i;
+      html += '<div class="event event-clickable ' + e.severity + '" style="margin:0 0 4px 0" onclick="var d=document.getElementById(\\'' + eid + '\\');d.style.display=d.style.display===\\'none\\'?\\'block\\':\\'none\\'">';
+      html += '<div class="event-header">';
+      html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">';
+      html += sigTooltip(e.signatureId) + ' ';
+      html += '<span class="pill pill-' + e.severity + '">' + e.severity + '</span>';
+      html += '<span class="pill pill-' + (e.action === 'blocked' ? 'blocked' : 'flagged') + '">' + e.action + '</span>';
+      html += '</div>';
+      html += '<span class="time">' + timeAgo(e.timestamp) + '</span>';
+      html += '</div>';
+      html += '<div style="display:flex;justify-content:space-between;margin-top:4px">';
+      html += '<span class="agent">' + truncate(e.agentLabel || e.agentBuildId || 'unknown', 40) + '</span>';
+      html += '<span style="color:var(--text-muted);font-size:10px">' + (e.threatClass || '').replace(/_/g, ' ') + '</span>';
+      html += '</div>';
+      html += '<div class="match">' + truncate(e.matchedText || '', 120) + '</div>';
+      html += '<div id="' + eid + '" class="event-detail">';
+      html += '<table class="event-detail-table"><tbody>';
+      html += '<tr><td class="detail-label">Signature</td><td class="detail-accent">' + e.signatureId + '</td></tr>';
+      html += '<tr><td>Threat Class</td><td>' + (e.threatClass || '').replace(/_/g, ' ') + '</td></tr>';
+      html += '<tr><td>Severity</td><td class="' + (e.severity === 'high' ? 'sev-high' : e.severity === 'medium' ? 'sev-medium' : 'sev-low') + '">' + e.severity + '</td></tr>';
+      html += '<tr><td>Direction</td><td>' + (e.direction || '') + '</td></tr>';
+      html += '<tr><td>Action</td><td>' + (e.action || '') + '</td></tr>';
+      html += '<tr><td>Agent</td><td>' + (e.agentLabel || e.agentBuildId || 'unknown') + '</td></tr>';
+      html += '<tr><td>Session</td><td style="font-family:monospace;font-size:11px">' + (e.agentSessionId || '') + '</td></tr>';
+      html += '<tr><td>Match Position</td><td>' + (e.matchStart || 0) + '-' + (e.matchEnd || 0) + ' of ' + (e.textLength || 0) + ' chars</td></tr>';
+      html += '<tr><td>Description</td><td class="detail-text">' + (e.description || '') + '</td></tr>';
+      html += '<tr><td>Full Match</td><td class="detail-mono">' + (e.matchedText || '').replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</td></tr>';
+      html += '<tr><td>Timestamp</td><td>' + new Date(e.timestamp).toLocaleString() + '</td></tr>';
+      html += '</tbody></table>';
+      html += '</div>';
+      html += '</div>';
+    }
+    if (events.length === 0) {
+      html += '<div class="card" style="text-align:center;padding:40px"><h2 style="color:var(--text-muted)">No events match your filters</h2></div>';
+    }
+    html += '</div>';
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
+  }
+
+  eventsAutoRefreshTimer = setInterval(() => { if (currentTab === 'events') renderEvents(); }, 30000);
+
+
+// ─── Tripwires tab ───
+async function renderTripwires() {
+  const el = document.getElementById('tripwiresContent');
+  try {
+    const data = await fetchJson('/api/tripwires');
+    let html = '<div style="padding:20px 28px">';
+
+    // ═══ HONEYPOT STATS ═══
+    html += '<div class="card" style="margin-bottom:16px"><h2>Honeypot Tokens</h2>';
+    html += '<div class="stat-row" style="margin-bottom:12px">';
+    html += '<div class="stat-group"><div class="stat ' + (data.honeypot.totalTrips > 0 ? 'red' : 'green') + '">' + data.honeypot.totalTrips + '</div><div class="stat-label">Trips</div></div>';
+    html += '<div class="stat-group"><div class="stat">';
+    html += data.honeypot.enabled ? '<span style="color:var(--success)">ARMED</span>' : '<span style="color:var(--text-muted)">OFF</span>';
+    html += '</div><div class="stat-label">Status</div></div>';
+    html += '</div>';
+    // By type breakdown
+    const hpTypes = Object.entries(data.honeypot.byType || {});
+    if (hpTypes.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">By Signature</div>';
+      for (const [sig, count] of hpTypes.sort((a,b) => b[1] - a[1])) {
+        html += '<div class="row"><span class="label">' + sig + '</span><span class="value" style="color:var(--critical)">' + count + '</span></div>';
+      }
+    }
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Fake credentials and internal-looking URLs planted in agent context. Any use = 100% confirmed injection. Zero false positives.</p>';
+    html += '</div>';
+
+    // ═══ PHANTOM TOOLS ═══
+    html += '<div class="card" style="margin-bottom:16px"><h2>Phantom Tools</h2>';
+    html += '<div class="stat-row" style="margin-bottom:12px">';
+    html += '<div class="stat-group"><div class="stat ' + (data.phantom.totalTrips > 0 ? 'red' : 'green') + '">' + data.phantom.totalTrips + '</div><div class="stat-label">Phantom Calls</div></div>';
+    html += '</div>';
+    const ptTools = Object.entries(data.phantom.byTool || {});
+    if (ptTools.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">By Tool</div>';
+      for (const [tool, count] of ptTools.sort((a,b) => b[1] - a[1])) {
+        html += '<div class="row"><span class="label" style="font-family:monospace">' + tool + '</span><span class="value" style="color:var(--critical)">' + count + '</span></div>';
+      }
+    }
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">5 canary tool definitions registered in the agent runtime. No legitimate workflow uses them. Calls = confirmed injection.</p>';
+    html += '</div>';
+
+    // ═══ FLYWHEEL / ATTACK TRACES ═══
+    html += '<div class="card" style="margin-bottom:16px"><h2>Contrastive Flywheel</h2>';
+    html += '<div class="stat-row" style="margin-bottom:12px">';
+    html += '<div class="stat-group"><div class="stat accent">' + data.flywheel.attackTraceCount + '</div><div class="stat-label">Attack Traces</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.flywheel.trainingSessions + '</div><div class="stat-label">Training Sessions</div></div>';
+    if (data.flywheel.threatHeads) {
+      html += '<div class="stat-group"><div class="stat">' + data.flywheel.threatHeads.labelCount + '</div><div class="stat-label">Threat Labels</div></div>';
+    }
+    html += '</div>';
+    // By source breakdown
+    const flySrc = Object.entries(data.flywheel.bySource || {});
+    if (flySrc.length > 0) {
+      html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px">Trace Sources</div>';
+      const srcColors = { honeypot: 'var(--critical)', phantom: 'var(--high)', shadow: 'var(--accent)', other: 'var(--text-muted)' };
+      for (const [src, count] of flySrc.sort((a,b) => b[1] - a[1])) {
+        html += '<div class="row"><span class="label">' + src + '</span><span class="value" style="color:' + (srcColors[src] || 'var(--text-primary)') + '">' + count + '</span></div>';
+      }
+    }
+    if (data.flywheel.lastTrainedAt) {
+      html += '<div class="row" style="margin-top:8px"><span class="label">Last trained</span><span class="value">' + timeAgo(data.flywheel.lastTrainedAt) + '</span></div>';
+    }
+    // Threat head reliability
+    if (data.flywheel.threatHeads && data.flywheel.threatHeads.reliabilityScores) {
+      const scores = data.flywheel.threatHeads.reliabilityScores;
+      const validScores = scores.filter(s => s > 0);
+      if (validScores.length > 0) {
+        const avgReliability = validScores.reduce((a, b) => a + b, 0) / validScores.length;
+        html += '<div class="row"><span class="label">Threat head avg reliability</span><span class="value" style="color:' + (avgReliability > 0.7 ? 'var(--success)' : avgReliability > 0.4 ? 'var(--medium)' : 'var(--critical)') + '">' + (avgReliability * 100).toFixed(0) + '%</span></div>';
+      }
+    }
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Honeypot/phantom/shadow traces feed back into the transformer via contrastive learning. More traces = better anomaly detection.</p>';
+    html += '</div>';
+
+    // ═══ PER-AGENT TRIPWIRE HISTORY ═══
+    const agentBreakdown = Object.entries(data.agentBreakdown || {});
+    if (agentBreakdown.length > 0) {
+      html += '<div class="card"><h2>Per-Agent Tripwire History</h2>';
+      for (const [agent, trips] of agentBreakdown.sort((a,b) => b[1].length - a[1].length)) {
+        html += '<div style="margin-bottom:12px">';
+        html += '<div style="font-size:13px;font-weight:600;color:var(--text-primary);margin-bottom:4px">' + agent + ' <span style="color:var(--critical);font-size:11px">(' + trips.length + ' trips)</span></div>';
+        for (const t of trips.slice(-5)) {
+          const typeColor = t.type === 'honeypot' ? 'var(--critical)' : 'var(--high)';
+          html += '<div style="display:flex;gap:8px;align-items:center;padding:4px 0;font-size:11px;border-bottom:1px solid rgba(30,41,59,0.3)">';
+          html += '<span class="pill ' + (t.severity === 'high' ? 'pill-high' : 'pill-medium') + '">' + t.type + '</span>';
+          html += '<span style="color:var(--accent);font-family:monospace;font-size:10px">' + t.signatureId + '</span>';
+          html += '<span style="flex:1;color:var(--text-muted)">' + truncate(t.description || '', 80) + '</span>';
+          html += '<span style="color:var(--text-muted);font-size:10px">' + timeAgo(t.timestamp) + '</span>';
+          html += '</div>';
+        }
+        if (trips.length > 5) {
+          html += '<div style="font-size:10px;color:var(--text-muted);margin-top:4px">... and ' + (trips.length - 5) + ' more</div>';
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (e) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
+  }
+
 
 // ─── Timeline tab ───
 let timelineRefreshTimer = null;
@@ -2950,7 +3025,6 @@ function toggleSession(key) {
   if (expandedSessions.has(key)) expandedSessions.delete(key);
   else expandedSessions.add(key);
   renderTimeline();
-}
 
 // Auto-refresh every 3 seconds (only overview tab)
 refresh();
@@ -2965,5 +3039,3 @@ try {
 </script>
 </body>
 </html>`;
-
-// (3D Visualization removed — replaced by inline Timeline tab)
