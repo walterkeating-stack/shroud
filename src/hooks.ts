@@ -2650,7 +2650,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 const accumulated = blockAccum.get(idx);
                 const buffered = blockBuffer.get(idx);
                 if (accumulated && buffered && buffered.length > 0) {
-                  let deobbed = ob().deobfuscate(accumulated);
+                  const { text: _deobText, replacementCount: _deobRc } = ob().deobfuscateWithStats(accumulated);
+                  let deobbed = _deobText;
+                  if (_deobRc > 0) agentTracker.recordDeobfuscation(_deobRc);
                   scanDeobfuscatedBlock(deobbed);
                   // Response-side block: replace content with warning if exfiltration detected
                   if (config.injectionDetection === "block" && securityBus) {
@@ -2701,7 +2703,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                     const accumulated = choiceAccum.get(idx);
                     const buf = choiceBuffer.get(idx);
                     if (accumulated && buf && buf.length > 0) {
-                      let deobbed = ob().deobfuscate(accumulated);
+                      const { text: _deobText2, replacementCount: _deobRc2 } = ob().deobfuscateWithStats(accumulated);
+                      let deobbed = _deobText2;
+                      if (_deobRc2 > 0) agentTracker.recordDeobfuscation(_deobRc2);
                       scanDeobfuscatedBlock(deobbed);
                       if (config.injectionDetection === "block" && securityBus) {
                         const recent = securityBus.getEvents();
@@ -2760,7 +2764,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               if (Array.isArray(json.message?.content)) {
                 for (const block of json.message.content) {
                   if (block?.type === "text" && typeof block.text === "string") {
-                    block.text = ob().deobfuscate(block.text);
+                    const { text: _dt, replacementCount: _drc } = ob().deobfuscateWithStats(block.text);
+                    block.text = _dt;
+                    if (_drc > 0) agentTracker.recordDeobfuscation(_drc);
                   }
                 }
                 const nonDataLines = part.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
@@ -2778,7 +2784,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             // Flush any remaining buffered content (stream ended mid-block)
             for (const [idx, buffered] of blockBuffer) {
               const accumulated = blockAccum.get(idx) || "";
-              const deobbed = ob().deobfuscate(accumulated);
+              const { text: deobbed, replacementCount: _flushRc } = ob().deobfuscateWithStats(accumulated);
+              if (_flushRc > 0) agentTracker.recordDeobfuscation(_flushRc);
               scanDeobfuscatedBlock(deobbed);
               let first = true;
               for (const eventStr of buffered) {
@@ -2801,7 +2808,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             }
             for (const [idx, buffered] of choiceBuffer) {
               const accumulated = choiceAccum.get(idx) || "";
-              const deobbed = ob().deobfuscate(accumulated);
+              const { text: deobbed, replacementCount: _flushRc2 } = ob().deobfuscateWithStats(accumulated);
+              if (_flushRc2 > 0) agentTracker.recordDeobfuscation(_flushRc2);
               scanDeobfuscatedBlock(deobbed);
               let first = true;
               for (const eventStr of buffered) {
@@ -2863,7 +2871,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (Array.isArray(json.content)) {
             for (const block of json.content) {
               if (block?.type === "text" && typeof block.text === "string") {
-                block.text = ob().deobfuscate(block.text);
+                const { text: _jdt, replacementCount: _jdrc } = ob().deobfuscateWithStats(block.text);
+                block.text = _jdt;
+                if (_jdrc > 0) agentTracker.recordDeobfuscation(_jdrc);
                 scanDeobfuscatedBlock(block.text);
               }
             }
@@ -2871,7 +2881,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (Array.isArray(json.choices)) {
             for (const choice of json.choices) {
               if (typeof choice.message?.content === "string") {
-                choice.message.content = ob().deobfuscate(choice.message.content);
+                const { text: _jdt2, replacementCount: _jdrc2 } = ob().deobfuscateWithStats(choice.message.content);
+                choice.message.content = _jdt2;
+                if (_jdrc2 > 0) agentTracker.recordDeobfuscation(_jdrc2);
                 scanDeobfuscatedBlock(choice.message.content);
               }
             }
