@@ -294,5 +294,8 @@ export class Runner {
   async #cleanup() {
     try { if (this.#appClient) await this.#appClient.shutdown(); } catch {}
     if (this.#mockLlmProc && !this.#mockLlmProc.killed) this.#mockLlmProc.kill("SIGTERM");
+    // Clean up test-isolated session/event files
+    try { fs.unlinkSync("/tmp/shroud-test-app-sessions.json"); } catch {}
+    try { fs.unlinkSync("/tmp/shroud-test-app-events.jsonl"); } catch {}
   }
 }
