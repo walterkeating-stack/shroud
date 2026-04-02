@@ -2092,7 +2092,6 @@ const TAB_CONTAINERS = {
   tripwires: 'tripwiresContent',
   timeline: 'timelineContent',
 };
-};
 function switchTab(tab) {
   currentTab = tab;
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
