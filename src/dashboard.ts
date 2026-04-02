@@ -201,7 +201,7 @@ export function startDashboard(
       }
       else if (url?.startsWith("/api/agents/")) {
         const buildId = url.slice("/api/agents/".length);
-        handleAgentDetail(res, deps, buildId);
+        handleAgentDetail(res, deps, buildId, appSession);
       }
       else if (url === "/api/event-summary") {
         handleEventSummary(res, deps);
@@ -644,7 +644,7 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
   json(res, 200, { agents: enriched });
 }
 
-function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: string) {
+function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSession?: Record<string, unknown> | null) {
   let agent: any = deps.agentTracker.getSession(buildId);
   // Also search disk-persisted sessions (other OC processes)
   if (!agent && deps.agentSessionFile) {
@@ -653,6 +653,20 @@ function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: st
       const diskSessions = JSON.parse(raw) as any[];
       agent = diskSessions.find((e: any) => e.agentBuildId === buildId) || null;
     } catch {}
+  }
+  // Check APP server session
+  if (!agent && appSession && (appSession as any).agentBuildId === buildId) {
+    const app = appSession as any;
+    agent = {
+      agentLabel: app.agentLabel, agentBuildId: app.agentBuildId,
+      sessionId: "", llmCallCount: app.requestCount || 0,
+      channels: [app.channel || "app"],
+      classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+      toolInventory: app.toolSequence || [], startedAt: Date.now() - (app.uptimeMs || 0),
+      lastCallAt: Date.now(), securityEventCount: app.securityEvents || 0,
+      detectedModel: "app-server", channelSource: "app-server",
+      source: "app-server", version: app.agentVersion,
+    };
   }
   if (!agent) {
     json(res, 404, { error: `Agent ${buildId} not found` });
