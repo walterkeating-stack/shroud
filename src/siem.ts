@@ -10,6 +10,7 @@
  */
 
 import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -61,20 +62,18 @@ export class SiemShipper {
     }
   }
 
-  /** Flush buffered events to all configured destinations. */
+  /** Flush buffered events to all configured destinations. Async file I/O. */
   flush(): void {
     if (this._buffer.length === 0) return;
     const events = this._buffer.splice(0);
+    const count = events.length;
 
-    // JSONL file output
+    // JSONL file output (async — fire-and-forget)
     if (this._config.jsonlPath) {
-      try {
-        const lines = events.map(e => JSON.stringify(e)).join("\n") + "\n";
-        appendFileSync(this._config.jsonlPath, lines);
-        this._stats.shipped += events.length;
-      } catch {
-        this._stats.fileErrors++;
-      }
+      const lines = events.map(e => JSON.stringify(e)).join("\n") + "\n";
+      appendFile(this._config.jsonlPath, lines)
+        .then(() => { this._stats.shipped += count; })
+        .catch(() => { this._stats.fileErrors++; });
     }
 
     // Webhook POST
@@ -83,13 +82,26 @@ export class SiemShipper {
     }
   }
 
-  /** Stop the flush timer and flush remaining events. */
+  /** Synchronous flush for SIGTERM/SIGINT shutdown. */
+  flushSync(): void {
+    if (this._buffer.length === 0) return;
+    const events = this._buffer.splice(0);
+    if (this._config.jsonlPath) {
+      try {
+        appendFileSync(this._config.jsonlPath, events.map(e => JSON.stringify(e)).join("\n") + "\n");
+        this._stats.shipped += events.length;
+      } catch { this._stats.fileErrors++; }
+    }
+    if (this._config.webhookUrl) this._postWebhook(events);
+  }
+
+  /** Stop the flush timer and flush remaining events synchronously. */
   stop(): void {
     if (this._flushTimer) {
       clearInterval(this._flushTimer);
       this._flushTimer = null;
     }
-    this.flush();
+    this.flushSync();
   }
 
   /** Get shipping stats. */
