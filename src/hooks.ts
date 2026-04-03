@@ -818,6 +818,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   if (originalFetch && !((globalThis as any).__shroudFetchPatched)) {
     (globalThis as any).__shroudFetchPatched = true;
 
+    // Store original for comparison — SDK clients may have captured it
+    const _prePatchFetch = globalThis.fetch;
+
     globalThis.fetch = async function shroudFetchInterceptor(
       input: RequestInfo | URL,
       init?: RequestInit,
@@ -1420,6 +1423,50 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
 
       return response;
+    }
+
+    // ── Rebind SDK clients that captured the pre-patch fetch reference ──
+    // The OpenAI SDK (and others) capture `globalThis.fetch` at construction
+    // time via `this.fetch = options.fetch ?? getDefaultFetch()`. If the SDK
+    // was constructed before Shroud patched fetch, it holds the original
+    // unpatched reference and all LLM requests bypass the intercept.
+    // Walk all reachable objects looking for SDK client instances that still
+    // hold the old reference and rebind them to the patched interceptor.
+    try {
+      const patchedFetch = globalThis.fetch;
+      const visited = new WeakSet();
+      function rebindSdkClients(obj: any, depth: number): void {
+        if (!obj || typeof obj !== "object" || depth > 4 || visited.has(obj)) return;
+        visited.add(obj);
+        // OpenAI SDK: client.fetch === old unpatched fetch
+        if (obj.fetch === _prePatchFetch && obj.fetch !== patchedFetch) {
+          obj.fetch = patchedFetch;
+          api.logger?.info("[shroud] rebound SDK client fetch to patched interceptor");
+        }
+        // Check known extension paths
+        try {
+          for (const key of Object.keys(obj)) {
+            if (key.startsWith("_") || key === "constructor") continue;
+            try { rebindSdkClients(obj[key], depth + 1); } catch {}
+          }
+        } catch {}
+      }
+      // Scan globalThis for SDK client instances
+      rebindSdkClients((globalThis as any).__ocClients, 0);
+      rebindSdkClients((globalThis as any).__openaiClient, 0);
+      // Scan all loaded modules for exported clients
+      if (typeof require !== "undefined" && (require as any).cache) {
+        for (const modId of Object.keys((require as any).cache)) {
+          if (modId.includes("openai") || modId.includes("lossless")) {
+            try {
+              const mod = (require as any).cache[modId]?.exports;
+              rebindSdkClients(mod, 0);
+            } catch {}
+          }
+        }
+      }
+    } catch {
+      // Non-fatal — fetch intercept still works for globalThis.fetch callers
     }
 
   }
