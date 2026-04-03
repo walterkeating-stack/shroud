@@ -2457,6 +2457,19 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             const r = obfuscateText(msg.text);
             if (r.modified) { msg.text = r.text; modified = true; }
           }
+          // OpenAI: tool_calls in assistant messages (multi-turn re-obfuscation)
+          if (Array.isArray(msg.tool_calls)) {
+            for (const tc of msg.tool_calls) {
+              if (typeof tc.function?.arguments === "string") {
+                const r = obfuscateText(tc.function.arguments);
+                if (r.modified) { tc.function.arguments = r.text; modified = true; }
+              }
+              if (typeof tc.function?.name === "string") {
+                const r = obfuscateText(tc.function.name);
+                if (r.modified) { tc.function.name = r.text; modified = true; }
+              }
+            }
+          }
         }
 
         // --- Security: request-side injection scanning (Track 1) ---
@@ -2808,6 +2821,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // OpenAI per-choice state
         const choiceAccum: Map<number, string> = new Map();
         const choiceBuffer: Map<number, string[]> = new Map();
+        // OpenAI tool_calls per-choice state: Map<choiceIdx, Map<toolCallIdx, argString>>
+        const toolCallAccum: Map<number, Map<number, string>> = new Map();
+        const toolCallBuffer: Map<number, string[]> = new Map();
 
         let sseRemainder = "";
 
@@ -2890,7 +2906,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 continue;
               }
 
-              // OpenAI delta.content: buffer until finish_reason
+              // OpenAI delta.content / delta.tool_calls: buffer until finish_reason
               if (Array.isArray(json.choices)) {
                 let buffered = false;
                 for (const choice of json.choices) {
@@ -2901,8 +2917,23 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                     choiceBuffer.get(idx)!.push(part);
                     buffered = true;
                   }
+                  // Buffer tool_calls argument fragments
+                  if (Array.isArray(choice.delta?.tool_calls)) {
+                    for (const tc of choice.delta.tool_calls) {
+                      const tcIdx = tc.index ?? 0;
+                      if (!toolCallAccum.has(idx)) toolCallAccum.set(idx, new Map());
+                      const tcMap = toolCallAccum.get(idx)!;
+                      if (typeof tc.function?.arguments === "string") {
+                        tcMap.set(tcIdx, (tcMap.get(tcIdx) || "") + tc.function.arguments);
+                      }
+                    }
+                    if (!toolCallBuffer.has(idx)) toolCallBuffer.set(idx, []);
+                    toolCallBuffer.get(idx)!.push(part);
+                    buffered = true;
+                  }
                   // finish_reason signals block complete — flush
                   if (choice.finish_reason) {
+                    // Flush text content
                     const accumulated = choiceAccum.get(idx);
                     const buf = choiceBuffer.get(idx);
                     if (accumulated && buf && buf.length > 0) {
@@ -2939,6 +2970,55 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                       }
                       choiceAccum.delete(idx);
                       choiceBuffer.delete(idx);
+                    }
+                    // Flush tool_calls — deobfuscate accumulated arguments
+                    const tcMap = toolCallAccum.get(idx);
+                    const tcBuf = toolCallBuffer.get(idx);
+                    if (tcMap && tcMap.size > 0 && tcBuf && tcBuf.length > 0) {
+                      // Deobfuscate each tool call's accumulated arguments
+                      const deobArgs: Map<number, string> = new Map();
+                      for (const [tcIdx, args] of tcMap) {
+                        const { text: deobArg, replacementCount: tcRc } = ob().deobfuscateWithStats(args);
+                        deobArgs.set(tcIdx, deobArg);
+                        if (tcRc > 0) agentTracker.recordDeobfuscation(tcRc);
+                      }
+                      // Track per-tool-call whether we've emitted the deobbed args
+                      const tcEmitted: Set<number> = new Set();
+                      for (const eventStr of tcBuf) {
+                        const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
+                        if (dLine) {
+                          try {
+                            const dJson = JSON.parse(dLine.slice(6));
+                            if (Array.isArray(dJson.choices)) {
+                              for (const c of dJson.choices) {
+                                if (Array.isArray(c.delta?.tool_calls)) {
+                                  for (const tc of c.delta.tool_calls) {
+                                    const tcIdx = tc.index ?? 0;
+                                    if (typeof tc.function?.arguments === "string") {
+                                      const deob = deobArgs.get(tcIdx);
+                                      if (deob !== undefined) {
+                                        if (!tcEmitted.has(tcIdx)) {
+                                          tc.function.arguments = deob;
+                                          tcEmitted.add(tcIdx);
+                                        } else {
+                                          tc.function.arguments = "";
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              }
+                              const nonDataLines = eventStr.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
+                              const rebuilt = (nonDataLines ? nonDataLines + "\n" : "") + "data: " + JSON.stringify(dJson);
+                              controller.enqueue(new TextEncoder().encode(rebuilt + "\n\n"));
+                              continue;
+                            }
+                          } catch {}
+                        }
+                        controller.enqueue(new TextEncoder().encode(eventStr + "\n\n"));
+                      }
+                      toolCallAccum.delete(idx);
+                      toolCallBuffer.delete(idx);
                     }
                     buffered = false;
                   }
@@ -3037,6 +3117,52 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 controller.enqueue(new TextEncoder().encode(eventStr + "\n\n"));
               }
             }
+            // Flush any remaining tool_calls buffers
+            for (const [idx, tcBuf] of toolCallBuffer) {
+              const tcMap = toolCallAccum.get(idx);
+              if (tcMap && tcMap.size > 0 && tcBuf.length > 0) {
+                const deobArgs: Map<number, string> = new Map();
+                for (const [tcIdx, args] of tcMap) {
+                  const { text: deobArg, replacementCount: tcFlushRc } = ob().deobfuscateWithStats(args);
+                  deobArgs.set(tcIdx, deobArg);
+                  if (tcFlushRc > 0) agentTracker.recordDeobfuscation(tcFlushRc);
+                }
+                const tcEmitted: Set<number> = new Set();
+                for (const eventStr of tcBuf) {
+                  const dLine = eventStr.split("\n").find((l: string) => l.startsWith("data: "));
+                  if (dLine) {
+                    try {
+                      const dJson = JSON.parse(dLine.slice(6));
+                      if (Array.isArray(dJson.choices)) {
+                        for (const c of dJson.choices) {
+                          if (Array.isArray(c.delta?.tool_calls)) {
+                            for (const tc of c.delta.tool_calls) {
+                              const tcIdx = tc.index ?? 0;
+                              if (typeof tc.function?.arguments === "string") {
+                                const deob = deobArgs.get(tcIdx);
+                                if (deob !== undefined) {
+                                  if (!tcEmitted.has(tcIdx)) {
+                                    tc.function.arguments = deob;
+                                    tcEmitted.add(tcIdx);
+                                  } else {
+                                    tc.function.arguments = "";
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                        const nonDataLines = eventStr.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
+                        const rebuilt = (nonDataLines ? nonDataLines + "\n" : "") + "data: " + JSON.stringify(dJson);
+                        controller.enqueue(new TextEncoder().encode(rebuilt + "\n\n"));
+                        continue;
+                      }
+                    } catch {}
+                  }
+                  controller.enqueue(new TextEncoder().encode(eventStr + "\n\n"));
+                }
+              }
+            }
             if (sseRemainder.trim()) {
               controller.enqueue(new TextEncoder().encode(sseRemainder));
             }
@@ -3088,6 +3214,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 choice.message.content = _jdt2;
                 if (_jdrc2 > 0) agentTracker.recordDeobfuscation(_jdrc2);
                 scanDeobfuscatedBlock(choice.message.content);
+              }
+              // OpenAI: deobfuscate tool_calls arguments
+              if (Array.isArray(choice.message?.tool_calls)) {
+                for (const tc of choice.message.tool_calls) {
+                  if (typeof tc.function?.arguments === "string") {
+                    const { text: _jdt3, replacementCount: _jdrc3 } = ob().deobfuscateWithStats(tc.function.arguments);
+                    tc.function.arguments = _jdt3;
+                    if (_jdrc3 > 0) agentTracker.recordDeobfuscation(_jdrc3);
+                  }
+                }
               }
             }
           }
