@@ -201,11 +201,11 @@ export class ContrastiveTrainer {
    *
    * Returns total contrastive loss and number of triplets processed.
    */
-  trainOnTraces(
+  async trainOnTraces(
     attackTraces: AttackTrace[],
     healthyWorkflows: string[][],
     intentVecs?: Array<Float64Array | null>,
-  ): { loss: number; triplets: number } {
+  ): Promise<{ loss: number; triplets: number }> {
     if (attackTraces.length === 0 || healthyWorkflows.length < 2) {
       return { loss: 0, triplets: 0 };
     }
@@ -227,6 +227,8 @@ export class ContrastiveTrainer {
     const maxTriplets = Math.min(this._config.maxTriplets, attackTraces.length * healthyWorkflows.length);
 
     for (let t = 0; t < maxTriplets; t++) {
+      // Yield every 4 triplets to keep the event loop responsive
+      if (t > 0 && t % 4 === 0) await new Promise<void>(r => setImmediate(r));
       // Pick an attack trace
       const traceIdx = t % attackTraces.length;
       const trace = attackTraces[traceIdx];

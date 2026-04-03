@@ -216,7 +216,7 @@ export class TransformerTrainer {
         this._tokenizer,
         DEFAULT_CONTRASTIVE_CONFIG,
       );
-      const cResult = contrastiveTrainer.trainOnTraces(attackTraces, data, intentVecs);
+      const cResult = await contrastiveTrainer.trainOnTraces(attackTraces, data, intentVecs);
       contrastiveLoss = cResult.loss;
     }
 
@@ -225,7 +225,7 @@ export class TransformerTrainer {
     // (backbone is frozen — only threat head weights update).
     let threatHeadLoss = 0;
     if (threatClassifier && threatLabels && threatLabels.length > 0) {
-      threatHeadLoss = this._trainThreatHeads(threatClassifier, threatLabels);
+      threatHeadLoss = await this._trainThreatHeads(threatClassifier, threatLabels);
     }
 
     return {
@@ -244,21 +244,28 @@ export class TransformerTrainer {
    * Backbone is frozen — only threat head MLP weights are updated.
    * Returns average loss across all examples and heads.
    */
-  private _trainThreatHeads(
+  private async _trainThreatHeads(
     classifier: ThreatHeadClassifier,
     examples: ThreatLabeledExample[],
-  ): number {
+  ): Promise<number> {
     const lr = 0.005;
     const numEpochs = 5;
     let totalLoss = 0;
     let totalCount = 0;
 
     for (let epoch = 0; epoch < numEpochs; epoch++) {
+      // Yield between epochs to keep the event loop responsive
+      if (epoch > 0) await new Promise<void>(r => setImmediate(r));
+
       // Shuffle examples
       const shuffled = [...examples];
       this._shuffle(shuffled);
 
+      let exampleIdx = 0;
       for (const example of shuffled) {
+        // Yield every 10 examples to prevent event loop starvation
+        if (exampleIdx > 0 && exampleIdx % 10 === 0) await new Promise<void>(r => setImmediate(r));
+        exampleIdx++;
         if (example.sequence.length < 2) continue;
 
         // Ensure tools are in tokenizer

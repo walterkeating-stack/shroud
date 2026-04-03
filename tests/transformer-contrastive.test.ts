@@ -344,7 +344,7 @@ describe("MiniTransformer.backwardContrastive", () => {
 // ─── ContrastiveTrainer ───
 
 describe("ContrastiveTrainer", () => {
-  test("produces gradients from attack traces", () => {
+  test("produces gradients from attack traces", async () => {
     const tok = new ToolTokenizer();
     tok.addTool("read"); tok.addTool("edit"); tok.addTool("exec");
     tok.addTool("web_fetch"); tok.addTool("message");
@@ -383,7 +383,7 @@ describe("ContrastiveTrainer", () => {
       margin: 2.0,
     });
 
-    const result = trainer.trainOnTraces(traces, healthyWorkflows);
+    const result = await trainer.trainOnTraces(traces, healthyWorkflows);
 
     // Should process at least some triplets
     expect(result.triplets).toBeGreaterThanOrEqual(0);
@@ -400,7 +400,7 @@ describe("ContrastiveTrainer", () => {
     }
   });
 
-  test("returns zero when no traces", () => {
+  test("returns zero when no traces", async () => {
     const tok = new ToolTokenizer();
     const model = new MiniTransformer({
       ...DEFAULT_CONFIG,
@@ -413,12 +413,12 @@ describe("ContrastiveTrainer", () => {
     });
 
     const trainer = new ContrastiveTrainer(model, tok);
-    const result = trainer.trainOnTraces([], [["read", "edit"]]);
+    const result = await trainer.trainOnTraces([], [["read", "edit"]]);
     expect(result.loss).toBe(0);
     expect(result.triplets).toBe(0);
   });
 
-  test("returns zero when not enough healthy workflows", () => {
+  test("returns zero when not enough healthy workflows", async () => {
     const tok = new ToolTokenizer();
     tok.addTool("read"); tok.addTool("web_fetch");
     const model = new MiniTransformer({
@@ -432,7 +432,7 @@ describe("ContrastiveTrainer", () => {
     });
 
     const trainer = new ContrastiveTrainer(model, tok);
-    const result = trainer.trainOnTraces(
+    const result = await trainer.trainOnTraces(
       [{ legitimatePrefix: ["read"], hijackedSuffix: ["web_fetch"], injectionPoint: 1, source: "shadow", threatType: "test" }],
       [["read"]], // only one healthy workflow
     );
@@ -510,7 +510,7 @@ describe("end-to-end contrastive separation", () => {
     });
 
     for (let round = 0; round < 5; round++) {
-      cTrainer.trainOnTraces(attackTraces, healthyWorkflows);
+      await cTrainer.trainOnTraces(attackTraces, healthyWorkflows);
     }
 
     // Measure embedding distance after training
