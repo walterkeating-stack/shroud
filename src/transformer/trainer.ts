@@ -10,7 +10,7 @@
 
 import { type MiniTransformer, type TransformerWeights, flattenWeightsList } from "./model.js";
 import { type ToolTokenizer, BOS } from "./tokenizer.js";
-import { crossEntropyLoss } from "./linalg.js";
+import { crossEntropyLoss, fnv1a, xorshift32 } from "./linalg.js";
 import { ContrastiveTrainer, DEFAULT_CONTRASTIVE_CONFIG, type AttackTrace } from "./contrastive.js";
 import { ThreatHeadClassifier, type ThreatLabeledExample, LEARNED_THREAT_CLASS_COUNT } from "./threat-heads.js";
 
@@ -24,6 +24,7 @@ export interface TrainerConfig {
   warmupSteps: number;           // 50
   maxSequences: number;          // 500 (sample if store is larger)
   gradClipNorm: number;          // 1.0
+  rngSeed?: string;              // When set, shuffle uses seeded PRNG for reproducibility
 }
 
 export interface TrainResult {
@@ -70,6 +71,7 @@ export class TransformerTrainer {
   private _tokenizer: ToolTokenizer;
   private _config: TrainerConfig;
   private _adamState: AdamState | null = null;
+  private _rngState: { s: number } | null = null;
 
   constructor(
     model: MiniTransformer,
@@ -79,6 +81,9 @@ export class TransformerTrainer {
     this._model = model;
     this._tokenizer = tokenizer;
     this._config = config;
+    if (config.rngSeed) {
+      this._rngState = { s: fnv1a(config.rngSeed) || 1 };
+    }
   }
 
   /**
@@ -366,10 +371,13 @@ export class TransformerTrainer {
     }
   }
 
-  /** Shuffle array in-place (Fisher-Yates). */
+  /** Shuffle array in-place (Fisher-Yates). Uses seeded PRNG when rngSeed is set. */
   private _shuffle<T>(arr: T[]): void {
     for (let i = arr.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
+      const r = this._rngState
+        ? (xorshift32(this._rngState) >>> 0) / 0x100000000
+        : Math.random();
+      const j = Math.floor(r * (i + 1));
       [arr[i], arr[j]] = [arr[j], arr[i]];
     }
   }

@@ -570,6 +570,19 @@ export class TransformerScorer {
   ): TransformerScorer {
     const scorer = new TransformerScorer(profileDir, config);
 
+    // Cold start: no weights on disk → seed pretrain from testbed
+    if (!scorer._modelLoaded) {
+      try {
+        const { seedPretrain } = require("./seed-pretrain.js") as { seedPretrain: (dir: string) => Promise<any> };
+        seedPretrain(profileDir).then(() => {
+          // Reload after seed pretrain completes
+          scorer._loadModel();
+        }).catch(() => {});
+      } catch {
+        // seed-pretrain not available (e.g. minimal install) — continue without
+      }
+    }
+
     // If we have a vector store and enough data but no model, try initial training
     if (!scorer._modelLoaded && vectorStore) {
       const workflows = vectorStore.getWorkflows();
