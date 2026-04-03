@@ -86,9 +86,16 @@ let securityEnabled = false;
 // Tool sequence tracking (for profiling + transformer)
 const toolSequence = [];
 // Agent classification (inferred from text on first obfuscate calls)
+// Reload previous classification from session file to survive restarts
 let agentClassification = null;
 let classificationTextSampled = 0;
 let classificationTextBuffer = "";
+try {
+  const prev = JSON.parse(readFileSync(APP_SESSIONS_FILE, "utf-8"));
+  if (prev && prev.classification && prev.classification.role !== "APP Agent") {
+    agentClassification = prev.classification;
+  }
+} catch { /* no previous session or parse error */ }
 
 try {
   const secMod = await import(pathToFileURL(resolve(shroudDist, "security-event.js")).href);

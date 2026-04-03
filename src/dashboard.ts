@@ -477,29 +477,14 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: R
         : 0,
     },
     obfuscation: (() => {
-      // Aggregate from per-agent data (includes APP agents like NCG)
+      // Aggregate from per-agent data (agents list already includes APP via merge)
       const obfStats = deps.obfuscator.getStats() as any;
-      let totalObf = obfStats.totalEntitiesObfuscated || 0;
-      let totalDeob = obfStats.totalReplacementsDeobfuscated || 0;
-      // Merge per-agent privacy stats (which include persisted pre-restart data)
-      for (const a of agents) {
-        const p = a.privacy;
-        if (p) {
-          totalObf = Math.max(totalObf, agents.reduce((s, ag) => s + (ag.privacy?.entitiesObfuscated || 0), 0));
-          totalDeob = Math.max(totalDeob, agents.reduce((s, ag) => s + (ag.privacy?.replacementsDeobfuscated || 0), 0));
-          break; // Only need to compute once
-        }
-      }
-      // Include APP agent
-      if (appSession && (appSession as any).privacy) {
-        const ap = (appSession as any).privacy;
-        totalObf += ap.entitiesObfuscated || 0;
-        totalDeob += ap.replacementsDeobfuscated || 0;
-      }
+      const perAgentObf = agents.reduce((s, a) => s + (a.privacy?.entitiesObfuscated || 0), 0);
+      const perAgentDeob = agents.reduce((s, a) => s + (a.privacy?.replacementsDeobfuscated || 0), 0);
       return {
         storeMappings: obfStats.storeMappings,
-        totalObfuscated: totalObf,
-        totalDeobfuscated: totalDeob,
+        totalObfuscated: Math.max(obfStats.totalEntitiesObfuscated || 0, perAgentObf),
+        totalDeobfuscated: Math.max(obfStats.totalReplacementsDeobfuscated || 0, perAgentDeob),
       };
     })(),
     anomalyAlerts: profiler ? profiler.getAlerts().length : 0,

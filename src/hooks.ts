@@ -846,18 +846,25 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     delegationDriftThreshold: config.delegationDriftThreshold,
   }) : null;
   if (_intentChain) (globalThis as any).__shroudIntentChain = _intentChain;
-  // Transformer sequence predictor — learned next-tool anomaly detection
-  const _transformerScorer = config.transformerEnabled && _vectorStore
-    ? TransformerScorer.create(config.profilingProfileDir, {
-        anomalyThreshold: config.transformerThreshold,
-        windowSize: config.transformerWindowSize,
-        minSequenceLength: 3,
-        minSessionsToTrain: config.transformerMinSessions,
-        trainIntervalSessions: config.transformerTrainInterval,
-        intentAttentionThreshold: config.transformerIntentAttentionThreshold,
-      }, _vectorStore)
-    : null;
-  if (_transformerScorer) (globalThis as any).__shroudTransformerScorer = _transformerScorer;
+  // Transformer sequence predictor — learned next-tool anomaly detection.
+  // Reuse existing scorer across plugin reloads to preserve inference counters.
+  // OC loads the plugin once per agent — without reuse, each load creates a
+  // fresh scorer and the dashboard only sees the last one's (empty) stats.
+  const _transformerScorer: import("./transformer/scorer.js").TransformerScorer | null = (() => {
+    if (!config.transformerEnabled || !_vectorStore) return null;
+    const existing = (globalThis as any).__shroudTransformerScorer;
+    if (existing) return existing;
+    const scorer = TransformerScorer.create(config.profilingProfileDir, {
+      anomalyThreshold: config.transformerThreshold,
+      windowSize: config.transformerWindowSize,
+      minSequenceLength: 3,
+      minSessionsToTrain: config.transformerMinSessions,
+      trainIntervalSessions: config.transformerTrainInterval,
+      intentAttentionThreshold: config.transformerIntentAttentionThreshold,
+    }, _vectorStore);
+    (globalThis as any).__shroudTransformerScorer = scorer;
+    return scorer;
+  })();
   // Session tool sequence accumulator for vector store workflow recording
   let _sessionToolSequence: string[] = [];
   let _sessionUrls: string[] = [];
