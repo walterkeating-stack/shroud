@@ -566,9 +566,10 @@ function computeAgentHealth(
 
   // 2. Security event rate — exclude "low" severity (quoted context, FPs)
   const significantEvents = securityEvents.filter(e => e.severity !== "low");
-  const eventRate = agent.llmCallCount > 0
-    ? Math.round((significantEvents.length / agent.llmCallCount) * 100)
-    : 0;
+  // Use the higher of llmCallCount and securityEventCount as denominator
+  // to avoid inflated rates when counters are out of sync (e.g. after restart)
+  const callDenominator = Math.max(agent.llmCallCount, agent.securityEventCount, 1);
+  const eventRate = Math.round((significantEvents.length / callDenominator) * 100);
   if (eventRate > 50) issues.push("High security event rate (" + eventRate + "% of calls)");
 
   // 3. Behavioural compliance — check entity categories and tools against role expectations
@@ -678,7 +679,11 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
 
   const enriched = agents.map(agent => {
     const baseline = deps.baselineStore?.load(agent.agentBuildId);
-    const agentEvents = allEvents.filter(e => e.agentLabel === agent.agentLabel);
+    const agentEvents = allEvents.filter(e => e.agentLabel === agent.agentLabel || e.agentBuildId === agent.agentBuildId);
+    // Update securityEventCount from actual bus events (more accurate than persisted counter)
+    if (agentEvents.length > agent.securityEventCount) {
+      agent.securityEventCount = agentEvents.length;
+    }
     return {
       ...agent,
       health: computeAgentHealth(agent, baseline, agentEvents),
