@@ -21,6 +21,7 @@
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { SecurityEventBus, SecurityEvent } from "./security-event.js";
 import type { AgentSessionTracker } from "./agent-session.js";
 import type { BaselineStore } from "./profiler-store.js";
@@ -83,12 +84,15 @@ export function startDashboard(
   let appEventsOffset = 0;
   let appSession: Record<string, unknown> | null = null;
   if (deps.appEventsFile || deps.appSessionsFile) {
-    const pollInterval = setInterval(() => {
-      // Read new events from APP JSONL file
-      if (deps.appEventsFile && deps.securityBus) {
-        try {
-          if (existsSync(deps.appEventsFile)) {
-            const content = readFileSync(deps.appEventsFile, "utf-8");
+    let polling = false; // guard against overlapping async polls
+    const pollInterval = setInterval(async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        // Read new events from APP JSONL file (async — avoids blocking event loop)
+        if (deps.appEventsFile && deps.securityBus) {
+          try {
+            const content = await readFile(deps.appEventsFile, "utf-8");
             const lines = content.split("\n").filter(Boolean);
             if (lines.length > appEventsOffset) {
               for (let i = appEventsOffset; i < lines.length; i++) {
@@ -100,17 +104,17 @@ export function startDashboard(
               }
               appEventsOffset = lines.length;
             }
-          }
-        } catch { /* best-effort */ }
-      }
+          } catch { /* file may not exist yet */ }
+        }
 
-      // Read APP agent session state
-      if (deps.appSessionsFile) {
-        try {
-          if (existsSync(deps.appSessionsFile)) {
-            appSession = JSON.parse(readFileSync(deps.appSessionsFile, "utf-8"));
-          }
-        } catch { appSession = null; }
+        // Read APP agent session state (async)
+        if (deps.appSessionsFile) {
+          try {
+            appSession = JSON.parse(await readFile(deps.appSessionsFile, "utf-8"));
+          } catch { appSession = null; }
+        }
+      } finally {
+        polling = false;
       }
     }, 5_000);
     pollInterval.unref();
