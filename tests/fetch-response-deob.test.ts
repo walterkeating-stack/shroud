@@ -530,3 +530,336 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
     expect(body2).toContain("sparkle99@nova.com");
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+//  OPENAI FORMAT — SSE STREAMING + JSON + TOOL_CALLS
+// ═══════════════════════════════════════════════════════════════
+
+function openaiTextDelta(index: number, content: string): string {
+  return sseMessage({
+    data: { choices: [{ index, delta: { content }, finish_reason: null }] },
+  });
+}
+
+function openaiFinish(index: number): string {
+  return sseMessage({
+    data: { choices: [{ index, delta: {}, finish_reason: "stop" }] },
+  });
+}
+
+function openaiToolCallDelta(choiceIndex: number, toolIndex: number, args: string): string {
+  return sseMessage({
+    data: {
+      choices: [{
+        index: choiceIndex,
+        delta: {
+          tool_calls: [{ index: toolIndex, function: { arguments: args } }],
+        },
+        finish_reason: null,
+      }],
+    },
+  });
+}
+
+function openaiToolCallStart(choiceIndex: number, toolIndex: number, id: string, name: string): string {
+  return sseMessage({
+    data: {
+      choices: [{
+        index: choiceIndex,
+        delta: {
+          tool_calls: [{ index: toolIndex, id, type: "function", function: { name, arguments: "" } }],
+        },
+        finish_reason: null,
+      }],
+    },
+  });
+}
+
+function openaiDone(): string {
+  return "data: [DONE]\n\n";
+}
+
+describe("Fetch response deobfuscation — OpenAI format", () => {
+  let server: Server;
+  let port: number;
+  let savedFetch: typeof globalThis.fetch;
+  let sseBody: string;
+  let jsonMode: boolean;
+  let jsonBody: string;
+
+  beforeAll(async () => {
+    savedFetch = globalThis.fetch;
+
+    const s = createServer(async (req, res) => {
+      await collectBody(req);
+      if (jsonMode) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(jsonBody);
+      } else {
+        res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+        res.end(sseBody);
+      }
+    });
+    await new Promise<void>((resolve) => {
+      s.listen(0, "127.0.0.1", () => {
+        port = (s.address() as any).port;
+        server = s;
+        resolve();
+      });
+    });
+  });
+
+  afterAll(async () => {
+    globalThis.fetch = savedFetch;
+    delete (globalThis as any).__shroudFetchPatched;
+    delete (globalThis as any).__shroudObfuscator;
+    delete (globalThis as any).__shroudDeobfuscate;
+    await new Promise((r) => server.close(r));
+  });
+
+  beforeEach(() => {
+    sseBody = "";
+    jsonMode = false;
+    jsonBody = "";
+  });
+
+  async function fetchOpenAI(obf: Obfuscator, handlers: Record<string, Function>) {
+    await handlers["before_prompt_build"]({ prompt: "test", messages: [] });
+    return fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "gpt-4o", messages: [{ role: "user", content: "test" }] }),
+    });
+  }
+
+  // ── SSE Streaming ────────────────────────────────────────
+
+  test("OpenAI SSE: single email deobfuscated", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+    obf["_store"].put("walter@keating.at", "proxy99@fake.com", "email");
+
+    sseBody =
+      openaiTextDelta(0, "Contact: ") +
+      openaiTextDelta(0, "proxy") +
+      openaiTextDelta(0, "99@fa") +
+      openaiTextDelta(0, "ke.com") +
+      openaiFinish(0) +
+      openaiDone();
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+
+    expect(body).not.toContain("proxy99@fake.com");
+    expect(body).toContain("walter@keating.at");
+  });
+
+  test("OpenAI SSE: multiple PII types", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+    obf["_store"].put("walter@keating.at", "admin1@test.com", "email");
+    obf["_store"].put("10.0.1.5", "100.64.0.5", "ip_address");
+
+    sseBody =
+      openaiTextDelta(0, "Email: admin1@test.com and IP: 100.64.0.5") +
+      openaiFinish(0) +
+      openaiDone();
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+
+    expect(body).not.toContain("admin1@test.com");
+    expect(body).not.toContain("100.64.0.5");
+    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("10.0.1.5");
+  });
+
+  test("OpenAI SSE: no PII passes through unchanged", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+
+    sseBody =
+      openaiTextDelta(0, "Hello, this has no PII at all.") +
+      openaiFinish(0) +
+      openaiDone();
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+    expect(body).toContain("Hello, this has no PII at all.");
+  });
+
+  test("OpenAI SSE: finish_reason in separate event from content", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+    obf["_store"].put("walter@keating.at", "split99@test.com", "email");
+
+    sseBody =
+      openaiTextDelta(0, "Email: split99@test.com") +
+      openaiFinish(0) +
+      openaiDone();
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+
+    expect(body).not.toContain("split99@test.com");
+    expect(body).toContain("walter@keating.at");
+  });
+
+  // ── Tool Calls ──────────────────────────────────────────
+
+  test("OpenAI SSE: tool_calls arguments deobfuscated", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+    obf["_store"].put("walter@keating.at", "tool1@fake.com", "email");
+
+    sseBody =
+      openaiToolCallStart(0, 0, "call_abc", "send_email") +
+      openaiToolCallDelta(0, 0, '{"to":"tool') +
+      openaiToolCallDelta(0, 0, '1@fake.com"}') +
+      openaiFinish(0) +
+      openaiDone();
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+
+    expect(body).not.toContain("tool1@fake.com");
+    expect(body).toContain("walter@keating.at");
+  });
+
+  test("OpenAI SSE: tool_calls with multiple tools deobfuscated", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+    obf["_store"].put("walter@keating.at", "multi1@fake.com", "email");
+    obf["_store"].put("10.0.1.5", "100.64.0.5", "ip_address");
+
+    sseBody =
+      openaiToolCallStart(0, 0, "call_1", "send_email") +
+      openaiToolCallDelta(0, 0, '{"to":"multi1@fake.com"}') +
+      openaiToolCallStart(0, 1, "call_2", "ping_host") +
+      openaiToolCallDelta(0, 1, '{"host":"100.64.0.5"}') +
+      openaiFinish(0) +
+      openaiDone();
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+
+    expect(body).not.toContain("multi1@fake.com");
+    expect(body).not.toContain("100.64.0.5");
+    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("10.0.1.5");
+  });
+
+  // ── JSON (Non-Streaming) ────────────────────────────────
+
+  test("OpenAI JSON: content deobfuscated", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+    obf["_store"].put("walter@keating.at", "json1@fake.com", "email");
+
+    jsonMode = true;
+    jsonBody = JSON.stringify({
+      id: "chatcmpl-1",
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: "Email: json1@fake.com" },
+        finish_reason: "stop",
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+    const json = JSON.parse(body);
+
+    expect(json.choices[0].message.content).toContain("walter@keating.at");
+    expect(json.choices[0].message.content).not.toContain("json1@fake.com");
+  });
+
+  test("OpenAI JSON: tool_calls arguments deobfuscated", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+    obf["_store"].put("walter@keating.at", "jsontc@fake.com", "email");
+
+    jsonMode = true;
+    jsonBody = JSON.stringify({
+      id: "chatcmpl-2",
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: "call_xyz",
+            type: "function",
+            function: { name: "send_email", arguments: '{"to":"jsontc@fake.com"}' },
+          }],
+        },
+        finish_reason: "tool_calls",
+      }],
+      usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+    });
+
+    const resp = await fetchOpenAI(obf, handlers);
+    const body = await resp.text();
+    const json = JSON.parse(body);
+
+    const args = json.choices[0].message.tool_calls[0].function.arguments;
+    expect(args).toContain("walter@keating.at");
+    expect(args).not.toContain("jsontc@fake.com");
+  });
+
+  // ── Outbound Obfuscation ────────────────────────────────
+
+  test("OpenAI outbound: tool_calls arguments obfuscated", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+
+    // Pre-populate store with a mapping
+    const result = obf.obfuscate("Contact walter@keating.at please");
+    const fake = obf["_store"].allMappings().get("walter@keating.at")!;
+    expect(fake).toBeDefined();
+
+    // Set up a server that captures the request body
+    let capturedBody = "";
+    const captureServer = createServer(async (req, res) => {
+      capturedBody = await collectBody(req);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "chatcmpl-3",
+        choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 1, total_tokens: 6 },
+      }));
+    });
+    const capturePort = await new Promise<number>((r) => {
+      captureServer.listen(0, "127.0.0.1", () => r((captureServer.address() as any).port));
+    });
+
+    try {
+      await handlers["before_prompt_build"]({ prompt: "test", messages: [] });
+      await fetch(`http://127.0.0.1:${capturePort}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-4o",
+          messages: [
+            { role: "user", content: "send email" },
+            {
+              role: "assistant",
+              content: null,
+              tool_calls: [{
+                id: "call_abc",
+                type: "function",
+                function: { name: "send_email", arguments: `{"to":"walter@keating.at"}` },
+              }],
+            },
+            { role: "tool", tool_call_id: "call_abc", content: "Email sent to walter@keating.at" },
+          ],
+        }),
+      });
+
+      const parsed = JSON.parse(capturedBody);
+      const toolCallArgs = parsed.messages[1].tool_calls[0].function.arguments;
+      const toolContent = parsed.messages[2].content;
+
+      // tool_calls arguments should be obfuscated
+      expect(toolCallArgs).not.toContain("walter@keating.at");
+      expect(toolCallArgs).toContain(fake);
+
+      // tool result content should also be obfuscated
+      expect(toolContent).not.toContain("walter@keating.at");
+    } finally {
+      await new Promise((r) => captureServer.close(r));
+    }
+  });
+});
