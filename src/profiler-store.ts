@@ -7,6 +7,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, unlinkSync } from "node:fs";
+import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -22,6 +23,14 @@ import { updateBaseline } from "./profiler-analysis.js";
  */
 export class BaselineStore {
   private readonly _profileDir: string;
+  /** In-memory cache — authoritative after first load, avoids sync I/O on hot path. */
+  private _cache = new Map<string, AgentBaseline>();
+  /** Build IDs with pending async writes. */
+  private _dirty = new Set<string>();
+  /** Whether an async flush is already scheduled. */
+  private _flushScheduled = false;
+  /** Whether the profile dir has been created (avoids repeated mkdir). */
+  private _dirCreated = false;
 
   constructor(profileDir: string) {
     // Expand ~ to actual home directory (Node.js doesn't do this automatically)
@@ -32,27 +41,71 @@ export class BaselineStore {
 
   /** Load a baseline for the given agent build ID. Returns null if not found. */
   load(agentBuildId: string): AgentBaseline | null {
+    // Cache hit — no I/O
+    const cached = this._cache.get(agentBuildId);
+    if (cached) return cached;
+
+    // Cold start — sync read, then cache
     const filePath = this._filePath(agentBuildId);
     if (!existsSync(filePath)) return null;
 
     try {
       const raw = readFileSync(filePath, "utf-8");
-      return JSON.parse(raw) as AgentBaseline;
+      const baseline = JSON.parse(raw) as AgentBaseline;
+      this._cache.set(agentBuildId, baseline);
+      return baseline;
     } catch {
       // Corrupt file — start fresh
       return null;
     }
   }
 
-  /** Save a baseline to disk. */
+  /** Save a baseline — writes to cache immediately, flushes to disk async. */
   save(agentBuildId: string, baseline: AgentBaseline): void {
+    this._cache.set(agentBuildId, baseline);
+    this._dirty.add(agentBuildId);
+    this._scheduleFlush();
+  }
+
+  /** Flush all dirty baselines to disk synchronously. For SIGTERM/SIGINT only. */
+  flushSync(): void {
+    if (this._dirty.size === 0) return;
     try {
       mkdirSync(this._profileDir, { recursive: true });
-      const filePath = this._filePath(agentBuildId);
-      writeFileSync(filePath, JSON.stringify(baseline, null, 2), "utf-8");
-    } catch {
-      // Best-effort — don't crash the plugin if profile dir is unwritable
+    } catch { /* best-effort */ }
+    for (const id of this._dirty) {
+      const baseline = this._cache.get(id);
+      if (baseline) {
+        try {
+          writeFileSync(this._filePath(id), JSON.stringify(baseline), "utf-8");
+        } catch { /* best-effort */ }
+      }
     }
+    this._dirty.clear();
+  }
+
+  private _scheduleFlush(): void {
+    if (this._flushScheduled) return;
+    this._flushScheduled = true;
+    setImmediate(() => this._flushAsync());
+  }
+
+  private async _flushAsync(): Promise<void> {
+    this._flushScheduled = false;
+    const ids = [...this._dirty];
+    this._dirty.clear();
+    try {
+      if (!this._dirCreated) {
+        await mkdir(this._profileDir, { recursive: true });
+        this._dirCreated = true;
+      }
+      for (const id of ids) {
+        const baseline = this._cache.get(id);
+        if (baseline) {
+          await writeFile(this._filePath(id), JSON.stringify(baseline), "utf-8");
+        }
+      }
+    } catch { /* best-effort */ }
   }
 
   /**
@@ -111,7 +164,7 @@ export class BaselineStore {
 
   /** Check if a baseline exists for the given build ID. */
   exists(agentBuildId: string): boolean {
-    return existsSync(this._filePath(agentBuildId));
+    return this._cache.has(agentBuildId) || existsSync(this._filePath(agentBuildId));
   }
 
   /**
