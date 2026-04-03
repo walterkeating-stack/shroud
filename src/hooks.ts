@@ -23,6 +23,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
@@ -551,7 +552,91 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     } catch {}
   }
 
-  // Flush on gateway shutdown
+  /**
+   * Async version of _flushToDisk — used by timer and per-N-calls paths.
+   * Does the same work but uses async I/O to avoid blocking the event loop.
+   * _flushToDisk (sync) is kept for SIGTERM/SIGINT where async is unsafe.
+   */
+  async function _flushToDiskAsync(): Promise<void> {
+    try {
+      if (profiler) profiler.finalizeSession();
+
+      if (_vectorStore && _sessionToolSequence.length > 0) {
+        const agentSession = agentTracker.getCurrentSession();
+        if (agentSession && agentSession.agentLabel !== "Unknown Agent") {
+          const recentEvents = ((globalThis as any).__shroudSecurityBus || securityBus)?.getEvents() as SecurityEvent[] | undefined;
+          const hadBlocks = recentEvents?.some((e: SecurityEvent) =>
+            e.action === "blocked" &&
+            (e.agentBuildId === agentSession.agentBuildId || e.agentSessionId === agentSession.sessionId)
+          ) ?? false;
+          _vectorStore.recordWorkflow(
+            agentSession.agentBuildId, agentSession.sessionId,
+            _sessionToolSequence, _sessionUrls, !hadBlocks,
+          );
+
+          if (config.urlCorrelationEnabled) {
+            for (const url of _sessionUrls) {
+              const urlIdx = _sessionToolSequence.indexOf("web_fetch") + 1 ||
+                _sessionToolSequence.indexOf("fetch") + 1 ||
+                _sessionToolSequence.indexOf("browser") + 1;
+              const seqAfter = urlIdx > 0 ? _sessionToolSequence.slice(urlIdx) : _sessionToolSequence;
+              _vectorStore.recordUrlVisit(url, agentSession.agentBuildId, agentSession.sessionId, seqAfter, hadBlocks);
+            }
+          }
+
+          if (_coherenceTracker) {
+            _vectorStore.setTransitionStats(agentSession.agentBuildId, _coherenceTracker.getStats());
+          }
+        }
+        await _vectorStore.flushAsync();
+
+        if (_transformerScorer) {
+          const scorer = _transformerScorer;
+          const vs = _vectorStore;
+          scorer.maybeRetrain(vs).then(result => {
+            if (result) {
+              api.logger?.info(`[shroud] Transformer retrained: loss=${result.finalLoss.toFixed(4)}, ${result.sequencesUsed} sequences, ${result.durationMs}ms`);
+            }
+            scorer._saveModel();
+          }).catch(() => {});
+        }
+      }
+
+      // BaselineStore flushes itself async via setImmediate (commit 1)
+
+      // Agent sessions — async merge + write
+      const inMemory = agentTracker.getAllSessions().filter(_isCleanLabel);
+      let merged = new Map<string, any>();
+      try {
+        const existing = JSON.parse(await readFile(_agentSessionFile, "utf-8")) as any[];
+        for (const entry of existing) {
+          if (entry.agentLabel && _isValidAgentLabel(entry.agentLabel)) {
+            merged.set(normalizeLabel(entry.agentLabel), entry);
+          }
+        }
+      } catch { /* file may not exist */ }
+
+      for (const s of inMemory) {
+        merged.set(normalizeLabel(s.agentLabel), {
+          agentLabel: s.agentLabel, agentBuildId: s.agentBuildId,
+          sessionId: s.sessionId, llmCallCount: s.llmCallCount,
+          securityEventCount: s.securityEventCount,
+          detectedModel: s.detectedModel,
+          channels: s.channels, classification: s.classification,
+          toolInventory: s.toolInventory, startedAt: s.startedAt,
+          lastCallAt: s.lastCallAt, soulExtract: s.soulExtract,
+          behavior: s.behavior, privacy: s.privacy,
+        });
+      }
+
+      if (merged.size > 0) {
+        await mkdir(_persistDir, { recursive: true });
+        await writeFile(_agentSessionFile, JSON.stringify([...merged.values()], null, 2), "utf-8");
+      }
+    } catch {}
+  }
+
+  // Flush on gateway shutdown (sync — SIGTERM/SIGINT must complete before exit)
   if (!(globalThis as any).__shroudShutdownWired) {
     (globalThis as any).__shroudShutdownWired = true;
     process.on("SIGTERM", _flushToDisk);
@@ -622,7 +707,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // Timer-based periodic flush — ensures persistence even if LLM calls are slow
   if (!(globalThis as any).__shroudFlushTimer) {
     (globalThis as any).__shroudFlushTimer = setInterval(() => {
-      try { _flushToDisk(); } catch {}
+      _flushToDiskAsync().catch(() => {});
     }, 30_000);
     // Unref so the timer doesn't keep the process alive
     (globalThis as any).__shroudFlushTimer.unref();
@@ -634,7 +719,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   agentTracker.recordLlmCall = function(): any {
     const result = _origRecordCall();
     if (++_flushCounter % 5 === 0) {
-      _flushToDisk();
+      _flushToDiskAsync().catch(() => {});
       // Check heartbeat health on all agents
       const hbAlerts = agentTracker.checkHeartbeatHealth();
       if (hbAlerts.length > 0 && securityBus) {
@@ -2603,7 +2688,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           // so baselines build up without waiting for session end / SIGTERM
           const profile = profiler.getSessionProfile();
           if (profile.turns.length > 0 && profile.turns.length % 5 === 0) {
-            _flushToDisk();
+            _flushToDiskAsync().catch(() => {});
           }
         } catch { /* never break response pipeline */ }
       }
