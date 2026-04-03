@@ -198,7 +198,7 @@ export function startDashboard(
         json(res, 200, { status: "ok", timestamp: new Date().toISOString() });
       }
       else if (url === "/api/overview") {
-        handleOverview(res, deps);
+        handleOverview(res, deps, appSession);
       }
       else if (url === "/api/agents") {
         handleAgents(res, deps, appSession);
@@ -407,7 +407,7 @@ export function startDashboard(
 
 // ── Route handlers ──────────────────────────────────
 
-function handleOverview(res: ServerResponse, deps: DashboardDeps) {
+function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
   // Use disk-merged agent count for overview (same as /api/agents)
   let agentCount = deps.agentTracker.getAllSessions().length;
   let totalCalls = deps.agentTracker.getAllSessions().reduce((sum, a) => sum + a.llmCallCount, 0);
@@ -424,6 +424,15 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
         }
       }
     } catch {}
+  }
+  // Count APP agent if present
+  if (appSession && (appSession as any).agentLabel) {
+    const appLabel = ((appSession as any).agentLabel as string).toLowerCase().trim();
+    const inMemoryLabels = new Set(deps.agentTracker.getAllSessions().map(s => s.agentLabel.toLowerCase().trim()));
+    if (!inMemoryLabels.has(appLabel)) {
+      agentCount++;
+      totalCalls += (appSession as any).requestCount || 0;
+    }
   }
   const agents = deps.agentTracker.getAllSessions();
   const secStats = deps.securityBus?.getStats();
@@ -467,11 +476,32 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps) {
         ? agents.filter(a => deps.baselineStore!.exists(a.agentBuildId)).length
         : 0,
     },
-    obfuscation: {
-      storeMappings: (deps.obfuscator.getStats() as any).storeMappings,
-      totalObfuscated: (deps.obfuscator.getStats() as any).totalEntitiesObfuscated,
-      totalDeobfuscated: (deps.obfuscator.getStats() as any).totalReplacementsDeobfuscated,
-    },
+    obfuscation: (() => {
+      // Aggregate from per-agent data (includes APP agents like NCG)
+      const obfStats = deps.obfuscator.getStats() as any;
+      let totalObf = obfStats.totalEntitiesObfuscated || 0;
+      let totalDeob = obfStats.totalReplacementsDeobfuscated || 0;
+      // Merge per-agent privacy stats (which include persisted pre-restart data)
+      for (const a of agents) {
+        const p = a.privacy;
+        if (p) {
+          totalObf = Math.max(totalObf, agents.reduce((s, ag) => s + (ag.privacy?.entitiesObfuscated || 0), 0));
+          totalDeob = Math.max(totalDeob, agents.reduce((s, ag) => s + (ag.privacy?.replacementsDeobfuscated || 0), 0));
+          break; // Only need to compute once
+        }
+      }
+      // Include APP agent
+      if (appSession && (appSession as any).privacy) {
+        const ap = (appSession as any).privacy;
+        totalObf += ap.entitiesObfuscated || 0;
+        totalDeob += ap.replacementsDeobfuscated || 0;
+      }
+      return {
+        storeMappings: obfStats.storeMappings,
+        totalObfuscated: totalObf,
+        totalDeobfuscated: totalDeob,
+      };
+    })(),
     anomalyAlerts: profiler ? profiler.getAlerts().length : 0,
     cache: profiler ? profiler.getCacheStats() : null,
     externalSignatures: (globalThis as any).__shroudExternalSigs ? {
@@ -614,7 +644,22 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
   if (appSession && typeof appSession === "object" && (appSession as any).agentLabel) {
     const app = appSession as any;
     const appLabel = (app.agentLabel as string || "").toLowerCase().trim();
-    if (appLabel && !inMemoryMap.has(appLabel)) {
+    const existingIdx = agents.findIndex(a => a.agentLabel.toLowerCase().trim() === appLabel);
+    if (existingIdx >= 0) {
+      // Merge: keep higher counters (persisted pre-restart data vs live post-restart data)
+      const existing = agents[existingIdx];
+      const ep = existing.privacy || {};
+      const ap = app.privacy || {};
+      existing.privacy = {
+        obfuscationCalls: Math.max(ep.obfuscationCalls || 0, ap.obfuscationCalls || 0),
+        deobfuscationCalls: Math.max(ep.deobfuscationCalls || 0, ap.deobfuscationCalls || 0),
+        entitiesObfuscated: Math.max(ep.entitiesObfuscated || 0, ap.entitiesObfuscated || 0),
+        replacementsDeobfuscated: Math.max(ep.replacementsDeobfuscated || 0, ap.replacementsDeobfuscated || 0),
+        categoryCounts: { ...ep.categoryCounts, ...ap.categoryCounts },
+      };
+      existing.llmCallCount = Math.max(existing.llmCallCount || 0, app.requestCount || 0);
+      if (app.classification && app.classification.role !== "APP Agent") existing.classification = app.classification;
+    } else if (appLabel && !inMemoryMap.has(appLabel)) {
       agents.push({
         agentLabel: app.agentLabel, agentBuildId: app.agentBuildId || "",
         sessionId: "", llmCallCount: app.requestCount || 0,

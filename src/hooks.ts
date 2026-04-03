@@ -545,6 +545,39 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         });
       }
 
+      // Merge APP server agent data (NCG etc.)
+      try {
+        const appSession = JSON.parse(readFileSync("/tmp/shroud-app-sessions.json", "utf-8"));
+        if (appSession && appSession.agentLabel) {
+          const appKey = normalizeLabel(appSession.agentLabel);
+          const existing = merged.get(appKey);
+          if (existing) {
+            const ep = existing.privacy || {};
+            const ap = appSession.privacy || {};
+            existing.privacy = {
+              obfuscationCalls: Math.max(ep.obfuscationCalls || 0, ap.obfuscationCalls || 0),
+              deobfuscationCalls: Math.max(ep.deobfuscationCalls || 0, ap.deobfuscationCalls || 0),
+              entitiesObfuscated: Math.max(ep.entitiesObfuscated || 0, ap.entitiesObfuscated || 0),
+              replacementsDeobfuscated: Math.max(ep.replacementsDeobfuscated || 0, ap.replacementsDeobfuscated || 0),
+              categoryCounts: { ...ep.categoryCounts, ...ap.categoryCounts },
+            };
+            existing.llmCallCount = Math.max(existing.llmCallCount || 0, appSession.requestCount || 0);
+            if (appSession.classification) existing.classification = appSession.classification;
+          } else {
+            merged.set(appKey, {
+              agentLabel: appSession.agentLabel, agentBuildId: appSession.agentBuildId || "",
+              sessionId: "", llmCallCount: appSession.requestCount || 0,
+              securityEventCount: appSession.securityEvents || 0, detectedModel: "app-server",
+              channels: [appSession.channel || "enterprise-agent"],
+              classification: appSession.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+              toolInventory: [], startedAt: Date.now(), lastCallAt: Date.now(), soulExtract: "",
+              behavior: { toolFrequency: {}, totalToolCalls: 0, avgSimilarity: 0, driftCheckCount: 0, recentSimilarities: [], archetype: "Unknown", archetypeConfidence: 0 },
+              privacy: appSession.privacy || {},
+            });
+          }
+        }
+      } catch { /* APP session file may not exist */ }
+
       if (merged.size > 0) {
         mkdirSync(_persistDir, { recursive: true });
         writeFileSync(_agentSessionFile, JSON.stringify([...merged.values()], null, 2), "utf-8");
@@ -628,6 +661,43 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           behavior: s.behavior, privacy: s.privacy,
         });
       }
+
+      // Merge APP server agent data (NCG etc.) from session file
+      try {
+        const appSessionRaw = await readFile("/tmp/shroud-app-sessions.json", "utf-8");
+        const appSession = JSON.parse(appSessionRaw);
+        if (appSession && appSession.agentLabel) {
+          const appKey = normalizeLabel(appSession.agentLabel);
+          const existing = merged.get(appKey);
+          // Merge: keep higher counters (across restarts)
+          if (existing) {
+            const ep = existing.privacy || {};
+            const ap = appSession.privacy || {};
+            existing.privacy = {
+              obfuscationCalls: Math.max(ep.obfuscationCalls || 0, ap.obfuscationCalls || 0),
+              deobfuscationCalls: Math.max(ep.deobfuscationCalls || 0, ap.deobfuscationCalls || 0),
+              entitiesObfuscated: Math.max(ep.entitiesObfuscated || 0, ap.entitiesObfuscated || 0),
+              replacementsDeobfuscated: Math.max(ep.replacementsDeobfuscated || 0, ap.replacementsDeobfuscated || 0),
+              categoryCounts: { ...ep.categoryCounts, ...ap.categoryCounts },
+            };
+            existing.llmCallCount = Math.max(existing.llmCallCount || 0, appSession.requestCount || 0);
+            if (appSession.classification) existing.classification = appSession.classification;
+          } else {
+            merged.set(appKey, {
+              agentLabel: appSession.agentLabel,
+              agentBuildId: appSession.agentBuildId || "",
+              sessionId: "", llmCallCount: appSession.requestCount || 0,
+              securityEventCount: appSession.securityEvents || 0,
+              detectedModel: "app-server",
+              channels: [appSession.channel || "enterprise-agent"],
+              classification: appSession.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+              toolInventory: [], startedAt: Date.now(), lastCallAt: Date.now(),
+              soulExtract: "", behavior: { toolFrequency: {}, totalToolCalls: 0, avgSimilarity: 0, driftCheckCount: 0, recentSimilarities: [], archetype: "Unknown", archetypeConfidence: 0 },
+              privacy: appSession.privacy || {},
+            });
+          }
+        }
+      } catch { /* APP session file may not exist */ }
 
       if (merged.size > 0) {
         await mkdir(_persistDir, { recursive: true });
