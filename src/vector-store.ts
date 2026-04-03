@@ -13,6 +13,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, statSync } from "node:fs";
+import { writeFile, mkdir, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -244,6 +245,11 @@ export class VectorStore {
       agentBuildIds: [agentBuildId],
     };
     this._clusters.push(newCluster);
+    // Cap clusters — evict smallest (least represented) when over limit
+    if (this._clusters.length > 1000) {
+      this._clusters.sort((a, b) => b.count - a.count);
+      this._clusters.length = 800;
+    }
     return { clusterId: newCluster.id, similarity: bestSimilarity };
   }
 
@@ -333,21 +339,21 @@ export class VectorStore {
    * Each vector = 256 × 8 = 2048 bytes.
    */
   private _appendVectorToBin(filePath: string, vector: number[]): number {
-    try {
-      mkdirSync(this._profileDir, { recursive: true });
-      let offset = 0;
-      try {
-        offset = statSync(filePath).size;
-      } catch { /* file doesn't exist yet */ }
-      const buf = Buffer.alloc(256 * 8);
-      for (let i = 0; i < 256; i++) {
-        buf.writeDoubleBE(vector[i] || 0, i * 8);
-      }
-      appendFileSync(filePath, buf);
-      return offset;
-    } catch {
-      return -1; // Best-effort — don't crash if disk write fails
+    // Build buffer synchronously (fast), get offset synchronously (needed for return),
+    // then dispatch the actual write asynchronously to avoid blocking the event loop.
+    const buf = Buffer.alloc(256 * 8);
+    for (let i = 0; i < 256; i++) {
+      buf.writeDoubleBE(vector[i] || 0, i * 8);
     }
+    let offset = 0;
+    try {
+      offset = statSync(filePath).size;
+    } catch { /* file doesn't exist yet */ }
+    // Fire-and-forget async write
+    mkdir(this._profileDir, { recursive: true })
+      .then(() => appendFile(filePath, buf))
+      .catch(() => {});
+    return offset;
   }
 
   /**
@@ -717,23 +723,35 @@ export class VectorStore {
     this._dirty = true;
   }
 
+  /** Synchronous flush — for SIGTERM/SIGINT shutdown paths only. */
   flush(): void {
     if (!this._dirty) return;
     try {
       mkdirSync(this._profileDir, { recursive: true });
-      const data: VectorStoreData = {
-        version: 1,
-        workflows: this._workflows,
-        clusters: this._clusters,
-        urlFingerprints: [...this._urlFingerprints.values()],
-        agentBaselines: Object.fromEntries(this._agentBaselines),
-        lastFlushed: Date.now(),
-      };
-      writeFileSync(this._filePath(), JSON.stringify(data), "utf-8");
+      writeFileSync(this._filePath(), JSON.stringify(this._serializeData()), "utf-8");
       this._dirty = false;
-    } catch {
-      // Best-effort
-    }
+    } catch { /* best-effort */ }
+  }
+
+  /** Async flush — preferred in normal operation (timer, per-N-calls). */
+  async flushAsync(): Promise<void> {
+    if (!this._dirty) return;
+    try {
+      await mkdir(this._profileDir, { recursive: true });
+      await writeFile(this._filePath(), JSON.stringify(this._serializeData()), "utf-8");
+      this._dirty = false;
+    } catch { /* best-effort */ }
+  }
+
+  private _serializeData(): VectorStoreData {
+    return {
+      version: 1,
+      workflows: this._workflows,
+      clusters: this._clusters,
+      urlFingerprints: [...this._urlFingerprints.values()],
+      agentBaselines: Object.fromEntries(this._agentBaselines),
+      lastFlushed: Date.now(),
+    };
   }
 
   // ─── Accessors (for dashboard) ───
