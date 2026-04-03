@@ -25,13 +25,17 @@ export class MemoryStore implements MappingStore {
   private _realToFake: Map<string, string> = new Map();
   private _fakeToReal: Map<string, string> = new Map();
   private _categories: Map<string, Category> = new Map();
-  /** Insertion-order list for LRU eviction (oldest first). */
-  private _insertionOrder: string[] = [];
+  /** Ring buffer for O(1) LRU eviction (oldest first). */
+  private _ring: string[] = [];
+  private _ringHead = 0;
+  private _ringTail = 0;
+  private _ringCount = 0;
   /** Max store size (0 = unlimited). QW10. */
   private _maxSize: number;
 
   constructor(maxSize = 0) {
     this._maxSize = maxSize;
+    if (maxSize > 0) this._ring = new Array(maxSize).fill("");
   }
 
   put(real: string, fake: string, category: Category): void {
@@ -43,10 +47,12 @@ export class MemoryStore implements MappingStore {
       return;
     }
 
-    // QW10: Evict oldest entries if at capacity
+    // QW10: Evict oldest entries if at capacity — O(1) via ring buffer
     if (this._maxSize > 0) {
-      while (this._insertionOrder.length >= this._maxSize) {
-        const oldest = this._insertionOrder.shift()!;
+      while (this._ringCount >= this._maxSize) {
+        const oldest = this._ring[this._ringHead];
+        this._ringHead = (this._ringHead + 1) % this._maxSize;
+        this._ringCount--;
         const oldFake = this._realToFake.get(oldest);
         this._realToFake.delete(oldest);
         if (oldFake !== undefined) this._fakeToReal.delete(oldFake);
@@ -69,7 +75,11 @@ export class MemoryStore implements MappingStore {
     this._realToFake.set(real, fake);
     this._fakeToReal.set(fake, real);
     this._categories.set(real, category);
-    this._insertionOrder.push(real);
+    if (this._maxSize > 0) {
+      this._ring[this._ringTail] = real;
+      this._ringTail = (this._ringTail + 1) % this._maxSize;
+      this._ringCount++;
+    }
   }
 
   getFake(real: string): string | undefined {
@@ -96,7 +106,10 @@ export class MemoryStore implements MappingStore {
     this._realToFake.clear();
     this._fakeToReal.clear();
     this._categories.clear();
-    this._insertionOrder = [];
+    this._ring = this._maxSize > 0 ? new Array(this._maxSize).fill("") : [];
+    this._ringHead = 0;
+    this._ringTail = 0;
+    this._ringCount = 0;
   }
 
   /** Export all mappings for serialization. */

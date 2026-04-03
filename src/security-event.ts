@@ -117,11 +117,17 @@ export class SecurityEventBus {
       return; // Duplicate within window — suppress
     }
     this._dedupWindow.set(dedupKey, event.timestamp);
-    // Prune stale dedup entries periodically
+    // Prune stale dedup entries periodically, with hard cap at 5000
     if (this._dedupWindow.size > 1000) {
       const cutoff = Date.now() - this._dedupIntervalMs;
       for (const [k, ts] of this._dedupWindow) {
         if (ts < cutoff) this._dedupWindow.delete(k);
+      }
+      // Hard cap — if time-based pruning wasn't enough, evict oldest entries
+      if (this._dedupWindow.size > 5000) {
+        const entries = [...this._dedupWindow.entries()].sort((a, b) => a[1] - b[1]);
+        this._dedupWindow.clear();
+        for (const [k, ts] of entries.slice(-2500)) this._dedupWindow.set(k, ts);
       }
     }
 

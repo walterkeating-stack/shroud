@@ -140,6 +140,10 @@ export class IntentChain {
     };
 
     this._pendingDelegations.push(delegation);
+    // Cap pending delegations to prevent unbounded growth
+    if (this._pendingDelegations.length > 500) {
+      this._pendingDelegations = this._pendingDelegations.slice(-250);
+    }
   }
 
   /**
@@ -208,6 +212,16 @@ export class IntentChain {
         timestamp: now,
         eventCount: 0,
       });
+      // Cap history to prevent unbounded growth in long multi-agent sessions
+      if (this._history.length > 5000) {
+        this._history = this._history.slice(-2500);
+      }
+      // Cap nodes — evict oldest entries when over limit
+      if (this._nodes.size > 1000) {
+        const entries = [...this._nodes.entries()].sort((a, b) => a[1].timestamp - b[1].timestamp);
+        this._nodes.clear();
+        for (const [k, v] of entries.slice(-500)) this._nodes.set(k, v);
+      }
 
       return node;
     }
