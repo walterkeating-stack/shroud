@@ -1092,24 +1092,59 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
     }
 
-    // Pre-create mappings for PII in user messages WITHOUT mutating them.
-    // This seeds the mapping store so the fetch intercept's response
-    // deobfuscation can replace fakes with the correct real values.
+    // Obfuscate ALL messages in-place — seeds the mapping store AND mutates
+    // the message array so PII is replaced before OpenClaw builds the request.
+    // This is critical when the LLM SDK (e.g. OpenAI v6) captures fetch at
+    // construction time, bypassing Shroud's globalThis.fetch intercept.
+    // The fetch intercept is still the primary path for SDKs that use
+    // globalThis.fetch (Anthropic) — double-obfuscation is safe because
+    // already-obfuscated text has no detectable PII entities.
     if (Array.isArray(event?.messages)) {
       for (const msg of event.messages) {
-        const texts: string[] = [];
-        if (typeof msg.content === "string") texts.push(msg.content);
-        else if (Array.isArray(msg.content)) {
-          for (const b of msg.content) {
-            if (b?.type === "text" && typeof b.text === "string") texts.push(b.text);
-          }
-        }
-        for (const text of texts) {
-          const cleaned = stripSlackLinksForHook(text);
+        // String content (Anthropic/OpenAI)
+        if (typeof msg.content === "string") {
+          const cleaned = stripSlackLinksForHook(msg.content);
           const result = ob().obfuscate(cleaned);
           totalEntities += result.entities.length;
           for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
-          // Do NOT mutate — just creating mappings in the store
+          if (result.entities.length > 0 || cleaned !== msg.content) {
+            msg.content = result.entities.length > 0 ? result.obfuscated : cleaned;
+          }
+        }
+        // Array content blocks
+        else if (Array.isArray(msg.content)) {
+          for (const b of msg.content) {
+            if (b?.type === "text" && typeof b.text === "string") {
+              const cleaned = stripSlackLinksForHook(b.text);
+              const result = ob().obfuscate(cleaned);
+              totalEntities += result.entities.length;
+              for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
+              if (result.entities.length > 0 || cleaned !== b.text) {
+                b.text = result.entities.length > 0 ? result.obfuscated : cleaned;
+              }
+            }
+            // tool_result blocks with string content
+            if (typeof b?.content === "string") {
+              const cleaned = stripSlackLinksForHook(b.content);
+              const result = ob().obfuscate(cleaned);
+              totalEntities += result.entities.length;
+              for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
+              if (result.entities.length > 0 || cleaned !== b.content) {
+                b.content = result.entities.length > 0 ? result.obfuscated : cleaned;
+              }
+            }
+          }
+        }
+        // OpenAI tool_calls in assistant messages
+        if (Array.isArray(msg.tool_calls)) {
+          for (const tc of msg.tool_calls) {
+            if (typeof tc.function?.arguments === "string") {
+              const result = ob().obfuscate(tc.function.arguments);
+              totalEntities += result.entities.length;
+              for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
+              if (result.entities.length > 0) tc.function.arguments = result.obfuscated;
+            }
+          }
         }
       }
     }
