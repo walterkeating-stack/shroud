@@ -828,6 +828,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     suddenTurnDelta: config.driftSuddenTurnDelta,
   }) : null;
   if (_driftDetector) (globalThis as any).__shroudDriftDetector = _driftDetector;
+  // System prompt fingerprinting — detects hijacking via TF-IDF similarity.
+  // Stores per-agent baseline fingerprint; flags drift between turns.
+  const _promptFingerprints: Map<string, { vec: Float64Array; hash: number; firstSeen: number; turnCount: number }> = new Map();
+  (globalThis as any).__shroudPromptFingerprints = _promptFingerprints;
   // Shadow executor — runs suspicious tool calls against fake sandbox
   const _shadowExecutor = config.shadowExecutionEnabled ? new ShadowExecutor() : null;
   // Causal coherence tracker — monitors result→action pair distances
@@ -972,6 +976,56 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
       } else if (ctx.trigger === "heartbeat") {
         (globalThis as any).__shroudCurrentHeartbeat = true;
+      }
+
+      // ── System prompt fingerprinting ──
+      // TF-IDF embed the system prompt and compare against baseline for this agent.
+      // Detects prompt hijacking: if the system prompt changes unexpectedly between
+      // turns, something injected into it or the agent was reconfigured.
+      if (_driftDetector && session.agentBuildId && typeof event.prompt === "string" && event.prompt.length > 50) {
+        const provider = _driftDetector.getProvider();
+        const promptVec = provider.embed(event.prompt);
+        const fpKey = session.agentBuildId;
+        const existing = _promptFingerprints.get(fpKey);
+
+        if (!existing) {
+          // First turn — store baseline fingerprint
+          // Simple hash for quick dashboard display
+          let hash = 0;
+          for (let i = 0; i < Math.min(promptVec.length, 16); i++) {
+            hash = ((hash << 5) - hash + Math.round(promptVec[i] * 1000)) | 0;
+          }
+          _promptFingerprints.set(fpKey, { vec: promptVec, hash, firstSeen: Date.now(), turnCount: 1 });
+        } else {
+          existing.turnCount++;
+          const similarity = provider.similarity(existing.vec, promptVec);
+
+          if (similarity < 0.85) {
+            // System prompt changed significantly — emit security event
+            const severity = similarity < 0.5 ? "high" : "medium";
+            if (securityBus) {
+              securityBus.emit({
+                timestamp: Date.now(),
+                eventType: "anomaly_detected",
+                direction: "request" as const,
+                severity,
+                threatClass: "prompt_fingerprint_drift" as any,
+                signatureId: "prompt-fingerprint-v1",
+                matchedText: "",
+                matchStart: 0,
+                matchEnd: 0,
+                textLength: event.prompt.length,
+                action: "flagged" as const,
+                description: `System prompt fingerprint drift: similarity=${similarity.toFixed(3)} for ${session.agentLabel}. Cosine sim to baseline: ${similarity.toFixed(3)} (turn ${existing.turnCount}). May indicate injection or reconfiguration.`,
+                agentBuildId: session.agentBuildId,
+                agentLabel: session.agentLabel,
+                agentSessionId: session.sessionId,
+              });
+              agentTracker.recordSecurityEvent(1);
+            }
+            api.logger?.warn(`[shroud] System prompt fingerprint drift: ${session.agentLabel} similarity=${similarity.toFixed(3)}`);
+          }
+        }
       }
     }
 

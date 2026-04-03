@@ -208,6 +208,47 @@ const privacy = {
   categoryCounts: {},
 };
 
+// System prompt fingerprinting — detects prompt changes between calls.
+// Uses SHA-256 of the first obfuscation text (typically the system prompt).
+let promptFingerprint = null;     // { hash: string, firstSeen: number, turnCount: number }
+let promptFingerprintDrifts = 0;
+
+function checkPromptFingerprint(text) {
+  if (!agentIdentified || text.length < 50) return;
+
+  const hash = createHash("sha256").update(text).digest("hex").slice(0, 16);
+
+  if (!promptFingerprint) {
+    promptFingerprint = { hash, firstSeen: Date.now(), turnCount: 1 };
+    return;
+  }
+
+  promptFingerprint.turnCount++;
+
+  if (hash !== promptFingerprint.hash) {
+    promptFingerprintDrifts++;
+    process.stderr.write(
+      `[app-server] System prompt fingerprint changed: ${promptFingerprint.hash} → ${hash} (turn ${promptFingerprint.turnCount})\n`
+    );
+    if (securityBus) {
+      securityBus.emit({
+        timestamp: Date.now(),
+        eventType: "anomaly_detected",
+        direction: "request",
+        severity: "high",
+        threatClass: "prompt_fingerprint_drift",
+        description: `System prompt fingerprint changed for ${agentLabel}: ${promptFingerprint.hash} → ${hash}`,
+        details: `Prompt hash changed at turn ${promptFingerprint.turnCount}. May indicate injection or reconfiguration.`,
+        agentBuildId,
+        agentLabel,
+      });
+    }
+    // Update baseline to new hash (track the change, don't keep alerting)
+    promptFingerprint.hash = hash;
+    promptFingerprint.firstSeen = Date.now();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Stats dump helper
 // ---------------------------------------------------------------------------
@@ -242,6 +283,12 @@ function dumpSessionFile() {
       classification: agentClassification,
       toolSequence: toolSequence.slice(-20),
       privacy,
+      promptFingerprint: promptFingerprint ? {
+        hash: promptFingerprint.hash,
+        firstSeen: new Date(promptFingerprint.firstSeen).toISOString(),
+        turnCount: promptFingerprint.turnCount,
+        drifts: promptFingerprintDrifts,
+      } : null,
       updatedAt: new Date().toISOString(),
     };
     writeFileSync(APP_SESSIONS_FILE, JSON.stringify(session, null, 2) + "\n");
@@ -368,6 +415,9 @@ function handleObfuscate(id, params) {
 
   // Classify agent from early obfuscation text (system prompt + context)
   maybeClassify(text);
+
+  // Fingerprint system prompt (first obfuscation call per session)
+  if (privacy.obfuscationCalls === 0) checkPromptFingerprint(text);
 
   // Injection scan on inbound text
   const injectionEvents = scanForInjections(text, "request");

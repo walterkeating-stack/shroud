@@ -504,6 +504,21 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: R
       reference: deps.driftDetector?.getReferenceText()?.slice(0, 100) || null,
       trajectory: driftTrajectory.slice(-20),
     },
+    promptFingerprint: (() => {
+      const fps = (globalThis as any).__shroudPromptFingerprints as Map<string, { hash: number; firstSeen: number; turnCount: number }> | undefined;
+      if (!fps || fps.size === 0) return { agentsTracked: 0, driftEvents: 0 };
+      const fpDriftEvents = allEvents.filter(e => (e as any).threatClass === "prompt_fingerprint_drift");
+      return {
+        agentsTracked: fps.size,
+        driftEvents: fpDriftEvents.length,
+        agents: Array.from(fps.entries()).map(([id, fp]) => ({
+          agentBuildId: id,
+          hash: fp.hash.toString(16),
+          firstSeen: new Date(fp.firstSeen).toISOString(),
+          turnCount: fp.turnCount,
+        })),
+      };
+    })(),
     shadow: {
       enabled: deps.config.shadowExecutionEnabled,
       maxSteps: deps.config.shadowExecutionMaxSteps,
