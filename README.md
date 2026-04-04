@@ -61,6 +61,7 @@ Shroud does not guarantee compliance — regex-based detection has limitations (
 3. **Passes through public URLs** — external URLs (arxiv.org, docs.stripe.com, etc.) are not obfuscated. Shroud resolves FQDNs via DNS: public IPs pass through, RFC 1918 / NXDOMAIN / internal IPs are obfuscated. Well-known platforms (GitHub, YouTube, Wikipedia, etc.) are always passed through.
 4. **Deobfuscates** LLM responses and tool parameters so the user sees real values and tools receive real arguments.
 5. **Audit logs** every event with counts, categories, char deltas, and optional proof hashes — never logging raw sensitive values.
+6. **Preserves prompt caching.** Obfuscation is deterministic — same input + same key = same output every turn. The system prompt prefix stays identical across turns, so provider-side prompt caching (Anthropic, OpenAI, Bedrock) works normally. No cache-busting, no extra token costs.
 
 ### Hook lifecycle
 
