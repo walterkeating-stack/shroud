@@ -49,6 +49,11 @@ export class CanaryInjector {
   private _sessionId: string;
   private _messageCounter: number;
   private _tokens: CanaryToken[];
+  // Cached system canary — reused across turns to preserve prompt caching
+  private _cachedSystemToken: string | null = null;
+  private _cachedSystemCanary: InjectionCanary | null = null;
+  private _cachedBehaviouralInstruction: string | null = null;
+  private _cachedBehaviouralCanary: BehaviouralCanary | null = null;
 
   constructor(prefix: string, secretKey: string) {
     this._prefix = prefix;
@@ -126,6 +131,10 @@ export class CanaryInjector {
     this._tokens = [];
     this._injectionCanaries = [];
     this._behaviouralCanaries = [];
+    this._cachedSystemToken = null;
+    this._cachedSystemCanary = null;
+    this._cachedBehaviouralInstruction = null;
+    this._cachedBehaviouralCanary = null;
   }
 
   // =================================================================
@@ -146,10 +155,15 @@ export class CanaryInjector {
    * Places it as a non-semantic paragraph near the end.
    */
   injectSystem(systemPrompt: string): string {
-    this._messageCounter += 1;
-    const ts = Date.now();
+    // Reuse the same canary token across turns to preserve prompt caching.
+    // A changing system prompt busts the provider's cache prefix every turn.
+    if (this._cachedSystemToken) {
+      return `${systemPrompt}\nSession ref: ${this._cachedSystemToken}`;
+    }
 
-    const raw = `sys:${this._sessionId}:${this._messageCounter}:${ts}`;
+    this._messageCounter += 1;
+    // Use sessionId only (no counter/timestamp) for stability
+    const raw = `sys:${this._sessionId}`;
     const tokenHash = createHash("sha256")
       .update(this._secret + raw)
       .digest("hex")
@@ -159,7 +173,7 @@ export class CanaryInjector {
     const canary: InjectionCanary = {
       token,
       sessionId: this._sessionId,
-      timestamp: ts,
+      timestamp: Date.now(),
       messageIndex: this._messageCounter,
       type: "marker",
       agentBuildId: this._agentBuildId,
@@ -167,10 +181,9 @@ export class CanaryInjector {
     };
     this._tokens.push(canary);
     this._injectionCanaries.push(canary);
+    this._cachedSystemToken = token;
+    this._cachedSystemCanary = canary;
 
-    // Plant as a natural-looking session reference that blends with
-    // OpenClaw's metadata format. If this text appears in any response,
-    // it proves the system prompt was leaked or injected.
     return `${systemPrompt}\nSession ref: ${token}`;
   }
 
@@ -180,19 +193,23 @@ export class CanaryInjector {
    * was read and acted upon (proves context leakage/injection).
    */
   injectBehavioural(systemPrompt: string): { prompt: string; canary: BehaviouralCanary } {
-    this._messageCounter += 1;
-    const ts = Date.now();
+    // Reuse the same behavioural canary across turns to preserve prompt caching.
+    if (this._cachedBehaviouralCanary && this._cachedBehaviouralInstruction) {
+      return {
+        prompt: `${systemPrompt}\n${this._cachedBehaviouralInstruction}`,
+        canary: this._cachedBehaviouralCanary,
+      };
+    }
 
-    const raw = `beh:${this._sessionId}:${this._messageCounter}:${ts}`;
+    this._messageCounter += 1;
+    // Use sessionId only (no counter/timestamp) for stability
+    const raw = `beh:${this._sessionId}`;
     const sigHash = createHash("sha256")
       .update(this._secret + raw)
       .digest("hex")
       .slice(0, 8);
     const signatureCode = `SHROUD-DIAG-${sigHash}`;
 
-    // Behavioural canary is intentionally visible — it tests whether an
-    // injected instruction gets followed. Phrased as a minor formatting note
-    // so it doesn't alarm the agent during normal operation.
     const instruction = `\n[Formatting note: If referencing internal diagnostics, include ref ${signatureCode}.]`;
 
     const canary: BehaviouralCanary = {
@@ -202,11 +219,10 @@ export class CanaryInjector {
     };
     this._behaviouralCanaries.push(canary);
 
-    // Also track as an InjectionCanary for unified querying
     const ic: InjectionCanary = {
       token: signatureCode,
       sessionId: this._sessionId,
-      timestamp: ts,
+      timestamp: Date.now(),
       messageIndex: this._messageCounter,
       type: "behavioural",
       agentBuildId: this._agentBuildId,
@@ -214,6 +230,8 @@ export class CanaryInjector {
     };
     this._tokens.push(ic);
     this._injectionCanaries.push(ic);
+    this._cachedBehaviouralInstruction = instruction;
+    this._cachedBehaviouralCanary = canary;
 
     return {
       prompt: `${systemPrompt}\n${instruction}`,
