@@ -221,7 +221,33 @@ Out of the box, Shroud:
 | `dryRun` | boolean | `false` | Detect entities but don't replace (testing mode) |
 | `maxStoreMappings` | number | `0` | Max mapping store size with LRU eviction (0 = unlimited) |
 
-> **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override their respective config keys (priority: env var > plugin config > default).
+#### Security settings
+
+These can also be set via environment variables (e.g. `SHROUD_HONEYPOT_RATE=0.9`). Env vars take priority over plugin config.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `honeypotEnabled` | boolean | `true` | Inject fake credentials as tripwires to detect exfiltration |
+| `honeypotRate` | number | `0.25` | Honeypot injection rate (0.0-1.0) |
+| `canaryEnabled` | boolean | `false` | Inject tracking tokens for leak detection |
+| `canarySystem` | boolean | `false` | Inject canary tokens into system prompts |
+| `canaryBehavioural` | boolean | `false` | Enable behavioural canary monitoring |
+| `injectionDetection` | `"flag"` \| `"block"` \| `"off"` | `"off"` | Prompt injection detection mode |
+| `injectionScanResponses` | boolean | `false` | Scan LLM responses for injection patterns |
+| `injectionMinSeverity` | `"low"` \| `"medium"` \| `"high"` | `"low"` | Minimum severity to report |
+| `profilingEnabled` | boolean | `false` | Enable per-agent behavioural profiling |
+| `profilingMode` | `"learning"` \| `"enforcing"` | `"learning"` | Profiling mode |
+| `dashboard` | boolean | `false` | Enable security dashboard HTTP server |
+| `dashboardPort` | number | `9380` | Dashboard HTTP port |
+| `dashboardBind` | string | `"127.0.0.1"` | Dashboard bind address |
+| `transformerEnabled` | boolean | `false` | Enable transformer-based tool sequence anomaly detection |
+| `transformerThreshold` | number | `0.85` | Surprise score threshold to trigger anomaly event |
+| `signaturesUrl` | string | `""` | URL for external injection signature JSON |
+| `signaturesRefresh` | number | `3600` | Signature poll interval in seconds |
+| `siemWebhookUrl` | string | `""` | Webhook URL for shipping security events |
+| `siemJsonlPath` | string | `""` | JSONL file path for security event log |
+
+> **Env var overrides:** All settings can be overridden via `SHROUD_*` env vars (e.g. `SHROUD_SECRET_KEY`, `SHROUD_HONEYPOT_RATE`). Priority: env var > plugin config > default.
 
 ### Detector overrides
 
@@ -408,16 +434,16 @@ client.stop()
 npm install
 npm run build               # compile TypeScript
 npm run lint                # type-check without emitting
-npm test                    # unit + harness (1,229 tests, no Docker)
+npm test                    # unit + harness (1,238 tests, no Docker)
 npm run test:docker         # Docker E2E — real OpenClaw, all channels (192 tests)
-npm run test:all            # everything (1,421 tests)
+npm run test:all            # everything (1,430 tests)
 ```
 
 ### Test layers
 
 | Layer | Command | Tests | What it covers |
 |-------|---------|-------|---------------|
-| Unit | `npm run test:unit` | 870 | Obfuscator, detectors, generators, store, config |
+| Unit | `npm run test:unit` | 879 | Obfuscator, detectors, generators, store, config |
 | APP Harness | `npm run test:integration` | 359 | 48 scenario files via mock LLM, no OpenClaw |
 | Docker E2E | `npm run test:docker` | 192 | Real OpenClaw gateway, Slack/WhatsApp/Cron/TUI channels, 153 regression scenarios |
 | Sandbox E2E | `run-compat.sh <ver> --sandbox` | +8 | Docker-in-Docker, sandboxed agent exec, tool call deobfuscation |
