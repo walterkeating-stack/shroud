@@ -287,7 +287,11 @@ export default {
     }
 
     // --- Dashboard startup ---
-    if (config.dashboardEnabled && !(globalThis as any).__shroudDashboardStarted) {
+    // Only start dashboard in the main gateway process, not in subprocesses
+    // (e.g. openclaw message send). Subprocess env markers: OPENCLAW_SUBPROCESS,
+    // OPENCLAW_SEND_MEDIA, or the presence of an already-bound port.
+    const isSubprocess = !!(process.env.OPENCLAW_SUBPROCESS || process.env.OPENCLAW_SEND_MEDIA || process.env.OPENCLAW_AGENT_EXEC);
+    if (config.dashboardEnabled && !isSubprocess && !(globalThis as any).__shroudDashboardStarted) {
       (globalThis as any).__shroudDashboardStarted = true;
       try {
         const profileDir = config.profilingProfileDir.replace("~", process.env.HOME || "/root");
