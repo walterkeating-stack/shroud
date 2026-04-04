@@ -23,6 +23,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Obfuscator } from "./obfuscator.js";
@@ -829,8 +830,39 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   }) : null;
   if (_driftDetector) (globalThis as any).__shroudDriftDetector = _driftDetector;
   // System prompt fingerprinting — detects hijacking via TF-IDF similarity.
-  // Stores per-agent baseline fingerprint; flags drift between turns.
-  const _promptFingerprints: Map<string, { vec: Float64Array; hash: number; firstSeen: number; turnCount: number }> = new Map();
+  // Stores per-agent baseline fingerprint; flags drift between turns AND across sessions.
+  // Persisted to disk so baselines survive gateway restarts.
+  const _promptFingerprintFile = (() => {
+    try {
+      const dir = (config.profilingProfileDir || "~/.shroud/profiles").replace(/^~/, homedir());
+      try { mkdirSync(dir, { recursive: true }); } catch {}
+      return `${dir}/prompt-fingerprints.json`;
+    } catch { return ""; }
+  })();
+  const _promptFingerprints: Map<string, { vec: Float64Array; hash: number; firstSeen: number; turnCount: number }> = (() => {
+    const map = new Map<string, { vec: Float64Array; hash: number; firstSeen: number; turnCount: number }>();
+    if (_promptFingerprintFile) {
+      try {
+        const data = JSON.parse(readFileSync(_promptFingerprintFile, "utf-8"));
+        for (const [key, val] of Object.entries(data as Record<string, any>)) {
+          if (val && Array.isArray(val.vec)) {
+            map.set(key, { vec: new Float64Array(val.vec), hash: val.hash || 0, firstSeen: val.firstSeen || 0, turnCount: val.turnCount || 0 });
+          }
+        }
+      } catch {}
+    }
+    return map;
+  })();
+  function _savePromptFingerprints(): void {
+    if (!_promptFingerprintFile) return;
+    try {
+      const obj: Record<string, any> = {};
+      for (const [key, val] of _promptFingerprints) {
+        obj[key] = { vec: Array.from(val.vec), hash: val.hash, firstSeen: val.firstSeen, turnCount: val.turnCount };
+      }
+      writeFileSync(_promptFingerprintFile, JSON.stringify(obj));
+    } catch {}
+  }
   (globalThis as any).__shroudPromptFingerprints = _promptFingerprints;
   // Shadow executor — runs suspicious tool calls against fake sandbox
   const _shadowExecutor = config.shadowExecutionEnabled ? new ShadowExecutor() : null;
@@ -989,20 +1021,22 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         const existing = _promptFingerprints.get(fpKey);
 
         if (!existing) {
-          // First turn — store baseline fingerprint
-          // Simple hash for quick dashboard display
+          // First turn for this agent — check against persisted cross-session baseline
           let hash = 0;
           for (let i = 0; i < Math.min(promptVec.length, 16); i++) {
             hash = ((hash << 5) - hash + Math.round(promptVec[i] * 1000)) | 0;
           }
           _promptFingerprints.set(fpKey, { vec: promptVec, hash, firstSeen: Date.now(), turnCount: 1 });
+          _savePromptFingerprints();
         } else {
           existing.turnCount++;
           const similarity = provider.similarity(existing.vec, promptVec);
 
           if (similarity < 0.85) {
-            // System prompt changed significantly — emit security event
+            // System prompt changed — could be within-session or cross-session drift
+            const isFirstTurn = existing.turnCount === 1;
             const severity = similarity < 0.5 ? "high" : "medium";
+            const driftType = isFirstTurn ? "cross-session" : "within-session";
             if (securityBus) {
               securityBus.emit({
                 timestamp: Date.now(),
@@ -1016,14 +1050,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 matchEnd: 0,
                 textLength: event.prompt.length,
                 action: "flagged" as const,
-                description: `System prompt fingerprint drift: similarity=${similarity.toFixed(3)} for ${session.agentLabel}. Cosine sim to baseline: ${similarity.toFixed(3)} (turn ${existing.turnCount}). May indicate injection or reconfiguration.`,
+                description: `System prompt ${driftType} drift: similarity=${similarity.toFixed(3)} for ${session.agentLabel}. Baseline from ${new Date(existing.firstSeen).toISOString()}. May indicate injection or reconfiguration.`,
                 agentBuildId: session.agentBuildId,
                 agentLabel: session.agentLabel,
                 agentSessionId: session.sessionId,
               });
               agentTracker.recordSecurityEvent(1);
             }
-            api.logger?.warn(`[shroud] System prompt fingerprint drift: ${session.agentLabel} similarity=${similarity.toFixed(3)}`);
+            api.logger?.warn(`[shroud] System prompt ${driftType} fingerprint drift: ${session.agentLabel} similarity=${similarity.toFixed(3)}`);
           }
         }
       }
