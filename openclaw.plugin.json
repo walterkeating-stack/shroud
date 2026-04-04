@@ -159,6 +159,103 @@
         "default": 0,
         "minimum": 0,
         "description": "Max mapping store size; oldest entries evicted when exceeded. 0 = unlimited."
+      },
+      "honeypotEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Inject fake credentials as tripwires to detect data exfiltration"
+      },
+      "honeypotRate": {
+        "type": "number",
+        "default": 0.25,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Honeypot injection rate (0.0-1.0). Higher = more frequent injection."
+      },
+      "canarySystem": {
+        "type": "boolean",
+        "default": false,
+        "description": "Inject canary tokens into system prompts to detect prompt extraction"
+      },
+      "canaryBehavioural": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable behavioural canary monitoring"
+      },
+      "injectionDetection": {
+        "type": "string",
+        "enum": ["flag", "block", "off"],
+        "default": "off",
+        "description": "Injection detection mode: flag (log), block (reject), off"
+      },
+      "injectionScanResponses": {
+        "type": "boolean",
+        "default": false,
+        "description": "Scan LLM responses for injection patterns"
+      },
+      "injectionMinSeverity": {
+        "type": "string",
+        "enum": ["low", "medium", "high"],
+        "default": "low",
+        "description": "Minimum severity to report for injection events"
+      },
+      "profilingEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable behavioural profiling per agent"
+      },
+      "profilingMode": {
+        "type": "string",
+        "enum": ["learning", "enforcing"],
+        "default": "learning",
+        "description": "Profiling mode: learning (baseline) or enforcing (alert on deviation)"
+      },
+      "dashboard": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable security dashboard HTTP server"
+      },
+      "dashboardPort": {
+        "type": "integer",
+        "default": 9380,
+        "description": "Dashboard HTTP port"
+      },
+      "dashboardBind": {
+        "type": "string",
+        "default": "127.0.0.1",
+        "description": "Dashboard bind address"
+      },
+      "transformerEnabled": {
+        "type": "boolean",
+        "default": false,
+        "description": "Enable transformer-based tool sequence anomaly detection"
+      },
+      "transformerThreshold": {
+        "type": "number",
+        "default": 0.85,
+        "minimum": 0,
+        "maximum": 1,
+        "description": "Surprise score threshold to trigger anomaly event"
+      },
+      "signaturesUrl": {
+        "type": "string",
+        "default": "",
+        "description": "URL for external injection signature JSON"
+      },
+      "signaturesRefresh": {
+        "type": "integer",
+        "default": 3600,
+        "description": "Signature poll interval in seconds"
+      },
+      "siemWebhookUrl": {
+        "type": "string",
+        "default": "",
+        "description": "Webhook URL for shipping security events"
+      },
+      "siemJsonlPath": {
+        "type": "string",
+        "default": "",
+        "description": "JSONL file path for security event log"
       }
     }
   },
