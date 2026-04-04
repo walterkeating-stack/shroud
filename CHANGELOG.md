@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.12] - 2026-04-04
+
+### Fixed
+- **OpenAI/ChatGPT PII leak: tool_calls arguments not obfuscated.** `tool_calls[].function.arguments` were completely skipped in both outbound obfuscation and inbound deobfuscation (SSE streaming + JSON). PII in tool call arguments leaked to ChatGPT unobfuscated. Added per-tool-call-index SSE buffering, JSON response handling, and outbound re-obfuscation.
+- **OpenAI SDK fetch bypass.** The OpenAI SDK v6 captures `globalThis.fetch` at construction time. If initialized before Shroud patches fetch, all requests bypassed the intercept. Fixed by obfuscating messages in-place in `before_prompt_build` so PII is replaced at the hook level, before any HTTP client touches it.
+
+### Added
+- 9 new OpenAI format tests covering SSE streaming, tool_calls deobfuscation, JSON responses, and outbound obfuscation verification.
+- APP protocol methods: `identify`, `tool_call`, `tool_result`, `setPartition`.
+- Prompt-caching preservation documented — deterministic obfuscation keeps system prompt prefix stable across turns.
+
 ## [2.2.11] - 2026-03-30
 
 ### Fixed
