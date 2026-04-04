@@ -22,11 +22,12 @@ Shroud is a privacy obfuscation plugin for AI agents. It detects 100+ entity typ
 ```bash
 npm run build             # tsc → dist/
 npm run lint              # tsc --noEmit (type-check only)
-npm test                  # unit + harness (2,083 tests, no Docker needed)
-npm run test:unit         # Vitest (1,724 tests)
+npm test                  # unit + harness (2,119 tests, no Docker needed)
+npm run test:unit         # Vitest (1,760 tests)
 npm run test:integration  # APP harness (359 tests)
 npm run test:docker       # Docker E2E (192 tests, needs Docker)
-npm run test:all          # All 3 layers (2,275 tests)
+npm run test:all          # All 3 layers (2,311 tests)
+npm run pretrain          # Seed transformer weights from testbed
 npm run test:watch        # Vitest watch mode
 ```
 
@@ -130,7 +131,7 @@ Full chain (execute without stopping unless tests fail):
 
 | Layer | What | Tests | Needs Docker |
 |-------|------|-------|--------------|
-| Unit (Vitest) | Obfuscator, detectors, generators, store, config, security, transformer | 1,724 | No |
+| Unit (Vitest) | Obfuscator, detectors, generators, store, config, security, transformer | 1,760 | No |
 | APP Harness | 48 scenario files via mock LLM, no OpenClaw | 359 | No |
 | Docker E2E | Real OpenClaw gateway, all channels, 153 regression scenarios | 192 | Yes |
 | Sandbox E2E | Docker-in-Docker, exec.host: sandbox, tool call deob | +8 | Yes (--sandbox) |
@@ -162,11 +163,15 @@ Full chain (execute without stopping unless tests fail):
 
 ## Golden Baseline
 
-**v2.2.2** is the gold standard. Do not regress:
+**v2.2.2** established the architecture. **v2.4.0** is the current baseline:
 - Fetch response deobfuscation with per-block SSE flushing
 - Zero OpenClaw patches
 - All channels confirmed (TUI, Slack, WhatsApp, CLI, multi-turn)
-- 2,275 tests passing (1,724 unit + 359 harness + 192 Docker E2E; +8 sandbox with --sandbox flag)
+- OpenAI/ChatGPT tool_calls obfuscation + SDK fetch bypass fix
+- Hook-level message obfuscation (works regardless of LLM SDK HTTP client)
+- System prompt fingerprinting (TF-IDF cosine drift detection)
+- Transformer seed pre-training (cold start bootstrap for Tiers 2+4)
+- 2,311 tests passing (1,760 unit + 359 harness + 192 Docker E2E; +8 sandbox with --sandbox flag)
 
 **Do NOT**: add per-channel patches, use empty deltas, attempt incremental text_delta deob.
 
