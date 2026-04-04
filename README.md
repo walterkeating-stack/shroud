@@ -356,10 +356,12 @@ APP is an open protocol for adding privacy and infrastructure protection to any 
 |  (any language)   |                      |  (app-server.mjs)|
 +-------------------+                      +------------------+
         |                                        |
-        | 1. obfuscate(user_input)               | detects entities,
-        | 2. send to LLM                         | returns fakes
-        | 3. deobfuscate(llm_response)           | restores reals
-        | 4. show to user                        |
+        | 1. identify(agent, version)            | registers agent
+        | 2. obfuscate(user_input)               | detects entities,
+        | 3. send to LLM                         | returns fakes
+        | 4. tool_call(tool, args)               | scans tool call
+        | 5. deobfuscate(llm_response)           | restores reals
+        | 6. show to user                        |
 ```
 
 ### Protocol specification
@@ -372,14 +374,20 @@ APP is an open protocol for adding privacy and infrastructure protection to any 
 
 | Method | Params | Returns | Description |
 |--------|--------|---------|-------------|
-| `obfuscate` | `{text}` | `{text, entityCount, categories, modified, audit}` | Replace real values with fakes |
-| `deobfuscate` | `{text}` | `{text, replacementCount, modified, audit}` | Restore fakes to real values |
+| `identify` | `{agent, version, channel?}` | `{ok, agent, buildId}` | Identify the agent (required before obfuscate/deobfuscate) |
+| `obfuscate` | `{text, partition?}` | `{text, entityCount, categories, modified, audit}` | Replace real values with fakes |
+| `deobfuscate` | `{text, partition?}` | `{text, replacementCount, modified, audit}` | Restore fakes to real values |
+| `tool_call` | `{tool, args?}` | `{allowed, blocked, tool, events?}` | Report a tool call for security scanning |
+| `tool_result` | `{tool, result}` | `{text, replacementCount}` | Obfuscate tool result before storing |
 | `reset` | `{}` | `{ok, summary}` | Clear all mappings |
 | `stats` | `{}` | `{storeMappings, ruleHits, ...}` | Engine statistics |
 | `health` | `{}` | `{uptime, requests, avgLatencyMs}` | Liveness check |
 | `configure` | `{config}` | `{ok}` | Hot-reload configuration |
 | `batch` | `{operations: [{direction, text}]}` | `{results: [...]}` | Batch obfuscate/deobfuscate |
+| `setPartition` | `{partition}` | `{ok}` | Switch mapping namespace (multi-tenant) |
 | `shutdown` | `{}` | `{ok}` | Graceful shutdown (flushes stats) |
+
+Agents should call `identify` first to register themselves. `tool_call` and `tool_result` are optional — they enable per-tool privacy scanning and mapping isolation for tool arguments.
 
 ### Python client
 
