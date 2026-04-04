@@ -88,9 +88,10 @@ Shroud does not guarantee compliance — regex-based detection has limitations (
 ```bash
 openclaw --version    # ensure 2026.3.22+
 openclaw plugins install shroud-privacy
+openclaw gateway restart
 ```
 
-Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`. No OpenClaw file modifications needed — Shroud uses runtime interception only.
+That's it — Shroud is automatically enabled on install. All 100+ detectors are active with safe defaults, no configuration required. To customise, see [Configure](#configure).
 
 ### Any agent (via APP)
 
@@ -166,13 +167,13 @@ openclaw gateway restart
 
 ## Configure
 
-Edit `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`:
+Shroud works out of the box with zero configuration. `openclaw plugins install` sets `enabled: true` automatically. To customise, edit `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`:
 
 ```jsonc
 "shroud-privacy": {
-  "enabled": true,
+  "enabled": true,                       // set automatically by plugins install
   "config": {
-    "auditEnabled": true           // audit log on — see what Shroud is doing
+    "auditEnabled": true                 // audit log on — see what Shroud is doing
     // "minConfidence": 0.0              // catch everything (default)
     // "secretKey": ""                   // auto-generated if empty
     // "persistentSalt": ""              // set for cross-session consistency

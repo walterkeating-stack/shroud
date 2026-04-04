@@ -26,9 +26,19 @@
       "version": "2026.3.28",
       "status": "current",
       "shroudMinVersion": "2.2.0",
-      "notes": "Latest release. Adds async requireApproval in before_tool_call hooks, WhatsApp echo loop fix, plugin SDK moduleUrl fix.",
+      "notes": "Latest stable. Adds async requireApproval in before_tool_call hooks, WhatsApp echo loop fix, plugin SDK moduleUrl fix.",
       "knownIssues": []
+    },
+    {
+      "version": "2026.4.1",
+      "status": "blocked",
+      "shroudMinVersion": "2.2.0",
+      "notes": "OC bug: messages containing :// (URLs, connection strings) silently dropped — agent dispatch never fires. Confirmed on bare OC without plugins. Blocking until OC fix.",
+      "knownIssues": [
+        "sessions.create with :// in message silently fails (OC dispatch bug, not Shroud)",
+        "Bundled extensions (bedrock, slack) require peer deps installed separately"
+      ]
     }
   ],
-  "lastChecked": "2026-03-29T00:00:00Z"
+  "lastChecked": "2026-04-02T00:00:00Z"
 }

@@ -11,13 +11,17 @@ ARG OC_VERSION
 ENV OC_VERSION=${OC_VERSION}
 
 # python3 is needed by OpenClaw's plugin install (post-install hooks)
+# iptables is needed for NAT rules (OC 2026.4.1+ URL processing)
 # /etc/hosts must be writable for channel E2E mock redirects
-RUN apt-get update -qq && apt-get install -y -qq python3 >/dev/null 2>&1 && \
+RUN apt-get update -qq && apt-get install -y -qq python3 iptables >/dev/null 2>&1 && \
     rm -rf /var/lib/apt/lists/* && \
     chmod 666 /etc/hosts
 
 # Install OpenClaw globally (the expensive step — cached per version)
+# Also install optional peer deps that OC 2026.4.1+ tries to lazy-load.
+# Without these, bundled extension load failures can block the gateway event loop.
 RUN npm install -g openclaw@${OC_VERSION} && \
+    npm install -g @slack/web-api@7 @slack/bolt@4 @aws-sdk/client-bedrock@3 2>/dev/null || true && \
     openclaw --version && \
     echo "OpenClaw ${OC_VERSION} installed"
 
