@@ -17,7 +17,7 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-> Apache 2.0 &middot; Zero runtime dependencies &middot; Works with [OpenClaw](https://openclaw.ai) or any agent via [APP](#agent-privacy-protocol-app)
+> Apache 2.0 &middot; Zero runtime dependencies &middot; Anthropic + OpenAI + Google supported &middot; Prompt-caching friendly &middot; Works with [OpenClaw](https://openclaw.ai) or any agent via [APP](#agent-privacy-protocol-app)
 
 ---
 
