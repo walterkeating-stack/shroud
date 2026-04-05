@@ -40,3 +40,5 @@ jobs:
           else
             npx --yes npm@11 publish --provenance --tag next
           fi
+        env:
+          NODE_AUTH_TOKEN: ""
