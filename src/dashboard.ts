@@ -578,10 +578,14 @@ function computeAgentHealth(
   const expectations = ROLE_EXPECTATIONS[role];
 
   if (expectations && baseline) {
-    const knownTools: string[] = baseline.toolProfile || [];
+    const establishedTools: string[] = baseline.toolProfile || [];
 
-    // Check for suspicious tool usage
-    for (const tool of knownTools) {
+    // Only flag suspicious tools that are NEW to the current session — not established in the profiler baseline.
+    // Mature agents legitimately use tools like `exec` (e.g. to run `date`); flagging those is a false positive.
+    const newTools = agent.toolInventory.filter(
+      t => !establishedTools.some(k => k.toLowerCase() === t.toLowerCase()),
+    );
+    for (const tool of newTools) {
       if (expectations.suspiciousTools.some(s => tool.toLowerCase().includes(s))) {
         issues.push("Unexpected tool: " + tool);
         compliant = false;
