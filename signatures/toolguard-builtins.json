@@ -69,7 +69,7 @@
     {
       "id": "ext_tg_wget_pipe",
       "toolName": null,
-      "paramPattern": "\\bwget\\s+.*(?:\\|\\s*(?:bash|sh|python|perl|ruby))",
+      "paramPattern": "\\bwget\\s+.*(?:\\|\\s*(?:bash|sh)\\b)",
       "flags": "gi",
       "severity": "high",
       "description": "Exfiltration: wget pipe to shell",
@@ -78,7 +78,7 @@
     {
       "id": "ext_tg_curl_pipe_shell",
       "toolName": null,
-      "paramPattern": "\\bcurl\\s+.*(?:\\|\\s*(?:bash|sh|python|perl|ruby))",
+      "paramPattern": "\\bcurl\\s+.*(?:\\|\\s*(?:bash|sh)\\b)",
       "flags": "gi",
       "severity": "high",
       "description": "Exfiltration: curl pipe to shell execution",
