@@ -21,10 +21,10 @@ jobs:
 
   publish:
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +34,14 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
-      - run: |
-          VERSION=$(node -p "require('./package.json').version")
-          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            npx --yes npm@11 dist-tag add shroud-privacy@${VERSION} latest
-          else
-            npx --yes npm@11 publish --provenance --tag next
-          fi
+      - run: npx --yes npm@11 publish --provenance
         env:
           NODE_AUTH_TOKEN: ""
+      - name: Create GitHub release
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release create "v${VERSION}" \
+            --title "v${VERSION}" \
+            --generate-notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
