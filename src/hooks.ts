@@ -844,8 +844,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (_promptFingerprintFile) {
       try {
         const data = JSON.parse(readFileSync(_promptFingerprintFile, "utf-8"));
+        // Discard baselines older than 6 hours — stale baselines cause false-positive
+        // drift events as natural conversation evolution diverges from an old snapshot.
+        const MAX_BASELINE_AGE_MS = 6 * 60 * 60 * 1000;
+        const now = Date.now();
         for (const [key, val] of Object.entries(data as Record<string, any>)) {
-          if (val && Array.isArray(val.vec)) {
+          if (val && Array.isArray(val.vec) && (now - (val.firstSeen || 0)) < MAX_BASELINE_AGE_MS) {
             map.set(key, { vec: new Float64Array(val.vec), hash: val.hash || 0, firstSeen: val.firstSeen || 0, turnCount: val.turnCount || 0 });
           }
         }
@@ -2604,10 +2608,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         const activeDetector = getDetectorForAgent();
         if (activeDetector && securityBus) {
           try {
-            // Collect all text from the request for scanning
+            // Scan system prompt (trusted, OC-generated) separately — skip token-smuggling
+            // detection to avoid firing on Shroud's own canary tokens injected there.
+            const trustedTexts: string[] = [];
+            if (typeof body.system === "string") trustedTexts.push(body.system);
+            if (typeof body.instructions === "string") trustedTexts.push(body.instructions);
+
+            // Collect untrusted message content (user + tool_result) for full scanning
             const textsToScan: string[] = [];
-            if (typeof body.system === "string") textsToScan.push(body.system);
-            if (typeof body.instructions === "string") textsToScan.push(body.instructions);
             const scanArray = Array.isArray(body.messages) ? body.messages
               : Array.isArray(body.contents) ? body.contents
               : Array.isArray(body.input) ? body.input : null;
@@ -2627,9 +2635,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               }
             }
 
-            const allText = textsToScan.join("\n");
-
-            const events = activeDetector.scanRequest(allText);
+            // Scan trusted content (no token-smuggling), then untrusted content (full scan)
+            const allText = [...trustedTexts, ...textsToScan].join("\n");
+            const events = [
+              ...(trustedTexts.length > 0
+                ? activeDetector.scanRequest(trustedTexts.join("\n"), { skipTokenSmuggling: true })
+                : []),
+              ...(textsToScan.length > 0
+                ? activeDetector.scanRequest(textsToScan.join("\n"))
+                : []),
+            ];
 
             // Enrich events with agent identity
             const agentSession = agentTracker.getCurrentSession();

@@ -497,7 +497,10 @@ const MCP_TOOL_POISONING: SignatureDef[] = [
   {
     id: "mcp_read_sensitive",
     threatClass: ThreatClass.MCP_TOOL_POISONING,
-    pattern: /(?:read|cat|access|exfiltrate|steal|extract|dump|leak|show|display|print|output)\s+(?:the\s+|me\s+)?(?:~\/|~\\|\/etc\/)?(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws|passwd|shadow|master\.passwd|gshadow|sudoers|\.kube\/config|\.config\/gcloud|\.docker\/config|\.npmrc|\.pypirc|\.gem\/credentials|\.git-credentials|\.pgpass|\.my\.cnf|\.env\.(?:local|prod|production|staging)|\.vault-token|\.boto|\.netrc)/gi,
+    // Exfiltration verbs are unambiguous — match with or without a path prefix.
+    // Display/output verbs are ambiguous (e.g. "do not output credentials") — require
+    // a path prefix (~/, ~\, /etc/) so security instructions don't false-positive.
+    pattern: /(?:exfiltrate|steal|extract|dump|leak)\s+(?:the\s+|me\s+)?(?:~\/|~\\|\/etc\/)?(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws|passwd|shadow|master\.passwd|gshadow|sudoers|\.kube\/config|\.config\/gcloud|\.docker\/config|\.npmrc|\.pypirc|\.gem\/credentials|\.git-credentials|\.pgpass|\.my\.cnf|\.env\.(?:local|prod|production|staging)|\.vault-token|\.boto|\.netrc)|(?:read|cat|access|show|display|print|output)\s+(?:the\s+|me\s+)?(?:~\/|~\\|\/etc\/)(?:\.ssh|credentials|secrets?|private[_-]?key|\.aws|passwd|shadow|master\.passwd|gshadow|sudoers|\.kube\/config|\.config\/gcloud|\.docker\/config|\.npmrc|\.pypirc|\.gem\/credentials|\.git-credentials|\.pgpass|\.my\.cnf|\.env\.(?:local|prod|production|staging)|\.vault-token|\.boto|\.netrc)/gi,
     severity: "high",
     description: "MCP tool poisoning: access sensitive files",
     direction: "both",

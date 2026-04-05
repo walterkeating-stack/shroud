@@ -171,15 +171,22 @@ export class InjectionDetector {
     return this._externalRequestSigs.length + this._externalResponseSigs.length;
   }
 
-  /** Scan request/outbound text for injection patterns. */
-  scanRequest(text: string): SecurityEvent[] {
+  /** Scan request/outbound text for injection patterns.
+   *
+   * @param opts.skipTokenSmuggling - If true, skip the invisible-char stripping
+   *   and eb_token_smuggling event. Use for trusted content (e.g. system prompts
+   *   that may contain Shroud's own canary tokens) to avoid self-detection loops.
+   */
+  scanRequest(text: string, opts?: { skipTokenSmuggling?: boolean }): SecurityEvent[] {
     if (this._config.action === "off") return [];
 
     // Token smuggling defence: strip invisible characters then re-scan.
     // Attackers insert zero-width spaces, soft hyphens, word joiners etc.
     // between tokens to break regex matching: "ig​nore pre​vious in​structions"
-    const cleaned = stripTokenSmuggling(text);
-    const smuggled = cleaned !== text;
+    // Skip for trusted content (system prompts may contain Shroud canary tokens).
+    const skipSmuggling = opts?.skipTokenSmuggling === true;
+    const cleaned = skipSmuggling ? text : stripTokenSmuggling(text);
+    const smuggled = !skipSmuggling && cleaned !== text;
 
     const allRequestSigs = this._externalRequestSigs.length > 0
       ? [...this._requestSigs, ...this._externalRequestSigs]

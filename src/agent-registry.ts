@@ -290,10 +290,20 @@ export class AgentRegistry {
 
     // Check allow list — if an allow list exists, only listed tools are permitted
     if (entry.toolsAllow.length > 0) {
-      const allowed = entry.toolsAllow.some(a => {
+      // Known OpenClaw tool group expansions
+    const TOOL_GROUPS: Record<string, string[]> = {
+      "group:fs": ["read", "write", "edit", "list", "glob", "find", "stat", "mkdir", "rm", "mv", "cp"],
+      "group:web": ["web_search", "web_fetch"],
+      "group:memory": ["memory_search", "memory_get", "memory_set", "memory_delete"],
+      "group:exec": ["exec", "bash", "run"],
+    };
+    const allowed = entry.toolsAllow.some(a => {
         const al = a.toLowerCase();
-        // Handle group prefixes: "group:fs" allows all filesystem tools
-        if (al.startsWith("group:")) return false; // Can't resolve groups here, skip
+        if (al.startsWith("group:")) {
+          const groupTools = TOOL_GROUPS[al];
+          // If we know the group, check membership; otherwise don't flag (can't evaluate)
+          return groupTools ? groupTools.includes(toolLower) : true;
+        }
         return al === toolLower;
       });
       if (!allowed) {
