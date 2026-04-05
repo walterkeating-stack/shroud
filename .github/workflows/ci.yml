@@ -31,11 +31,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
       - run: |
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            npm publish --provenance
+            npx --yes npm@11 publish --provenance
           else
-            npm publish --provenance --tag next
+            npx --yes npm@11 publish --provenance --tag next
           fi
