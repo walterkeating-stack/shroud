@@ -35,8 +35,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: |
+          VERSION=$(node -p "require('./package.json').version")
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-            npx --yes npm@11 publish --provenance
+            npx --yes npm@11 dist-tag add shroud-privacy@${VERSION} latest
           else
             npx --yes npm@11 publish --provenance --tag next
           fi
