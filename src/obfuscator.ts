@@ -437,8 +437,8 @@ export class Obfuscator {
           // two different real IPs with identical host bits in different subnets.
           let collisionAttempt = 0;
           let existingReal = this._store.getReal(newFake);
-          while (existingReal !== undefined &&
-                 existingReal !== entity.value &&
+          while ((newFake === entity.value ||
+                 (existingReal !== undefined && existingReal !== entity.value)) &&
                  collisionAttempt < 50) {
             collisionAttempt++;
             // For IPs: offset the last octet; for others: append suffix
