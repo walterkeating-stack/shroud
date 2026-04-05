@@ -1322,7 +1322,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (_raw.length < 500) api.logger?.info(`[shroud][raw-assistant] ${_raw}`);
 
       if (typeof msg.content === "string") {
-        const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content);
+        const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content, "before_message_write");
         if (deobfuscated === msg.content) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
         if (replacementCount > 0) agentTracker.recordDeobfuscation(replacementCount);
@@ -1339,7 +1339,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (block && typeof block === "object") {
             // Handle blocks with .text (text content blocks)
             if (typeof block.text === "string") {
-              const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(block.text);
+              const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(block.text, "before_message_write");
               if (deobfuscated !== block.text) {
                 changed = true;
                 _deobCount += rc;
@@ -1348,7 +1348,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             }
             // Handle blocks with .content as string (tool_result blocks)
             if (typeof block.content === "string") {
-              const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(block.content);
+              const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(block.content, "before_message_write");
               if (deobfuscated !== block.content) {
                 changed = true;
                 _deobCount += rc;
@@ -1360,7 +1360,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               let innerChanged = false;
               const newInner = block.content.map((inner: any) => {
                 if (inner && typeof inner === "object" && typeof inner.text === "string") {
-                  const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(inner.text);
+                  const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(inner.text, "before_message_write");
                   if (deobfuscated !== inner.text) {
                     innerChanged = true;
                     _deobCount += rc;
@@ -2084,7 +2084,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // has fake text. Returning { content } forces OpenClaw to use our text
     // instead of falling back to the original payload.
     if (typeof event.content === "string") {
-      const { text: deobfuscated, replacementCount: _msRc } = ob().deobfuscateWithStats(event.content);
+      const { text: deobfuscated, replacementCount: _msRc } = ob().deobfuscateWithStats(event.content, "message_sending");
       if (_msRc > 0) {
         agentTracker.recordDeobfuscation(_msRc);
         api.logger?.info("[shroud] message_sending: deobfuscated outbound message");
@@ -2102,19 +2102,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // Array content (blocks) — walk and deobfuscate all text leaves.
     // Always return content to override the original payload (same reason as above).
     if (Array.isArray(event.content)) {
+      let _msBlockRc = 0;
       const newContent = event.content.map((block: any) => {
         if (block && typeof block === "object") {
           if (typeof block.text === "string") {
-            const deob = ob().deobfuscate(block.text);
-            if (deob !== block.text) return { ...block, text: deob };
+            const { text: deob, replacementCount: rc } = ob().deobfuscateWithStats(block.text, "message_sending");
+            if (deob !== block.text) { _msBlockRc += rc; return { ...block, text: deob }; }
           }
           if (typeof block.content === "string") {
-            const deob = ob().deobfuscate(block.content);
-            if (deob !== block.content) return { ...block, content: deob };
+            const { text: deob, replacementCount: rc } = ob().deobfuscateWithStats(block.content, "message_sending");
+            if (deob !== block.content) { _msBlockRc += rc; return { ...block, content: deob }; }
           }
         }
         return block;
       });
+      if (_msBlockRc > 0) agentTracker.recordDeobfuscation(_msBlockRc);
       return { content: newContent };
     }
   });
@@ -2224,7 +2226,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (target?.content && Array.isArray(target.content)) {
           for (const block of target.content) {
             if (block?.type === "text" && typeof block.text === "string") {
-              const { text: deob, replacementCount: _esRc } = ob().deobfuscateWithStats(block.text);
+              const { text: deob, replacementCount: _esRc } = ob().deobfuscateWithStats(block.text, "event_stream");
               if (deob !== block.text) {
                 block.text = deob;
                 if (_esRc > 0) agentTracker.recordDeobfuscation(_esRc);
@@ -2249,7 +2251,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   (globalThis as any).__shroudDeobfuscate = (text: string): string => {
     if (typeof text !== "string") return text;
-    const { text: deob, replacementCount: _gdRc } = ob().deobfuscateWithStats(text);
+    const { text: deob, replacementCount: _gdRc } = ob().deobfuscateWithStats(text, "global_hook");
     if (_gdRc > 0) agentTracker.recordDeobfuscation(_gdRc);
     return deob;
   };

@@ -783,6 +783,7 @@ function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?
       ruleHits: stats.ruleHits,
       detectionsByCategory: stats.detectionsByCategory,
       replacementsByCategory: stats.replacementsByCategory,
+      deobBySource: stats.deobBySource ?? {},
     },
     perAgent,
     aggregateCategories,

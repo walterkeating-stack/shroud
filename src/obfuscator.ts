@@ -234,6 +234,7 @@ export class Obfuscator {
   private _deobfuscationEvents = 0;
   private _totalEntitiesObfuscated = 0;
   private _totalReplacementsDeobfuscated = 0;
+  private _deobBySource: Map<string, number> = new Map();
   private _redactionFormatter: RedactionFormatter;
   private _contextDetector: ContextDetector | null = null;
   private _toolDepth: number = 0;
@@ -622,7 +623,7 @@ export class Obfuscator {
    * Deobfuscate text and return replacement count alongside the result.
    * Used by audit logging to report deobfuscation stats without logging text.
    */
-  deobfuscateWithStats(text: string): { text: string; replacementCount: number } {
+  deobfuscateWithStats(text: string, source?: string): { text: string; replacementCount: number } {
     const startTime = Date.now();
 
     // Strip canary tokens
@@ -680,6 +681,8 @@ export class Obfuscator {
     if (replacementCount > 0) {
       this._deobfuscationEvents++;
       this._totalReplacementsDeobfuscated += replacementCount;
+      const src = source ?? "fetch";
+      this._deobBySource.set(src, (this._deobBySource.get(src) ?? 0) + replacementCount);
     }
 
     if (this._audit && replacementCount > 0) {
@@ -963,6 +966,7 @@ export class Obfuscator {
       deobfuscationEvents: this._deobfuscationEvents,
       totalEntitiesObfuscated: this._totalEntitiesObfuscated,
       totalReplacementsDeobfuscated: this._totalReplacementsDeobfuscated,
+      deobBySource: Object.fromEntries(this._deobBySource),
       ruleHits: Object.fromEntries(this._ruleHits),
       detectionsByCategory: Object.fromEntries(this._detectionsByCategory),
       replacementsByCategory: Object.fromEntries(this._replacementsByCategory),
