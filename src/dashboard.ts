@@ -397,10 +397,15 @@ export function startDashboard(
   });
 
   const bindAddr = process.env.SHROUD_DASHBOARD_BIND || "0.0.0.0";
-  server.listen(port, bindAddr, () => {
-    // Default: 0.0.0.0 (all interfaces including Tailscale)
-    // Set SHROUD_DASHBOARD_BIND=127.0.0.1 to restrict to localhost
+  server.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code === "EADDRINUSE") {
+      // Port already taken — another Shroud instance (e.g. gateway) owns it.
+      // Silently skip: the subprocess doesn't need its own dashboard.
+    }
+    // Other errors (EACCES etc.) are intentionally swallowed — dashboard
+    // is non-critical and should never crash the agent process.
   });
+  server.listen(port, bindAddr);
 
   return server;
 }
