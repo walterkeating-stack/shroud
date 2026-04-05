@@ -355,6 +355,24 @@
       "block": true
     },
     {
+      "id": "ext_tg_localhost_curl",
+      "toolName": null,
+      "paramPattern": "\\b(?:curl|wget)\\s+.*(?:https?://)?(?:localhost|127\\.0\\.0\\.1|\\[?::1\\]?)(?::\\d+)?",
+      "flags": "gi",
+      "severity": "high",
+      "description": "SSRF: curl/wget to localhost — internal service probing",
+      "block": true
+    },
+    {
+      "id": "ext_tg_read_openclaw_config",
+      "toolName": null,
+      "paramPattern": "\\b(?:cat|head|tail|less|more|strings|jq)\\s+.*openclaw\\.json",
+      "flags": "gi",
+      "severity": "high",
+      "description": "Credential access: reading OpenClaw config file (contains bot tokens)",
+      "block": true
+    },
+    {
       "id": "ext_tg_cloud_metadata",
       "toolName": null,
       "paramPattern": "\\bcurl\\s+.*(?:169\\.254\\.169\\.254|metadata\\.google\\.internal|100\\.100\\.100\\.200)",

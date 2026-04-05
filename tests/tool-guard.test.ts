@@ -122,6 +122,50 @@ describe("Tool Guard — Reverse Shells", () => {
   });
 });
 
+describe("Tool Guard — Internal Service Probing", () => {
+  test("curl to localhost blocked", () => {
+    const r = scanToolCall("exec", { command: "curl http://localhost:9380/api/events" });
+    expect(r.shouldBlock).toBe(true);
+    expect(r.events[0].signatureId).toBe("tg_localhost_curl");
+  });
+
+  test("curl to 127.0.0.1 blocked", () => {
+    const r = scanToolCall("exec", { command: "curl -s http://127.0.0.1:8080/api/agents" });
+    expect(r.shouldBlock).toBe(true);
+    expect(r.events[0].signatureId).toBe("tg_localhost_curl");
+  });
+
+  test("wget to localhost blocked", () => {
+    const r = scanToolCall("exec", { command: "wget http://localhost:9380/api/overview" });
+    expect(r.shouldBlock).toBe(true);
+    expect(r.events[0].signatureId).toBe("tg_localhost_curl");
+  });
+
+  test("curl to external host still safe", () => {
+    const r = scanToolCall("exec", { command: "curl https://api.example.com/health" });
+    expect(r.events.filter(e => e.signatureId === "tg_localhost_curl")).toHaveLength(0);
+  });
+});
+
+describe("Tool Guard — OpenClaw Config Access", () => {
+  test("cat openclaw.json blocked", () => {
+    const r = scanToolCall("exec", { command: "cat /home/ka/.openclaw/openclaw.json" });
+    expect(r.shouldBlock).toBe(true);
+    expect(r.events[0].signatureId).toBe("tg_read_openclaw_config");
+  });
+
+  test("jq on openclaw.json blocked", () => {
+    const r = scanToolCall("exec", { command: "jq '.accounts' /home/ka/.openclaw/openclaw.json" });
+    expect(r.shouldBlock).toBe(true);
+    expect(r.events[0].signatureId).toBe("tg_read_openclaw_config");
+  });
+
+  test("cat unrelated json file is safe", () => {
+    const r = scanToolCall("exec", { command: "cat /home/ka/project/config.json" });
+    expect(r.events.filter(e => e.signatureId === "tg_read_openclaw_config")).toHaveLength(0);
+  });
+});
+
 describe("Tool Guard — Crypto Mining", () => {
   test("xmrig blocked", () => {
     const r = scanToolCall("exec", { command: "./xmrig --url stratum+tcp://pool.mining.com:3333" });
