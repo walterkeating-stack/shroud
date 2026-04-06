@@ -18,10 +18,15 @@ RUN apt-get update -qq && apt-get install -y -qq python3 iptables >/dev/null 2>&
     chmod 666 /etc/hosts
 
 # Install OpenClaw globally (the expensive step — cached per version)
-# Also install optional peer deps that OC 2026.4.1+ tries to lazy-load.
-# Without these, bundled extension load failures can block the gateway event loop.
+# Also install optional deps that newer OC builds may lazy-load from bundled extensions.
+# Install each independently so one failure doesn't skip the others.
 RUN npm install -g openclaw@${OC_VERSION} && \
-    npm install -g @slack/web-api@7 @slack/bolt@4 @aws-sdk/client-bedrock@3 2>/dev/null || true && \
+    (npm install -g @slack/web-api@7 || true) && \
+    (npm install -g @slack/bolt@4 || true) && \
+    (npm install -g @aws-sdk/client-bedrock@3 || true) && \
+    (npm install -g @buape/carbon || true) && \
+    (npm install -g @larksuiteoapi/node-sdk || true) && \
+    (npm install -g grammy || true) && \
     openclaw --version && \
     echo "OpenClaw ${OC_VERSION} installed"
 

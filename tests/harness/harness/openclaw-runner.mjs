@@ -101,11 +101,18 @@ export class OpenClawRunner {
     // 4b. Verify agent identity via dashboard API
     await this._verifyAgentIdentity();
 
-    // 5. Run multi-agent security scenarios (if injection detection available)
-    await this._runSecurityScenarios();
+    // 5. Run multi-agent security scenarios unless explicitly skipped for focused runs.
+    // Focused scenario runs are used for fast diagnosis and should not block on
+    // unrelated long-running security assertions.
+    const skipSecurity = process.env.SHROUD_SKIP_SECURITY === "1" || !!this.scenario;
+    if (skipSecurity) {
+      this._log("Skipping multi-agent security scenarios for focused run.");
+    } else {
+      await this._runSecurityScenarios();
+    }
 
     // 6. Run lifecycle tests (--lifecycle flag, long-running)
-    if (this.lifecycle) {
+    if (this.lifecycle && !skipSecurity) {
       await this._runLifecycleTests();
     }
   }
@@ -1553,10 +1560,17 @@ export class OpenClawRunner {
       );
     }
 
-    if (this.scenario) {
-      return all.filter(s => s.name.toLowerCase().includes(this.scenario.toLowerCase()));
+    let filtered = all;
+
+    if (process.env.SHROUD_SKIP_WHATSAPP_E2E === "1") {
+      filtered = filtered.filter((s) => !s.whatsAppE2E);
+      this._log("WhatsApp E2E scenarios skipped (channel unavailable in this OpenClaw build).");
     }
-    return all;
+
+    if (this.scenario) {
+      return filtered.filter(s => s.name.toLowerCase().includes(this.scenario.toLowerCase()));
+    }
+    return filtered;
   }
 
 

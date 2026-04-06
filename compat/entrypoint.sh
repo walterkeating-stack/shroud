@@ -30,11 +30,20 @@ echo "Installing Shroud plugin..."
 SHROUD_PKG=$(npm root -g)/shroud-privacy
 # Disable dashboard during install — OC loads plugin to verify, and the HTTP
 # server would keep the install process alive forever.
-SHROUD_DASHBOARD=false openclaw plugins install "${SHROUD_PKG}" --dangerously-force-unsafe-install 2>&1
+if ! SHROUD_DASHBOARD=false openclaw plugins install "${SHROUD_PKG}" --dangerously-force-unsafe-install 2>&1; then
+  echo "Retrying plugin install without --dangerously-force-unsafe-install (older OpenClaw)..."
+  SHROUD_DASHBOARD=false openclaw plugins install "${SHROUD_PKG}" 2>&1
+fi
 
 # Add WhatsApp channel (uses Baileys intercept in Docker)
 echo "Adding WhatsApp channel..."
-openclaw channels add --channel whatsapp --auth-dir "${STATE_DIR}/channels/whatsapp/auth" 2>&1 || true
+if WA_ADD_OUT=$(openclaw channels add --channel whatsapp --auth-dir "${STATE_DIR}/channels/whatsapp/auth" 2>&1); then
+  echo "${WA_ADD_OUT}"
+else
+  echo "${WA_ADD_OUT}"
+  export SHROUD_SKIP_WHATSAPP_E2E=1
+  echo "WhatsApp channel unavailable in this OpenClaw build; WhatsApp E2E scenarios will be skipped."
+fi
 
 # Pre-populate mock WhatsApp auth state so the extension thinks we're paired
 WA_AUTH="${STATE_DIR}/channels/whatsapp/auth"
@@ -69,7 +78,12 @@ if [ "${SHROUD_LIFECYCLE:-}" = "1" ]; then
 else
   echo "Running OpenClaw sandbox tests..."
 fi
-node /shroud/tests/harness/run.mjs --openclaw --verbose ${LIFECYCLE_FLAG}
+SCENARIO_FLAG=()
+if [ -n "${SHROUD_SCENARIO:-}" ]; then
+  SCENARIO_FLAG=(--scenario "${SHROUD_SCENARIO}")
+  echo "Scenario filter: ${SHROUD_SCENARIO}"
+fi
+node /shroud/tests/harness/run.mjs --openclaw --verbose ${LIFECYCLE_FLAG} "${SCENARIO_FLAG[@]}"
 
 EXIT_CODE=$?
 

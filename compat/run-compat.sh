@@ -54,6 +54,7 @@ SHROUD_VERSION=$(node -e "console.log(require('./package.json').version)")
 echo "Shroud version: ${SHROUD_VERSION} (local build)"
 [ -n "${SANDBOX}" ] && echo "Mode: SANDBOX (rootless Docker)"
 [ -n "${LIFECYCLE}" ] && echo "Mode: LIFECYCLE (long-running agent tests)"
+[ -n "${SHROUD_SCENARIO:-}" ] && echo "Mode: SCENARIO filter (${SHROUD_SCENARIO})"
 
 # ── Step 2: Build/reuse base image ──
 if [ -n "${REBUILD_BASE}" ] || \
@@ -115,12 +116,19 @@ if [ -n "${SANDBOX}" ]; then
 else
   MEMORY_LIMIT="1g"
   [ -n "${LIFECYCLE}" ] && MEMORY_LIMIT="4g"
+  DOCKER_ENV_ARGS=()
+  if [ -n "${LIFECYCLE}" ]; then
+    DOCKER_ENV_ARGS+=(-e SHROUD_LIFECYCLE=1)
+  fi
+  if [ -n "${SHROUD_SCENARIO:-}" ]; then
+    DOCKER_ENV_ARGS+=(-e "SHROUD_SCENARIO=${SHROUD_SCENARIO}")
+  fi
   docker run --rm \
     --network "${NETWORK}" \
     --memory "${MEMORY_LIMIT}" \
     --cpus 2 \
     --name "shroud-compat-${OC_VERSION}" \
-    ${LIFECYCLE:+-e SHROUD_LIFECYCLE=1} \
+    "${DOCKER_ENV_ARGS[@]}" \
     "${TEST_TAG}"
   EXIT_CODE=$?
 fi
