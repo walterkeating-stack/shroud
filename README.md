@@ -80,6 +80,15 @@ Shroud does not guarantee compliance — regex-based detection has limitations (
 
 > **Requires OpenClaw 2026.3.22 or later.**
 
+### OpenClaw support policy
+
+- **Formal minimum supported version:** `2026.3.24` (from `openclaw.plugin.json` `minOpenClawVersion`).
+- **Release validation matrix (this release):**
+  - **Baseline:** `2026.3.28` (includes WhatsApp E2E path)
+  - **Latest-at-release:** `2026.4.5` (Slack E2E path)
+- **Latest caveat:** on OpenClaw builds where WhatsApp provisioning via `channels add` is unsupported, latest-focused compat runs skip WhatsApp E2E and validate Slack E2E.
+- **Source of truth for current matrix:** `docs/ci-current-state.md` and `CHANGELOG.md`.
+
 ---
 
 ## Install
