@@ -1,6 +1,9 @@
 node_modules/
 dist/
 *.tsbuildinfo
+*.tgz
+*.log
+*.tmp
 .claude/worktrees/
 docs/enterprise-implementation-plan.md
 docs/plan-hot-reload-and-policy.md
