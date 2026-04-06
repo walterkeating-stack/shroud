@@ -1,46 +1,12 @@
-name: E2E Trigger
+name: E2E (Disabled)
 
 on:
-  push:
-    branches: [main, 'feature/*']
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'compat/run-e2e.sh'
-      - '.github/workflows/compat.yml'
   workflow_dispatch:
-    inputs:
-      shroud_ref:
-        description: 'Branch or ref to test (default: current ref)'
-        required: false
-      shroud_repo:
-        description: 'Repository to test (owner/name, default: current repo)'
-        required: false
 
 jobs:
-  trigger-e2e:
+  disabled:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - name: Validate dispatch secret
-        env:
-          GH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "E2E_DISPATCH_TOKEN is not configured in repo secrets."
-            echo "Add a token with permission to dispatch workflows in wkeything/shroud-e2e."
-            exit 1
-          fi
-      - name: Dispatch shroud-e2e run
-        env:
-          GH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
-        run: |
-          REF="${{ github.event.inputs.shroud_ref || github.ref }}"
-          REPO="${{ github.event.inputs.shroud_repo || github.repository }}"
-          SHA="${{ github.sha }}"
-
-          gh api repos/wkeything/shroud-e2e/dispatches \
-            -f event_type=shroud-ci \
-            -f "client_payload[shroud_ref]=${REF}" \
-            -f "client_payload[shroud_repo]=${REPO}" \
-            -f "client_payload[shroud_sha]=${SHA}"
+      - run: |
+          echo "GitHub-hosted E2E is intentionally disabled to avoid paid/private Actions usage."
+          echo "Run compat tests locally: bash compat/run-compat.sh <openclaw-version>"
