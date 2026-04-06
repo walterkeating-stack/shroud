@@ -443,6 +443,10 @@ Supported versions are tracked in `compat/versions.json`. CI checks for new Open
 
 This software is provided "as is", without warranty of any kind, express or implied. Shroud uses regex-based detection which may not catch all sensitive data. It reduces exposure but does not eliminate it. See [SECURITY.md](SECURITY.md) for known limitations. The authors assume no responsibility for data leakage, compliance failures, or any damages arising from use of this software.
 
+## Contributors
+
+See [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
 ## License
 
 [Apache 2.0](LICENSE)

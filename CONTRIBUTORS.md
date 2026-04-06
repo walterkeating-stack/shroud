@@ -1,0 +1,4 @@
+# Contributors
+
+- `wkeything`
+- `Codex (OpenAI)`
