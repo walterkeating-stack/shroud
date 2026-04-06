@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.16] - 2026-04-06
+
+### Fixed
+- **CI release blocker on main.** `npm test` executed before `dist/` existed on fresh checkout, causing dist-based unit tests to fail in GitHub Actions. CI now builds before tests.
+- **Compat test source mismatch on main.** `compat/Dockerfile.test` was installing `shroud-privacy@latest` from npm instead of the local branch tarball, so compat checks could miss unreleased changes. Compat tests now always use the local packed build.
+- **WhatsApp compat harness fragility.** Mock intercept patching depended on a hashed OpenClaw session filename and had weak inject-server readiness handling. Updated to dynamic session-bundle discovery plus health/retry handling.
+
+### Changed
+- **OpenClaw compatibility declaration clarified.** Formal minimum support remains `minOpenClawVersion: 2026.3.24`; release validation matrix for this version is baseline `2026.3.28` + latest-at-release (`2026.4.5`).
+- **Latest-channel behavior documented.** On OpenClaw builds where WhatsApp channel provisioning is unavailable via `channels add`, latest-focused compat runs skip WhatsApp E2E and validate Slack E2E.
+- **Plugin metadata aligned with release.** `openclaw.plugin.json` version updated to `2.2.16`.
+
 ## [2.2.12] - 2026-04-04
 
 ### Fixed
