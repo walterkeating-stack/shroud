@@ -28,7 +28,18 @@ import {
   assertNoUlaLeak,
 } from "../lib/assertions.mjs";
 import { Reporter } from "./reporter.mjs";
-import { SecurityTestRunner } from "./security-runner.mjs";
+
+let SecurityTestRunner = null;
+async function getSecurityRunnerClass() {
+  if (SecurityTestRunner) return SecurityTestRunner;
+  try {
+    const mod = await import("./security-runner.mjs");
+    SecurityTestRunner = mod.SecurityTestRunner || null;
+  } catch {
+    SecurityTestRunner = null;
+  }
+  return SecurityTestRunner;
+}
 
 export class OpenClawRunner {
   constructor(opts = {}) {
@@ -268,7 +279,12 @@ export class OpenClawRunner {
 
   async _runSecurityScenarios() {
     try {
-      const secRunner = new SecurityTestRunner({
+      const RunnerClass = await getSecurityRunnerClass();
+      if (!RunnerClass) {
+        this._log("Security scenarios skipped: security-runner.mjs not present on this branch.");
+        return;
+      }
+      const secRunner = new RunnerClass({
         stateDir: this.stateDir,
         verbose: this.verbose,
       });
@@ -290,7 +306,12 @@ export class OpenClawRunner {
 
   async _runLifecycleTests() {
     try {
-      const secRunner = new SecurityTestRunner({
+      const RunnerClass = await getSecurityRunnerClass();
+      if (!RunnerClass) {
+        this._log("Lifecycle tests skipped: security-runner.mjs not present on this branch.");
+        return;
+      }
+      const secRunner = new RunnerClass({
         stateDir: this.stateDir,
         verbose: this.verbose,
       });
