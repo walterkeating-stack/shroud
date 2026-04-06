@@ -21,7 +21,7 @@ jobs:
   trigger-e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Validate dispatch secret
         env:
           GH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
