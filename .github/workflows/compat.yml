@@ -22,6 +22,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate dispatch secret
+        env:
+          GH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "E2E_DISPATCH_TOKEN is not configured in repo secrets."
+            echo "Add a token with permission to dispatch workflows in wkeything/shroud-e2e."
+            exit 1
+          fi
       - name: Dispatch shroud-e2e run
         env:
           GH_TOKEN: ${{ secrets.E2E_DISPATCH_TOKEN }}
