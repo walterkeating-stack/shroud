@@ -47,6 +47,7 @@ fi
 
 # Pre-populate mock WhatsApp auth state so the extension thinks we're paired
 WA_AUTH="${STATE_DIR}/channels/whatsapp/auth"
+export WA_WEB_AUTH_DIR="${WA_AUTH}"
 cat > "${WA_AUTH}/creds.json" <<'WAEOF'
 {
   "noiseKey": {"private": {"type": "Buffer", "data": [0]}, "public": {"type": "Buffer", "data": [0]}},
