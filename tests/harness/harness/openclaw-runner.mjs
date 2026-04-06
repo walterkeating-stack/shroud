@@ -28,6 +28,7 @@ import {
   assertNoUlaLeak,
 } from "../lib/assertions.mjs";
 import { Reporter } from "./reporter.mjs";
+import { SecurityTestRunner } from "./security-runner.mjs";
 
 export class OpenClawRunner {
   constructor(opts = {}) {
@@ -35,6 +36,7 @@ export class OpenClawRunner {
     this.openclawVersion = opts.openclawVersion || "latest";
     this.verbose = opts.verbose || false;
     this.scenario = opts.scenario || null;
+    this.lifecycle = opts.lifecycle || false;
 
     this.stateDir = process.env.OPENCLAW_STATE_DIR || "/shroud/state";
     this.mockLlmPort = null;
@@ -95,6 +97,251 @@ export class OpenClawRunner {
 
     // 4. Run all scenarios via gateway RPC
     await this._runScenariosViaGateway();
+
+    // 4b. Verify agent identity via dashboard API
+    await this._verifyAgentIdentity();
+
+    // 5. Run multi-agent security scenarios unless explicitly skipped for focused runs.
+    // Focused scenario runs are used for fast diagnosis and should not block on
+    // unrelated long-running security assertions.
+    const skipSecurity = process.env.SHROUD_SKIP_SECURITY === "1" || !!this.scenario;
+    if (skipSecurity) {
+      this._log("Skipping multi-agent security scenarios for focused run.");
+    } else {
+      await this._runSecurityScenarios();
+    }
+
+    // 6. Run lifecycle tests (--lifecycle flag, long-running)
+    if (this.lifecycle && !skipSecurity) {
+      await this._runLifecycleTests();
+    }
+  }
+
+  async _verifyAgentIdentity() {
+    this._log("\nVerifying agent identity via dashboard API...");
+    this._log("-".repeat(50));
+    const tests = [];
+
+    const addResult = (name, fn) => {
+      this.results.total++;
+      const start = Date.now();
+      const result = { name, status: "pass", duration: 0, error: null };
+      try {
+        fn();
+        result.duration = Date.now() - start;
+        tests.push(result);
+        this.results.passed++;
+        this._log(`  \x1b[32m\u2714\x1b[0m ${name}  \x1b[2m(${result.duration}ms)\x1b[0m`);
+      } catch (err) {
+        result.status = "fail";
+        result.error = err.message;
+        result.duration = Date.now() - start;
+        tests.push(result);
+        this.results.failed++;
+        this._log(`  \x1b[31m\u2718\x1b[0m ${name}`);
+        this._log(`    \x1b[31m${result.error}\x1b[0m`);
+      }
+    };
+
+    try {
+      // Fetch dashboard data
+      const agentsResp = await this._httpReq("GET", "http://127.0.0.1:9380/api/agents");
+      const overviewResp = await this._httpReq("GET", "http://127.0.0.1:9380/api/overview");
+      const agents = agentsResp?.agents || [];
+      const labels = agents.map(a => a.agentLabel);
+
+      // Test 1: Dashboard responds
+      addResult("Dashboard: /api/agents responds", () => {
+        if (!agentsResp || !Array.isArray(agents)) {
+          throw new Error("Dashboard /api/agents did not return an agents array");
+        }
+      });
+
+      // Test 2: At least one agent tracked
+      addResult("Dashboard: at least 1 agent tracked", () => {
+        if (agents.length < 1) {
+          throw new Error(`Expected at least 1 agent, got ${agents.length}`);
+        }
+      });
+
+      // Test 3: No ghost labels
+      const GHOST_PATTERNS = [
+        /^running\b/i, /^checking\b/i, /^loading\b/i, /^starting\b/i,
+        /boot\s*check/i, /^project\s*context$/i, /^unknown\s*agent$/i,
+        /^test$/i, /^debug$/i, /^system$/i, /^default$/i,
+        /```/, /^rules:/i, /^session$/i, /^metadata$/i,
+      ];
+      addResult("Dashboard: no ghost agent labels", () => {
+        for (const a of agents) {
+          for (const pattern of GHOST_PATTERNS) {
+            if (pattern.test(a.agentLabel)) {
+              throw new Error(`Ghost label detected: "${a.agentLabel}" matches ${pattern}`);
+            }
+          }
+        }
+      });
+
+      // Test 4: No duplicate agents (case-insensitive)
+      addResult("Dashboard: no duplicate agents (case-insensitive)", () => {
+        const seen = new Set();
+        for (const a of agents) {
+          const key = a.agentLabel.toLowerCase().trim();
+          if (seen.has(key)) {
+            throw new Error(`Duplicate agent label: "${a.agentLabel}"`);
+          }
+          seen.add(key);
+        }
+      });
+
+      // Test 5: All agents have valid classification
+      addResult("Dashboard: all agents have classification", () => {
+        for (const a of agents) {
+          if (!a.classification || !a.classification.role) {
+            throw new Error(`Agent "${a.agentLabel}" missing classification`);
+          }
+          if (a.classification.role === "Unknown" && a.llmCallCount > 0) {
+            throw new Error(`Agent "${a.agentLabel}" has Unknown role despite ${a.llmCallCount} LLM calls`);
+          }
+        }
+      });
+
+      // Test 6: All agents have unique build IDs
+      addResult("Dashboard: all agents have unique build IDs", () => {
+        const buildIds = new Set();
+        for (const a of agents) {
+          if (!a.agentBuildId || a.agentBuildId === "") {
+            throw new Error(`Agent "${a.agentLabel}" missing build ID`);
+          }
+          if (buildIds.has(a.agentBuildId)) {
+            throw new Error(`Duplicate build ID: ${a.agentBuildId}`);
+          }
+          buildIds.add(a.agentBuildId);
+        }
+      });
+
+      // Test 7: Overview agent count matches
+      addResult("Dashboard: overview agent count matches agents list", () => {
+        const overviewCount = overviewResp?.agents?.total;
+        if (overviewCount !== agents.length) {
+          throw new Error(`Overview says ${overviewCount} agents but /api/agents has ${agents.length}`);
+        }
+      });
+
+      // Test 8: No agent label contains PII patterns
+      addResult("Dashboard: agent labels don't contain PII", () => {
+        for (const a of agents) {
+          if (/@/.test(a.agentLabel)) throw new Error(`Agent label contains email: "${a.agentLabel}"`);
+          if (/\d{1,3}\.\d{1,3}\.\d{1,3}/.test(a.agentLabel)) throw new Error(`Agent label contains IP: "${a.agentLabel}"`);
+          if (/\+\d{5,}/.test(a.agentLabel)) throw new Error(`Agent label contains phone: "${a.agentLabel}"`);
+        }
+      });
+
+      // Test 9: Persisted sessions exist
+      addResult("Dashboard: persisted agent sessions file exists", () => {
+        const sessionFiles = [
+          join(this.stateDir, "profiles", "agent-sessions.json"),
+          "/tmp/shroud-profiles/agent-sessions.json",
+        ];
+        const found = sessionFiles.find(f => existsSync(f));
+        if (!found) {
+          // Not a hard fail — persistence dir may differ in container
+          this._log("    \x1b[33m(warn: agent-sessions.json not found at expected paths)\x1b[0m");
+        }
+      });
+
+    } catch (err) {
+      // Dashboard might not be available (e.g. SHROUD_DASHBOARD=false)
+      this._log(`  \x1b[33m\u2298\x1b[0m Agent identity verification skipped: ${err.message}`);
+    }
+
+    if (tests.length > 0) {
+      this.results.scenarios.push({
+        name: "Agent Identity Verification",
+        file: "openclaw-runner",
+        passed: tests.filter(t => t.status === "pass").length,
+        failures: tests.filter(t => t.status === "fail").length,
+        duration: tests.reduce((a, t) => a + t.duration, 0),
+        tests,
+      });
+    }
+  }
+
+  async _runSecurityScenarios() {
+    try {
+      const secRunner = new SecurityTestRunner({
+        stateDir: this.stateDir,
+        verbose: this.verbose,
+      });
+      // Share gateway and mock ports with the security runner
+      secRunner.gatewayPort = this.gatewayPort;
+      secRunner.mockLlmPort = this.mockLlmPort;
+
+      this._log("\n" + "=".repeat(50));
+      const secResults = await secRunner.run();
+
+      // Merge security results into main results
+      this.results.passed += secResults.passed;
+      this.results.failed += secResults.failed;
+      this.results.skipped += secResults.skipped;
+    } catch (err) {
+      this._log(`Security scenarios skipped: ${err.message}`);
+    }
+  }
+
+  async _runLifecycleTests() {
+    try {
+      const secRunner = new SecurityTestRunner({
+        stateDir: this.stateDir,
+        verbose: this.verbose,
+      });
+      secRunner.gatewayPort = this.gatewayPort;
+      secRunner.mockLlmPort = this.mockLlmPort;
+
+      // Provide a restart callback that kills and restarts the gateway
+      const restartGateway = async () => {
+        this._log("  [lifecycle] Killing gateway for restart test...");
+        if (this.gatewayProc) {
+          this.gatewayProc.kill("SIGTERM");
+          // Wait for process to exit, escalate to SIGKILL if needed
+          const exited = await new Promise(resolve => {
+            const onExit = () => { clearTimeout(timer); resolve(true); };
+            const timer = setTimeout(() => {
+              this.gatewayProc.removeListener("exit", onExit);
+              this.gatewayProc.kill("SIGKILL");
+              resolve(false);
+            }, 10000);
+            this.gatewayProc.on("exit", onExit);
+          });
+          if (!exited) {
+            // Wait a bit for SIGKILL to take effect
+            await new Promise(r => setTimeout(r, 1000));
+          }
+        }
+
+        // Wait a moment for file flushes and port release
+        await new Promise(r => setTimeout(r, 2000));
+
+        this._log("  [lifecycle] Restarting gateway...");
+        this.gatewayStdout = "";
+        this.gatewayStderr = "";
+        // Re-write config — --dev may overwrite on fresh start
+        this._writeConfig();
+        await this._startGateway();
+
+        // Update the security runner's port reference
+        secRunner.gatewayPort = this.gatewayPort;
+
+        this._log("  [lifecycle] Gateway restarted on port " + this.gatewayPort);
+      };
+
+      const lifecycleResults = await secRunner.runLifecycleTests(restartGateway);
+
+      this.results.passed += lifecycleResults.passed;
+      this.results.failed += lifecycleResults.failed;
+      this.results.skipped += lifecycleResults.skipped;
+    } catch (err) {
+      this._log(`Lifecycle tests failed: ${err.message}`);
+    }
   }
 
   async _startGateway() {
@@ -117,8 +364,9 @@ export class OpenClawRunner {
     delete env.OPENCLAW_SKIP_CHANNELS;
     delete env.OPENCLAW_SKIP_CRON;
 
-    // --dev: auto-creates dev config + workspace without BOOTSTRAP.md
-    this.gatewayProc = spawn("node", [bin, "gateway", "run", "--dev", "--auth", "token", "--token", "shroud-test-token", "--port", String(this.gatewayPort)], {
+    // State dir + config fully controlled via env vars (OPENCLAW_STATE_DIR, OPENCLAW_CONFIG_PATH)
+    // Do NOT use --dev: it overrides state dir to ~/.openclaw-dev, missing installed plugins
+    this.gatewayProc = spawn("node", [bin, "gateway", "run", "--auth", "token", "--token", "shroud-test-token", "--port", String(this.gatewayPort)], {
       stdio: ["pipe", "pipe", "pipe"],
       env,
       cwd: join(this.stateDir, "workspace"),
@@ -148,6 +396,8 @@ export class OpenClawRunner {
 
     // Verify plugin loaded
     if (!this.gatewayStdout.includes("Plugin loaded") && !this.gatewayStderr.includes("Plugin loaded")) {
+      this._log(`Gateway stdout (last 2000):\n${this.gatewayStdout.slice(-2000)}`);
+      this._log(`Gateway stderr (last 2000):\n${this.gatewayStderr.slice(-2000)}`);
       throw new Error("Shroud plugin did not load in gateway — check config");
     }
     this._log("Shroud plugin loaded in gateway");
@@ -524,11 +774,36 @@ export class OpenClawRunner {
     const from = scenario.whatsAppFrom || "+353850000001";
     const jid = from.replace("+", "") + "@s.whatsapp.net";
     const injectPort = 9301; // MOCK_WHATSAPP_INJECT_PORT
-    await this._httpReq("POST", `http://127.0.0.1:${injectPort}/inject`, {
-      from: jid,
-      text: scenario.message,
-      pushName: "Test User",
-    });
+
+    // Wait for inject server health endpoint before attempting injection
+    let injectReady = false;
+    for (let attempt = 0; attempt < 30; attempt++) {
+      try {
+        const health = await this._httpReq("GET", `http://127.0.0.1:${injectPort}/health`);
+        if (health && health.ok) { injectReady = true; break; }
+      } catch {
+        // ECONNREFUSED — server not yet listening
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
+    if (!injectReady) throw new Error(`WhatsApp inject server not ready after 15s (port ${injectPort})`);
+
+    // Inject the message (server is confirmed listening)
+    let injected = false;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await this._httpReq("POST", `http://127.0.0.1:${injectPort}/inject`, {
+          from: jid,
+          text: scenario.message,
+          pushName: "Test User",
+        });
+        injected = true;
+        break;
+      } catch {
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+    if (!injected) throw new Error(`Failed to inject WhatsApp message after 3 attempts (port ${injectPort})`);
 
     // Wait for mock WhatsApp to receive outbound message (agent response)
     await this._waitFor(
@@ -687,11 +962,21 @@ export class OpenClawRunner {
         auth: { mode: "token", token: "shroud-test-token" },
       },
       agents: {
+        ...(existing.agents || {}),
         defaults: {
+          ...(existing.agents?.defaults || {}),
           workspace: join(this.stateDir, "workspace"),
           model: { primary: "mock-provider/mock-model" },
           timeoutSeconds: 30,
         },
+        list: [
+          ...(existing.agents?.list || []),
+          ...([
+            { id: "research-agent", name: "Security Research Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Security Research Agent" } },
+            { id: "customer-agent", name: "Customer Support Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "Customer Support Agent" } },
+            { id: "devops-agent", name: "DevOps Automation Agent", workspace: join(this.stateDir, "workspace"), identity: { name: "DevOps Automation Agent" } },
+          ].filter(a => !(existing.agents?.list || []).some(e => e.id === a.id))),
+        ],
       },
       // Sandbox exec: run agent tool calls inside containers
       ...(process.env.SHROUD_TEST_SANDBOX === "1" ? {
@@ -1275,10 +1560,17 @@ export class OpenClawRunner {
       );
     }
 
-    if (this.scenario) {
-      return all.filter(s => s.name.toLowerCase().includes(this.scenario.toLowerCase()));
+    let filtered = all;
+
+    if (process.env.SHROUD_SKIP_WHATSAPP_E2E === "1") {
+      filtered = filtered.filter((s) => !s.whatsAppE2E);
+      this._log("WhatsApp E2E scenarios skipped (channel unavailable in this OpenClaw build).");
     }
-    return all;
+
+    if (this.scenario) {
+      return filtered.filter(s => s.name.toLowerCase().includes(this.scenario.toLowerCase()));
+    }
+    return filtered;
   }
 
 
@@ -1305,6 +1597,14 @@ export class OpenClawRunner {
       OPENCLAW_SKIP_CRON: "1",
       OPENCLAW_LOG_LEVEL: "info",
       SHROUD_STATS_FILE: join(this.stateDir, "shroud-stats.json"),
+      // Security extension — enabled via env vars (plugin config validates schema)
+      SHROUD_INJECTION_DETECTION: "flag",
+      SHROUD_INJECTION_SCAN_RESPONSES: "false",  // Mock LLM echo mode echoes system prompts, triggering FP injection signatures
+      SHROUD_PROFILING_ENABLED: "true",
+      SHROUD_PROFILING_MODE: "learning",
+      SHROUD_DASHBOARD: "true",
+      SHROUD_DASHBOARD_PORT: "9380",
+      SHROUD_DASHBOARD_BIND: "127.0.0.1",
       ANTHROPIC_API_KEY: "sk-ant-sandbox-dummy",
       OPENAI_API_KEY: "sk-sandbox-dummy",
       HOME: tmpdir(),

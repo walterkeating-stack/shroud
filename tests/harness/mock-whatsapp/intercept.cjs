@@ -17,12 +17,33 @@ if (!MOCK_PORT) return;
 
 const fs = require('fs');
 const http = require('http');
-const path = require('path');
 const { EventEmitter } = require('events');
 
-// Find the session file that contains createWaSocket / makeWASocket
-const sessionFile = '/usr/local/lib/node_modules/openclaw/dist/session-BBv1F7vj.js';
-if (!fs.existsSync(sessionFile)) return;
+function findSessionFile() {
+  const distDir = '/usr/local/lib/node_modules/openclaw/dist';
+  if (!fs.existsSync(distDir)) return null;
+
+  const entries = fs.readdirSync(distDir)
+    .filter((name) => name.startsWith('session-') && name.endsWith('.js'))
+    .sort();
+
+  for (const name of entries) {
+    const fullPath = `${distDir}/${name}`;
+    try {
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      if (content.includes('makeWASocket(') || content.includes('createWaSocket(')) {
+        return fullPath;
+      }
+    } catch {
+      // ignore unreadable candidates
+    }
+  }
+  return null;
+}
+
+// Find the session bundle that contains createWaSocket / makeWASocket
+const sessionFile = findSessionFile();
+if (!sessionFile) return;
 
 let code = fs.readFileSync(sessionFile, 'utf-8');
 if (code.includes('MOCK_WHATSAPP_INTERCEPT')) return; // already patched

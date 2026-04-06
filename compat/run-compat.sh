@@ -15,10 +15,12 @@ OC_VERSION="${1:?Usage: run-compat.sh <openclaw-version> [--rebuild-base|--sandb
 shift
 REBUILD_BASE=""
 SANDBOX=""
+LIFECYCLE=""
 for arg in "$@"; do
   case $arg in
     --rebuild-base) REBUILD_BASE=1 ;;
     --sandbox) SANDBOX=1 ;;
+    --lifecycle) LIFECYCLE=1 ;;
   esac
 done
 
@@ -38,14 +40,21 @@ NETWORK="shroud-compat-net"
 
 cd "${REPO_ROOT}"
 
-# ── Step 1: Resolve Shroud version ──
-SHROUD_VERSION="${SHROUD_VERSION:-latest}"
-if [ "${SHROUD_VERSION}" = "latest" ]; then
-  SHROUD_VERSION=$(npm view shroud-privacy version 2>/dev/null)
-  echo "Resolved Shroud 'latest' to ${SHROUD_VERSION}"
+# ── Step 1: Pack local Shroud build ──
+echo "Packing local Shroud build..."
+npm run build --silent
+rm -f shroud-privacy-*.tgz
+npm pack --silent
+SHROUD_TGZ=$(ls shroud-privacy-*.tgz 2>/dev/null | head -1)
+if [ -z "${SHROUD_TGZ}" ]; then
+  echo "ERROR: npm pack failed — no tarball found"
+  exit 1
 fi
-echo "Shroud version: ${SHROUD_VERSION} (from npm)"
+SHROUD_VERSION=$(node -e "console.log(require('./package.json').version)")
+echo "Shroud version: ${SHROUD_VERSION} (local build)"
 [ -n "${SANDBOX}" ] && echo "Mode: SANDBOX (rootless Docker)"
+[ -n "${LIFECYCLE}" ] && echo "Mode: LIFECYCLE (long-running agent tests)"
+[ -n "${SHROUD_SCENARIO:-}" ] && echo "Mode: SCENARIO filter (${SHROUD_SCENARIO})"
 
 # ── Step 2: Build/reuse base image ──
 if [ -n "${REBUILD_BASE}" ] || \
@@ -63,7 +72,6 @@ fi
 echo "Building test image..."
 docker build \
   --build-arg "OC_VERSION=${OC_VERSION}" \
-  --build-arg "SHROUD_VERSION=${SHROUD_VERSION}" \
   -t "${TEST_TAG}" \
   -f compat/Dockerfile.test .
 
@@ -104,14 +112,42 @@ if [ -n "${SANDBOX}" ]; then
     --privileged \
     --name "shroud-compat-sandbox-${OC_VERSION}" \
     "${SANDBOX_TAG}"
+  EXIT_CODE=$?
 else
+  MEMORY_LIMIT="1g"
+  [ -n "${LIFECYCLE}" ] && MEMORY_LIMIT="4g"
+  DOCKER_ENV_ARGS=()
+  if [ -n "${LIFECYCLE}" ]; then
+    DOCKER_ENV_ARGS+=(-e SHROUD_LIFECYCLE=1)
+  fi
+  if [ -n "${SHROUD_SCENARIO:-}" ]; then
+    DOCKER_ENV_ARGS+=(-e "SHROUD_SCENARIO=${SHROUD_SCENARIO}")
+  fi
   docker run --rm \
     --network "${NETWORK}" \
-    --memory 1g \
+    --memory "${MEMORY_LIMIT}" \
     --cpus 2 \
     --name "shroud-compat-${OC_VERSION}" \
+    "${DOCKER_ENV_ARGS[@]}" \
     "${TEST_TAG}"
+  EXIT_CODE=$?
 fi
 
+# ── Step 6: Cleanup ──
+# Remove the isolated network (containers already removed by --rm).
+# Remove the test image (base image is cached for reuse).
 echo ""
-echo "OpenClaw ${OC_VERSION}: PASS"
+echo "Cleaning up..."
+docker network rm "${NETWORK}" 2>/dev/null && echo "  Removed network: ${NETWORK}"
+docker rmi "${TEST_TAG}" 2>/dev/null && echo "  Removed test image: ${TEST_TAG}"
+[ -n "${SANDBOX}" ] && docker rmi "${SANDBOX_TAG}" 2>/dev/null && echo "  Removed sandbox image: ${SANDBOX_TAG}"
+# Kill any leftover OpenClaw sandbox containers from this run
+docker ps -a --filter "name=openclaw-sbx-" --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null && echo "  Removed stale OC sandbox containers"
+echo ""
+
+if [ ${EXIT_CODE} -eq 0 ]; then
+  echo "OpenClaw ${OC_VERSION}: PASS"
+else
+  echo "OpenClaw ${OC_VERSION}: FAIL (exit code ${EXIT_CODE})"
+  exit ${EXIT_CODE}
+fi
