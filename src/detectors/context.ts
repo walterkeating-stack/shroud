@@ -11,6 +11,7 @@
 
 import { Category, DetectedEntity } from "../types.js";
 import { BaseDetector } from "./base.js";
+import { isDocExample } from "./regex.js";
 
 /**
  * Single-pass multi-string scanner using a combined regex.
@@ -38,6 +39,10 @@ function scanMultiplePatterns(
     const val = m[0];
     const key = `${pos}:${pos + val.length}`;
     if (!covered.has(key)) {
+      if (isDocExample(val, category)) {
+        covered.add(key);
+        continue;
+      }
       covered.add(key);
       results.push({
         value: val,
@@ -408,6 +413,9 @@ export class ContextDetector implements BaseDetector {
       ) {
         // Only learn values that look like identifiers (not too short, not common words)
         if (e.value.length >= 3 && !COMMON_WORDS.has(e.value.toLowerCase())) {
+          if (isDocExample(e.value, e.category)) {
+            continue;
+          }
           this._learnedEntities.set(e.value, e.category);
         }
       }

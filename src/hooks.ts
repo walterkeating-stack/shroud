@@ -227,7 +227,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // cannot deobfuscate CGNAT surrogates in outbound channel messages.
   function stripSlackLinksForHook(text: string): string {
     text = text.replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1");
-    text = text.replace(/<https?:\/\/[^|>]+\|([^>]*)>/g, "$1");
+    text = text.replace(/<(https?:\/\/[^|>]+)\|[^>]*>/g, "$1");
     text = text.replace(/<(https?:\/\/[^>]+)>/g, "$1");
     return text;
   }
@@ -274,6 +274,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // All hook closures must use the shared obfuscator, not the local parameter.
   // OpenClaw loads the plugin multiple times; only one instance has the mappings.
   const ob = () => getSharedObfuscator(obfuscator);
+  const sessionScope = (globalThis as any);
   const config = ob().config;
   const auditActive = config.auditEnabled || config.verboseLogging;
 
@@ -281,7 +282,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   // 1. before_prompt_build (async): obfuscate user prompt
   // -----------------------------------------------------------------------
-  api.on("before_prompt_build", async (event: any) => {
+  api.on("before_prompt_build", async (event: any, ctx?: any) => {
+
+    // Scope mapping and learned-entity state to the OpenClaw session key.
+    // The obfuscator instance is shared globally across plugin instances, so
+    // without this reset independent sessions can contaminate each other.
+    if (typeof ctx?.sessionKey === "string" && ctx.sessionKey) {
+      const prevSessionKey = sessionScope.__shroudLastSessionKey;
+      if (typeof prevSessionKey === "string" && prevSessionKey !== ctx.sessionKey) {
+        ob().reset();
+      }
+      sessionScope.__shroudLastSessionKey = ctx.sessionKey;
+    }
 
     // Reset tool depth at the start of each turn — tool calls from the
     // previous turn are complete, so the counter should not carry over.
@@ -967,7 +979,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // leaking real PII to the LLM.
         function stripSlackLinks(text: string): string {
           text = text.replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1");
-          text = text.replace(/<https?:\/\/[^|>]+\|([^>]*)>/g, "$1");
+          text = text.replace(/<(https?:\/\/[^|>]+)\|[^>]*>/g, "$1");
           text = text.replace(/<(https?:\/\/[^>]+)>/g, "$1");
           return text;
         }
@@ -1503,4 +1515,3 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   }
 }
-

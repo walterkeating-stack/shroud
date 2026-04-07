@@ -182,6 +182,15 @@ export function isDocExample(value: string, category: Category): boolean {
 
     case Category.HOSTNAME:
       if (DOC_HOSTNAMES.has(value) || DOC_HOSTNAMES.has(value.toUpperCase())) return true;
+      {
+        const lower = value.toLowerCase();
+        for (const d of DOC_DOMAINS) {
+          if (lower === d || lower.endsWith(`.${d}`)) return true;
+        }
+        for (const d of PUBLIC_DOMAINS) {
+          if (lower === d || lower.endsWith(`.${d}`)) return true;
+        }
+      }
       for (const pfx of DOC_HOSTNAME_PREFIXES) {
         if (value.toUpperCase().startsWith(pfx)) return true;
       }
