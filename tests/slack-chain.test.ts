@@ -220,10 +220,10 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
     expect(typeof deobfuscate).toBe("function");
 
-    const userPii = "Please format as JSON: walter@keating.at and server 10.0.1.5";
+    const userPii = "Please format as JSON: user@example.test and server 10.0.1.5";
     await handlers["before_prompt_build"]({ prompt: userPii, messages: [] });
 
-    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const fakeEmail = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
     const fakeIp = obf.obfuscate("10.0.1.5").mappingsUsed["10.0.1.5"];
 
     llmResponseText = `Here is the JSON:\n{"email": "${fakeEmail}", "server": "${fakeIp}"}`;
@@ -241,7 +241,7 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
 
     // LLM got fakes, not reals
     const llmBody = llmServer.captures[0].parsed as any;
-    expect(llmBody.messages[0].content).not.toContain("walter@keating.at");
+    expect(llmBody.messages[0].content).not.toContain("user@example.test");
     expect(llmBody.messages[0].content).not.toContain("10.0.1.5");
     expect(llmBody.messages[0].content).toContain(fakeEmail);
     expect(llmBody.messages[0].content).toContain(fakeIp);
@@ -252,7 +252,7 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
       message: { role: "assistant", content: llmJson.content[0].text },
     });
     const deobAssistant = writeResult?.message?.content || llmJson.content[0].text;
-    expect(deobAssistant).toContain("walter@keating.at");
+    expect(deobAssistant).toContain("user@example.test");
     expect(deobAssistant).toContain("10.0.1.5");
 
     // OpenClaw's global hook + Slack delivery
@@ -264,14 +264,14 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
 
     // Slack got reals
     const slackText = (slackServer.captures[0].parsed as any).text;
-    expect(slackText).toContain("walter@keating.at");
+    expect(slackText).toContain("user@example.test");
     expect(slackText).toContain("10.0.1.5");
     expect(slackText).not.toContain(fakeEmail);
     expect(slackText).not.toContain(fakeIp);
 
     // No duplicates
     const emails = slackText.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
-    expect(emails).toEqual(["walter@keating.at"]);
+    expect(emails).toEqual(["user@example.test"]);
   });
 
   test("Slack mailto markup: stripped at fetch, reals at Slack", async () => {
@@ -358,10 +358,10 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
 
     await handlers["before_prompt_build"]({
-      prompt: "contact walter@keating.at please",
+      prompt: "contact user@example.test please",
       messages: [],
     });
-    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const fakeEmail = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
 
     // LLM truncates the fake (takes only the local part)
     const truncated = fakeEmail.split("@")[0];
@@ -372,7 +372,7 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "claude-3-5-sonnet-20241022", max_tokens: 1024,
-        messages: [{ role: "user", content: "contact walter@keating.at" }],
+        messages: [{ role: "user", content: "contact user@example.test" }],
       }),
     });
 
@@ -405,21 +405,21 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
 
     await handlers["before_prompt_build"]({
-      prompt: "email walter@keating.at about 10.0.1.5",
+      prompt: "email user@example.test about 10.0.1.5",
       messages: [],
     });
-    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const fakeEmail = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
     const fakeIp = obf.obfuscate("10.0.1.5").mappingsUsed["10.0.1.5"];
 
     // LLM echoes BOTH fake and real (hallucination / confusion)
-    llmResponseText = `Contact ${fakeEmail} (that's walter@keating.at) at ${fakeIp}`;
+    llmResponseText = `Contact ${fakeEmail} (that's user@example.test) at ${fakeIp}`;
 
     const resp = await fetch(`http://127.0.0.1:${llmServer.port}/v1/messages`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "claude-3-5-sonnet-20241022", max_tokens: 1024,
-        messages: [{ role: "user", content: "email walter@keating.at about 10.0.1.5" }],
+        messages: [{ role: "user", content: "email user@example.test about 10.0.1.5" }],
       }),
     });
 
@@ -433,7 +433,7 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     expect(channelText).not.toContain(fakeEmail);
     expect(channelText).not.toContain(fakeIp);
     // Real values present (possibly duplicated, which is fine — LLM put them there)
-    expect(channelText).toContain("walter@keating.at");
+    expect(channelText).toContain("user@example.test");
     expect(channelText).toContain("10.0.1.5");
   });
 
@@ -557,10 +557,10 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
 
     await handlers["before_prompt_build"]({
-      prompt: "format walter@keating.at as JSON",
+      prompt: "format user@example.test as JSON",
       messages: [],
     });
-    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const fakeEmail = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
 
     // LLM returns JSON with the fake embedded
     llmResponseText = `{"contacts": [{"name": "User", "email": "${fakeEmail}"}]}`;
@@ -570,7 +570,7 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "claude-3-5-sonnet-20241022", max_tokens: 1024,
-        messages: [{ role: "user", content: "format walter@keating.at as JSON" }],
+        messages: [{ role: "user", content: "format user@example.test as JSON" }],
       }),
     });
     const json = await resp.json() as any;
@@ -581,7 +581,7 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
 
     // Verify JSON is still valid after deobfuscation
     const parsed = JSON.parse(channelText);
-    expect(parsed.contacts[0].email).toBe("walter@keating.at");
+    expect(parsed.contacts[0].email).toBe("user@example.test");
     expect(channelText).not.toContain(fakeEmail);
   });
 
@@ -633,10 +633,10 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
   test("echo back: single email in, single email out — no duplication or garbling", async () => {
     const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
 
-    const userInput = "echo this back to me please: walter@keating.at";
+    const userInput = "echo this back to me please: user@example.test";
     await handlers["before_prompt_build"]({ prompt: userInput, messages: [] });
 
-    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const fakeEmail = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
     llmResponseText = fakeEmail;
 
     const resp = await fetch(`http://127.0.0.1:${llmServer.port}/v1/messages`, {
@@ -650,7 +650,7 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
 
     // Verify LLM got fake, not real
     const llmBody = llmServer.captures[0].parsed as any;
-    expect(llmBody.messages[0].content).not.toContain("walter@keating.at");
+    expect(llmBody.messages[0].content).not.toContain("user@example.test");
     expect(llmBody.messages[0].content).toContain(fakeEmail);
 
     // Simulate streaming: feed text_delta chunks through the stream deob hook
@@ -687,18 +687,18 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     const slackText = (slackServer.captures[0].parsed as any).text;
 
     // Must be exactly the real email — no duplication, no garbling
-    expect(slackText).toBe("walter@keating.at");
+    expect(slackText).toBe("user@example.test");
     expect(slackText).not.toContain(fakeEmail);
 
-    // No concatenated emails (the original bug: "agentr@keating.atagent69@zenith.at")
+    // No concatenated emails (the original bug: "agentr@example.testagent69@zenith.test")
     const emails = slackText.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
     expect(emails).toHaveLength(1);
-    expect(emails[0]).toBe("walter@keating.at");
+    expect(emails[0]).toBe("user@example.test");
 
     // The done event deobfuscates content blocks (streaming delivery uses these)
     const doneMsg = endEvt?.message;
     if (doneMsg?.content?.[0]?.text) {
-      expect(doneMsg.content[0].text).toBe("walter@keating.at");
+      expect(doneMsg.content[0].text).toBe("user@example.test");
     }
   });
 
@@ -738,10 +738,10 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
   test("WhatsApp echo: single email round-trip without garbling", async () => {
     const { obf, handlers, deobfuscate } = freshInstall(savedFetch);
 
-    const userInput = "echo this back to me please: walter@keating.at";
+    const userInput = "echo this back to me please: user@example.test";
     await handlers["before_prompt_build"]({ prompt: userInput, messages: [] });
 
-    const fakeEmail = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const fakeEmail = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
     llmResponseText = fakeEmail;
 
     const resp = await fetch(`http://127.0.0.1:${llmServer.port}/v1/messages`, {
@@ -779,9 +779,9 @@ describe("Slack HTTP chain — real servers, real fetch intercept", () => {
     const finalText = deobfuscate(channelContent);
 
     // Must be exactly the real email
-    expect(finalText).toBe("walter@keating.at");
+    expect(finalText).toBe("user@example.test");
     const emails = finalText.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
     expect(emails).toHaveLength(1);
-    expect(emails[0]).toBe("walter@keating.at");
+    expect(emails[0]).toBe("user@example.test");
   });
 });

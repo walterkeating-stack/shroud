@@ -955,14 +955,14 @@ describe("hooks - Slack E2E simulation", () => {
     registerHooks(api, obf);
 
     // Simulate Slack-formatted user message with <mailto:> markup
-    const slackMessage = 'fomat as json please: <mailto:walter@keating.at|walter@keating.at>';
+    const slackMessage = 'fomat as json please: <mailto:user@example.test|user@example.test>';
 
     // Obfuscate via before_prompt_build
     const result = obf.obfuscate(slackMessage);
     expect(result.entities.length).toBeGreaterThan(0);
 
     // The obfuscated text should not contain the real email
-    expect(result.obfuscated).not.toContain("walter@keating.at");
+    expect(result.obfuscated).not.toContain("user@example.test");
   });
 
   test("fetch intercept re-obfuscates assistant message with Slack content blocks", async () => {
@@ -971,17 +971,17 @@ describe("hooks - Slack E2E simulation", () => {
     registerHooks(api, obf);
 
     // Turn 1: obfuscate email
-    const r1 = obf.obfuscate("walter@keating.at");
-    const fake = r1.mappingsUsed["walter@keating.at"];
+    const r1 = obf.obfuscate("user@example.test");
+    const fake = r1.mappingsUsed["user@example.test"];
 
     // Simulate: assistant responded with fake, before_message_write deobfuscated
     // Now transcript has real email in assistant content block (Anthropic format)
-    const assistantBlock = { type: "text", text: `{"email": "walter@keating.at"}` };
+    const assistantBlock = { type: "text", text: `{"email": "user@example.test"}` };
 
     // Re-obfuscate the assistant block text (as fetch intercept would)
     const r2 = obf.obfuscate(assistantBlock.text);
     expect(r2.entities.length).toBe(1);
-    expect(r2.obfuscated).not.toContain("walter@keating.at");
+    expect(r2.obfuscated).not.toContain("user@example.test");
     expect(r2.obfuscated).toContain(fake); // same deterministic fake
   });
 
@@ -991,14 +991,14 @@ describe("hooks - Slack E2E simulation", () => {
     registerHooks(api, obf);
 
     // Obfuscate to create mapping
-    const r = obf.obfuscate("walter@keating.at");
-    const fake = r.mappingsUsed["walter@keating.at"];
+    const r = obf.obfuscate("user@example.test");
+    const fake = r.mappingsUsed["user@example.test"];
 
     // Simulate message_sending with fake in content (as 2026.3.24 deliverOutboundPayloads does)
     const result = await handlers["message_sending"]({ content: `{"email": "${fake}"}` });
 
     // Should deobfuscate the fake back to real
-    expect(result?.content || `{"email": "${fake}"}`).toContain("walter@keating.at");
+    expect(result?.content || `{"email": "${fake}"}`).toContain("user@example.test");
   });
 
   test("full Slack flow: obfuscate→LLM→deobfuscate→channel — single output, no fakes", async () => {
@@ -1007,15 +1007,15 @@ describe("hooks - Slack E2E simulation", () => {
     registerHooks(api, obf);
 
     // Step 1: User sends message via Slack (with mailto markup)
-    const slackInput = 'format as json: <mailto:walter@keating.at|walter@keating.at>';
+    const slackInput = 'format as json: <mailto:user@example.test|user@example.test>';
 
     // Step 2: before_prompt_build obfuscates
     const promptResult = await handlers["before_prompt_build"]({ prompt: slackInput });
     const obfuscatedPrompt = promptResult?.systemPrompt || slackInput;
-    expect(obfuscatedPrompt).not.toContain("walter@keating.at");
+    expect(obfuscatedPrompt).not.toContain("user@example.test");
 
     // Step 3: LLM receives obfuscated prompt, responds with the fake
-    const fake = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const fake = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
     const llmResponse = `{"email": "${fake}"}`;
 
     // Step 4: before_message_write deobfuscates assistant response
@@ -1023,19 +1023,19 @@ describe("hooks - Slack E2E simulation", () => {
       message: { role: "assistant", content: llmResponse },
     });
     const deobResponse = writeResult?.message?.content || llmResponse;
-    expect(deobResponse).toContain("walter@keating.at");
+    expect(deobResponse).toContain("user@example.test");
     expect(deobResponse).not.toContain(fake);
 
     // Step 5: message_sending fires for channel delivery (2026.3.24 path)
     const sendResult = await handlers["message_sending"]({ content: deobResponse });
     // Content is already deobfuscated — message_sending is a no-op
     const finalContent = sendResult?.content || deobResponse;
-    expect(finalContent).toContain("walter@keating.at");
+    expect(finalContent).toContain("user@example.test");
     expect(finalContent).not.toContain(fake);
 
     // Step 6: Verify only ONE output with real email, no fakes anywhere
     const outputEmails = finalContent.match(/[\w.-]+@[\w.-]+\.\w{2,}/g) || [];
-    expect(outputEmails).toEqual(["walter@keating.at"]);
+    expect(outputEmails).toEqual(["user@example.test"]);
   });
 
   test("multi-turn: second turn fetch intercept prevents PII leak from assistant history", async () => {
@@ -1044,8 +1044,8 @@ describe("hooks - Slack E2E simulation", () => {
     registerHooks(api, obf);
 
     // Turn 1
-    const t1Result = await handlers["before_prompt_build"]({ prompt: "format: walter@keating.at" });
-    const fake = obf.obfuscate("walter@keating.at").mappingsUsed["walter@keating.at"];
+    const t1Result = await handlers["before_prompt_build"]({ prompt: "format: user@example.test" });
+    const fake = obf.obfuscate("user@example.test").mappingsUsed["user@example.test"];
 
     // LLM responds with fake → deobfuscated → stored with real email
     const t1LlmResponse = `{"email": "${fake}"}`;
@@ -1057,7 +1057,7 @@ describe("hooks - Slack E2E simulation", () => {
     // Simulate what the fetch intercept does: re-obfuscate ALL messages
     const turn2Messages = [
       { role: "user", content: [{ type: "text", text: t1Result?.systemPrompt || "" }] },
-      { role: "assistant", content: [{ type: "text", text: `{"email": "walter@keating.at"}` }] },
+      { role: "assistant", content: [{ type: "text", text: `{"email": "user@example.test"}` }] },
       { role: "user", content: [{ type: "text", text: "now format: ops@internal.net" }] },
     ];
 
@@ -1075,7 +1075,7 @@ describe("hooks - Slack E2E simulation", () => {
 
     // The assistant message must NOT contain real PII after re-obfuscation
     const assistantText = (turn2Messages[1].content as any[])[0].text;
-    expect(assistantText).not.toContain("walter@keating.at");
+    expect(assistantText).not.toContain("user@example.test");
     expect(assistantText).toContain(fake); // same deterministic fake
   });
 });
