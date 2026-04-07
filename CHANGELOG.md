@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.17] - 2026-04-07
+
+### Fixed
+- **Passthrough state corruption across long-running sessions.** Public URLs, workspace paths, Slack URL markup, and long mixed-content prompts could be re-obfuscated after context learning. Passthrough state is now preserved consistently across runtime flows.
+
+### Changed
+- **Release metadata aligned with `2.2.17`.** Public security guidance was tightened, stale fixture data was scrubbed from tests, `CLAUDE.md` was removed from the public repo, the legacy Docker E2E npm script was removed, and `openclaw.plugin.json` now matches the published package version.
+
 ## [2.2.16] - 2026-04-06
 
 ### Fixed
