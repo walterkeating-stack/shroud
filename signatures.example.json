@@ -2,7 +2,7 @@
   "version": "0.1.0",
   "updated": "2026-03-30T12:00:00Z",
   "description": "Shroud external signature feed. Place at a URL or local path. Polled by SHROUD_SIGNATURES_URL or SHROUD_SIGNATURES_FILE.",
-  "schema": "https://github.com/wkeything/shroud/blob/main/docs/signatures-schema.md",
+  "schema": "https://github.com/wkeything/shroud-agent-firewall/blob/feature/transformer/docs/signatures-schema.md",
 
   "injectionSignatures": [
     {

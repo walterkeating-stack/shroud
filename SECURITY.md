@@ -21,7 +21,7 @@ Shroud is a privacy obfuscation plugin. Its security properties are central to i
 
 If you discover a security issue such as raw values leaking into logs, bypass of obfuscation, or mapping reversal without the key, report it privately through GitHub Security Advisories:
 
-- Open a [GitHub Security Advisory](https://github.com/wkeything/shroud/security/advisories/new)
+- Open a [GitHub Security Advisory](https://github.com/wkeything/shroud-agent-firewall/security/advisories/new)
 
 Include:
 

@@ -148,7 +148,7 @@ Other methods: `reset`, `stats`, `health`, `configure`, `shutdown`.
 ### From source (development)
 
 ```bash
-git clone https://github.com/wkeything/shroud.git
+git clone https://github.com/wkeything/shroud-agent-firewall.git
 cd shroud
 npm install && npm run build
 openclaw plugins install --path .
