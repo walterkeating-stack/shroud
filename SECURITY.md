@@ -19,24 +19,25 @@ Shroud is a privacy obfuscation plugin. Its security properties are central to i
 
 ## Reporting vulnerabilities
 
-If you discover a security issue (e.g., raw values leaking into logs, bypass of obfuscation, or mapping reversal without the key), please report it privately:
+If you discover a security issue such as raw values leaking into logs, bypass of obfuscation, or mapping reversal without the key, report it privately through GitHub Security Advisories:
 
 - Open a [GitHub Security Advisory](https://github.com/wkeything/shroud/security/advisories/new)
 
+Include:
+
+- affected Shroud version
+- how to reproduce the issue
+- whether the issue leaks real values to logs, prompts, tool calls, or responses
+
 Please do **not** open a public issue for security vulnerabilities.
-
-## Supported versions
-
-| Version | Supported |
-|---------|-----------|
-| 2.x     | Yes       |
-| < 2.0   | No        |
 
 ## Configuration hardening
 
 For production use:
 
 1. **Set a strong `secretKey`** (32+ random bytes hex). Do not rely on auto-generation if you need cross-session consistency.
-2. **Set `persistentSalt`** if you need the same fake values across restarts.
-3. **Enable `auditEnabled`** to verify Shroud is active.
-4. **Leave `auditMaxFakesSample: 0`** unless you need to verify fake quality. Fake samples are safe (they are synthetic values, not real data), but minimizing log surface is good practice.
+2. **Prefer environment variables for key material.** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override config-file values.
+3. **Set `persistentSalt`** if you need the same fake values across restarts.
+4. **Enable `auditEnabled`** to verify Shroud is active. `verboseLogging` is an alias, but `auditEnabled` is clearer.
+5. **Rotate the key if exposure is suspected.** If `secretKey` may have leaked, replace it and treat old mappings as compromised.
+6. **Leave `auditMaxFakesSample: 0`** unless you need to verify fake quality. Fake samples are synthetic, but minimizing log surface is still preferable.

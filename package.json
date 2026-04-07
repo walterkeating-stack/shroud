@@ -58,10 +58,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wkeything/shroud.git"
+    "url": "git+https://github.com/wkeything/shroud-agent-firewall.git"
   },
-  "homepage": "https://github.com/wkeything/shroud#readme",
+  "homepage": "https://github.com/wkeything/shroud-agent-firewall#readme",
   "bugs": {
-    "url": "https://github.com/wkeything/shroud/issues"
+    "url": "https://github.com/wkeything/shroud-agent-firewall/issues"
   }
 }
