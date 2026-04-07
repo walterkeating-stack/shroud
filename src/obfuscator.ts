@@ -117,8 +117,8 @@ function compressIPv6(addr: string): string {
 function stripSlackLinks(text: string): string {
   // <mailto:X|DISPLAY> → DISPLAY  (email links)
   text = text.replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1");
-  // <URL|DISPLAY> → DISPLAY       (URL links with display text)
-  text = text.replace(/<https?:\/\/[^|>]+\|([^>]*)>/g, "$1");
+  // <URL|DISPLAY> → URL           (preserve real URL for passthrough checks)
+  text = text.replace(/<(https?:\/\/[^|>]+)\|[^>]*>/g, "$1");
   // <URL> → URL                    (bare URL links, no display text)
   text = text.replace(/<(https?:\/\/[^>]+)>/g, "$1");
   return text;

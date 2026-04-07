@@ -158,6 +158,8 @@ export class SecurityEventBus {
   /** Clear all events. Used by test harness to isolate scenarios. */
   clearEvents(): void {
     this._events.length = 0;
+    this._dedupWindow.clear();
+    this._contentDedup.clear();
   }
 
   /**
