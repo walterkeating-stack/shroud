@@ -410,7 +410,7 @@ npm install
 npm run build               # compile TypeScript
 npm run lint                # type-check without emitting
 npm test                    # unit + harness (1,229 tests, no Docker)
-npm run test:docker         # Docker E2E — real OpenClaw, all channels (192 tests)
+npm run test:docker         # Docker E2E via external shroud-e2e harness
 npm run test:all            # everything (1,421 tests)
 ```
 
@@ -420,22 +420,16 @@ npm run test:all            # everything (1,421 tests)
 |-------|---------|-------|---------------|
 | Unit | `npm run test:unit` | 870 | Obfuscator, detectors, generators, store, config |
 | APP Harness | `npm run test:integration` | 359 | 48 scenario files via mock LLM, no OpenClaw |
-| Docker E2E | `npm run test:docker` | 192 | Real OpenClaw gateway, Slack/WhatsApp/Cron/TUI channels, 153 regression scenarios |
-| Sandbox E2E | `run-compat.sh <ver> --sandbox` | +8 | Docker-in-Docker, sandboxed agent exec, tool call deobfuscation |
+| Docker E2E | `npm run test:docker` | External | Real OpenClaw gateway via `shroud-e2e` |
 
-Docker E2E runs inside an isolated container (`--internal` network, no external routing). Both OpenClaw and Shroud are installed from npm — the same path real users take. A single gateway process handles all tests via WebSocket RPC. Channel tests use mock servers with real SDK code paths (Slack via Bolt HTTP, WhatsApp via Baileys intercept).
+Docker E2E is owned by the external `shroud-e2e` repo. `npm run test:docker` builds and packs the local checkout, then hands the tarball to that harness.
 
 ### OpenClaw compatibility matrix
 
 ```bash
-bash compat/run-compat.sh latest           # test against latest OpenClaw
-bash compat/run-compat.sh latest --sandbox # include sandboxed agent exec tests
-bash compat/run-matrix.sh                  # interactive: current or current + last 3
-bash compat/run-matrix.sh --latest 3       # latest 3 versions
-bash compat/run-matrix.sh --parallel       # parallel execution
+npm run test:docker
+SHROUD_E2E_PATH=/path/to/shroud-e2e bash compat/run-e2e.sh latest
 ```
-
-Supported versions are tracked in `compat/versions.json`. CI checks for new OpenClaw releases daily.
 
 ---
 

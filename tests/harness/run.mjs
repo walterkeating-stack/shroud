@@ -4,7 +4,6 @@
  *
  * Usage:
  *   node run.mjs                          # Run all APP scenarios (359 tests)
- *   node run.mjs --openclaw               # OpenClaw E2E tests (Docker only — use compat/run-compat.sh)
  *   node run.mjs --scenario basic-pii     # Filter by scenario name
  *   node run.mjs --verbose                # Detailed output
  *   node run.mjs --report reports/r.json  # Save JSON report
@@ -24,25 +23,13 @@ function getArg(flag) {
 const verbose = args.includes("--verbose") || args.includes("-v");
 const shroudPath = getArg("--shroud-path") || resolve(import.meta.dirname, "../..");
 const reportPath = getArg("--report");
-const useOpenClaw = args.includes("--openclaw");
-const lifecycle = args.includes("--lifecycle");
 
-// OpenClaw E2E tests — runs inside Docker container only
-if (useOpenClaw) {
-  const { OpenClawRunner } = await import("./harness/openclaw-runner.mjs");
-  const runner = new OpenClawRunner({
-    shroudPath,
-    verbose,
-    scenario: getArg("--scenario"),
-    lifecycle,
-  });
-  const results = await runner.run();
-
-  if (reportPath) {
-    Reporter.json(results, reportPath);
-  }
-
-  process.exit(results.failed > 0 ? 1 : 0);
+if (args.includes("--openclaw") || args.includes("--lifecycle")) {
+  console.error(
+    "OpenClaw Docker E2E was extracted from this repo. " +
+    "Use `npm run test:docker` or `compat/run-e2e.sh` with shroud-e2e instead.",
+  );
+  process.exit(2);
 }
 
 // Default: APP integration tests (all 359 scenarios)

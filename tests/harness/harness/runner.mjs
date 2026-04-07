@@ -2,8 +2,8 @@
 /**
  * Shroud Test Runner — unified integration test runner.
  *
- * Orchestrates: mock LLM + APP engine + all scenario JSON files.
- * No OpenClaw, no sandboxes, no network namespaces. Just Shroud.
+ * Orchestrates: mock LLM + APP engine + shared scenario JSON files.
+ * Docker/OpenClaw E2E now lives in the external shroud-e2e repo.
  */
 
 import { spawn } from "node:child_process";
@@ -176,7 +176,7 @@ export class Runner {
 
   #loadScenarioFiles() {
     const scenarioDir = path.resolve(__dirname, "scenarios");
-    // Skip docker-* scenario files — those run only in Docker E2E via openclaw-runner
+    // Skip docker-* scenario files — Docker/OpenClaw E2E lives in shroud-e2e.
     let files = fs.readdirSync(scenarioDir).filter((f) => f.endsWith(".json") && !f.startsWith("docker-"));
 
     if (this.#opts.scenario) {

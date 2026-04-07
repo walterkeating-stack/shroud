@@ -9,7 +9,7 @@ Shroud has a three-layer test architecture plus an opt-in sandbox mode. Each lay
 | **Unit** (Vitest) | `npm run test:unit` | 870 | No | ~2s |
 | **Integration** (APP harness) | `npm run test:integration` | 359 | No | ~5s |
 | **Docker E2E** (OpenClaw gateway) | `npm run test:docker` | 192 | Yes | ~10-15 min |
-| **Sandbox E2E** (DinD) | `run-compat.sh <ver> --sandbox` | 200 | Yes (privileged) | ~15-20 min |
+| **Sandbox E2E** (DinD) | `SHROUD_E2E_PATH=/path/to/shroud-e2e bash compat/run-e2e.sh <ver> --sandbox` | 200 | Yes (privileged) | ~15-20 min |
 
 Combined commands:
 
@@ -215,47 +215,28 @@ Methods: `obfuscate`, `deobfuscate`, `reset`, `shutdown`.
 
 ## Layer 3: Docker E2E (OpenClaw Gateway)
 
-**Location:** `compat/` (scripts, Dockerfiles) + `tests/harness/harness/scenarios/docker-e2e-regression.json` (153 scenarios) + `tests/harness/harness/openclaw-runner.mjs` (runner)
+**Location:** external `shroud-e2e` repo. This repo keeps only the APP harness and the thin `compat/run-e2e.sh` wrapper.
 
-This layer runs Shroud inside a real OpenClaw gateway with all channels enabled. It's the only layer that tests the fetch intercept, SSE deobfuscation, and channel delivery end-to-end. Both OpenClaw and Shroud are installed from npm — the same path real users take.
+This layer runs Shroud inside a real OpenClaw gateway with all channels enabled. It now lives in `shroud-e2e`, which is the single source of truth for Docker/OpenClaw E2E.
 
 ### Architecture (standard mode)
 
 ```
-run-compat.sh
-  ├─ Resolve Shroud + OpenClaw versions from npm
-  ├─ docker build Dockerfile.base      (Node 22 + OpenClaw, cached per version)
-  ├─ docker build Dockerfile.test      (Shroud from npm + harness + entrypoint)
-  ├─ docker network create --internal  (no external routing)
-  └─ docker run                        (isolated container, 1GB, 2 CPUs)
-       └─ entrypoint.sh
-            ├─ /etc/hosts redirects    (api.slack.com → 127.0.0.1, etc.)
-            ├─ openclaw plugins install (from global npm install)
-            ├─ openclaw channels add --channel whatsapp
-            ├─ WhatsApp mock auth state
-            └─ node run.mjs --openclaw --verbose
-                 └─ openclaw-runner.mjs
-                      ├─ Mock LLM (multi-provider, echo mode)
-                      ├─ Mock Slack server
-                      ├─ Mock Slack HTTPS proxy (port 443)
-                      ├─ Mock WhatsApp server
-                      └─ ONE OpenClaw gateway process
-                           → All 192 tests run through this single gateway
+compat/run-e2e.sh
+  ├─ Resolve the external shroud-e2e checkout
+  ├─ Pack the current Shroud workspace as a tarball
+  └─ Delegate to shroud-e2e/compat/run-compat.sh
+       ├─ Build the Docker/OpenClaw test environment
+       ├─ Start mock channel services and a real OpenClaw gateway
+       └─ Run the full gateway scenario set
 ```
 
 ### Architecture (sandbox mode — `--sandbox`)
 
 ```
-run-compat.sh --sandbox
-  ├─ ... same build steps ...
-  ├─ docker build Dockerfile.sandbox   (adds Docker CE to test image)
-  └─ docker run --privileged           (2GB, 2 CPUs)
-       └─ entrypoint-sandbox.sh
-            ├─ Start Docker daemon (dockerd, vfs storage)
-            ├─ Wait for daemon ready
-            └─ Delegate to standard entrypoint.sh
-                 └─ Gateway runs with tools.exec.host: "sandbox"
-                      → 192 standard + 8 sandbox-specific = 200 tests
+compat/run-e2e.sh --sandbox
+  └─ Delegate to shroud-e2e, which enables the OpenClaw sandbox container path
+       → 192 standard + 8 sandbox-specific gateway tests
 ```
 
 Sandbox mode tests Shroud with OpenClaw's containerized agent exec (`exec.host: "sandbox"`). Agent tool calls execute inside inner Docker containers. Shroud's fetch intercept and `before_tool_call` deobfuscation still run in the gateway process — the test validates PII never leaks through the sandbox boundary.
@@ -279,88 +260,17 @@ Sandbox mode tests Shroud with OpenClaw's containerized agent exec (`exec.host: 
 # Single version (latest)
 npm run test:docker
 
-# Specific version
-bash compat/run-compat.sh 2026.3.28
-
-# With sandbox exec testing
-bash compat/run-compat.sh 2026.3.28 --sandbox
-
-# Force rebuild base image
-bash compat/run-compat.sh 2026.3.28 --rebuild-base
-
-# Version matrix (interactive: current or current + last 3)
-bash compat/run-matrix.sh
-
-# Matrix with sandbox
-bash compat/run-matrix.sh --sandbox
-
-# Latest N versions in parallel
-bash compat/run-matrix.sh --latest 3 --parallel
+# Direct wrapper invocation
+SHROUD_E2E_PATH=/path/to/shroud-e2e bash compat/run-e2e.sh latest
 ```
 
-### Docker images
+### Ownership
 
-**`Dockerfile.base`** (cached per OpenClaw version):
-- `node:22-slim` base
-- Installs `python3` (OpenClaw plugin hooks need it)
-- `npm install -g openclaw@${OC_VERSION}`
-- Creates `/shroud/state/` directories
-- Tag: `shroud-compat-base:oc-${OC_VERSION}`
+The Docker images, entrypoints, mock channel servers, OpenClaw gateway runner, sandbox plumbing, and OpenClaw version matrix now live in `shroud-e2e`, not in this repository. Shroud only provides:
 
-**`Dockerfile.test`** (rebuilt per Shroud version):
-- Inherits from base
-- `npm install -g shroud-privacy@${SHROUD_VERSION}` (from npm, same as real users)
-- Copies `tests/harness/` (scenarios + runners + mocks)
-- Copies `compat/entrypoint.sh`
-- Tag: `shroud-compat:oc-${OC_VERSION}`
-
-**`Dockerfile.sandbox`** (built only with `--sandbox`):
-- Inherits from test image
-- Installs Docker CE
-- Copies `compat/entrypoint-sandbox.sh`
-- Sets `SHROUD_TEST_SANDBOX=1`
-- Tag: `shroud-compat-sandbox:oc-${OC_VERSION}`
-
-### Image caching and auto-prune
-
-Base images are cached locally per OC version. The matrix script (`run-matrix.sh`) auto-prunes after each run, keeping only the **3 most recent** base and test images.
-
-### Container startup (entrypoint.sh)
-
-1. Add `/etc/hosts` entries: `127.0.0.1 slack.com api.slack.com web.whatsapp.com`
-2. Create state directories
-3. `openclaw plugins install` (from global npm install path)
-4. `openclaw channels add --channel whatsapp`
-5. Write mock WhatsApp auth state (`creds.json` with pre-paired device)
-6. Run `node run.mjs --openclaw --verbose`
-
-### Container startup — sandbox (entrypoint-sandbox.sh)
-
-1. Start `dockerd` with vfs storage driver (no overlayfs needed in nested containers)
-2. Wait for Docker daemon ready (max 30s)
-3. Delegate to standard `entrypoint.sh`
-
-### OpenClaw runner (openclaw-runner.mjs)
-
-Starts a **single gateway process** and runs all tests through it.
-
-**Startup sequence:**
-1. Create state directories
-2. Start mock LLM (multi-provider, echo mode), mock Slack, mock Slack on port 443, mock WhatsApp
-3. Write OpenClaw config with mock server ports
-4. If sandbox mode: add `tools.exec.host: "sandbox"` to config
-5. Start gateway with `--dev --auth token --token shroud-test-token`
-6. Wait for "Plugin loaded" and "http mode listening" in gateway output
-7. Run all scenarios via gateway RPC calls
-
-**Gateway environment:**
-```bash
-NODE_OPTIONS="--require slack-intercept.cjs --require wa-intercept.cjs"
-MOCK_SLACK_URL=http://127.0.0.1:${port}/api/
-MOCK_WHATSAPP_PORT=${port}
-MOCK_LLM_ECHO=1                    # Echo mode for deob verification
-NODE_TLS_REJECT_UNAUTHORIZED=0     # Self-signed certs for mock HTTPS
-```
+- `compat/run-e2e.sh` as a thin wrapper
+- optional branch-specific scenario files in `e2e-scenarios/`
+- the package tarball under test
 
 ### Test scenario categories
 
@@ -424,7 +334,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0     # Self-signed certs for mock HTTPS
 
 ### Mock servers
 
-**Mock Slack** (`tests/harness/mock-slack/server.mjs`):
+**Mock Slack**: moved to `shroud-e2e`.
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -437,11 +347,11 @@ NODE_TLS_REJECT_UNAUTHORIZED=0     # Self-signed certs for mock HTTPS
 | `GET /messages` | Retrieve captured messages |
 | `DELETE /messages` | Clear message log |
 
-**Slack SDK intercept** (`tests/harness/mock-slack/intercept.cjs`): A `--require` preload script that patches `@slack/web-api` WebClient to replace the default Slack API URL with `MOCK_SLACK_URL`.
+**Slack SDK intercept**: moved to `shroud-e2e`.
 
-**Slack HTTPS proxy** (`tests/harness/mock-slack/https-proxy.mjs`): Handles the Slack SDK's HTTPS fallback path. Some SDK code bypasses the URL rewrite and connects directly to `slack.com:443`.
+**Slack HTTPS proxy**: moved to `shroud-e2e`.
 
-**Mock WhatsApp** (`tests/harness/mock-whatsapp/server.mjs`):
+**Mock WhatsApp**: moved to `shroud-e2e`.
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -450,7 +360,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0     # Self-signed certs for mock HTTPS
 | `GET /messages` | Retrieve captured outbound messages |
 | `DELETE /messages` | Clear messages |
 
-**WhatsApp intercept** (`tests/harness/mock-whatsapp/intercept.cjs`): Patches the Baileys `makeWASocket` module. Intercepts `socket.ev.on("messages.upsert")` and `sendMessage()`. Registers `globalThis.__mockWhatsAppInject()` for message injection.
+**WhatsApp intercept**: moved to `shroud-e2e`.
 
 ---
 
@@ -458,19 +368,7 @@ NODE_TLS_REJECT_UNAUTHORIZED=0     # Self-signed certs for mock HTTPS
 
 ### Supported versions
 
-**File:** `compat/versions.json`
-
-```json
-{
-  "minimum": "2026.3.22",
-  "versions": [
-    { "version": "2026.3.22", "status": "supported", "shroudMinVersion": "2.0.0" },
-    { "version": "2026.3.23", "status": "retired",   "shroudMinVersion": "2.1.0" },
-    { "version": "2026.3.24", "status": "supported", "shroudMinVersion": "2.2.0" },
-    { "version": "2026.3.28", "status": "current",   "shroudMinVersion": "2.2.0" }
-  ]
-}
-```
+**Version registry:** moved to `shroud-e2e`. Check that repo for the current supported OpenClaw matrix and minimum compatible version.
 
 ### Version notes
 
@@ -490,7 +388,7 @@ Key features relevant to Shroud:
 - **WhatsApp echo loop fix** — self-chat DM mode no longer re-processes bot replies.
 - **Plugin SDK `moduleUrl` fix** — plugins outside openclaw dir resolve imports correctly.
 
-`run-matrix.sh` reads `versions.json` and tests each non-retired version. The `--latest N` flag restricts to the most recent N versions.
+The OpenClaw matrix is now owned by `shroud-e2e`.
 
 ---
 
@@ -500,13 +398,7 @@ Key features relevant to Shroud:
 - Every push/PR: `lint → test → build`
 - On `v*` tags: auto-publish to npm with Sigstore provenance
 
-**`.github/workflows/compat.yml`:**
-- Daily cron: polls npm for new OpenClaw releases, runs matrix
-- Push to main (src/tests/compat changes): tests minimum + latest versions
-- Manual dispatch: specific version or full matrix
-- On success: auto-creates PR updating `versions.json`
-- On failure: auto-creates GitHub issue with `compat,urgent` label
-- Never auto-merges or auto-publishes
+Docker/OpenClaw compatibility automation now belongs with `shroud-e2e`.
 
 ---
 
@@ -550,58 +442,15 @@ Create or extend a JSON file in `tests/harness/harness/scenarios/`:
 ]
 ```
 
-Files prefixed with `docker-` are only run in Docker E2E mode. All other files run in the APP harness.
+Files prefixed with `docker-` are reserved for Docker E2E in `shroud-e2e`. All remaining files here run in the APP harness.
 
 ### Adding a Docker E2E regression
 
-Add a test case to `tests/harness/harness/scenarios/docker-e2e-regression.json`. Docker E2E scenarios have additional fields:
+Add Docker/OpenClaw regressions in the external `shroud-e2e` repo.
 
-```json
-{
-  "name": "Slack email obfuscation",
-  "message": "Alert: contact admin@noc.internal",
-  "realValues": ["admin@noc.internal"],
-  "slackE2E": true,
-  "slackChannel": "C00000001",
-  "checkDeobfuscation": true
-}
-```
+### Adding a multi-turn compaction or sandbox test
 
-| Field | Type | Purpose |
-|-------|------|---------|
-| `message` | string | The raw message to send through the channel |
-| `realValues` | string[] | PII values that the LLM must not see |
-| `checkLlmSees` | string[] | Values that must pass through (public URLs, etc.) |
-| `checkDeobfuscation` | boolean | Verify the channel output contains original values |
-| `checkAudit` | boolean | Verify audit log entry was written |
-| `checkStats` | boolean | Verify stats file was written |
-| `slackE2E` | boolean | Run as Slack webhook injection test |
-| `slackChannel` | string | Slack channel ID for the webhook event |
-| `slackUser` | string | Slack user ID for the webhook event |
-| `whatsAppE2E` | boolean | Run as WhatsApp Baileys injection test |
-| `cronE2E` | boolean | Run as cron schedule test |
-| `multiTurn` | boolean | Run as multi-turn conversation test |
-
-### Adding a multi-turn compaction test
-
-Multi-turn tests use the `multiTurn: true` flag with a `turns[]` array in `openclaw-runner.mjs`:
-
-```javascript
-{
-  name: "Multi-turn: descriptive name",
-  multiTurn: true,
-  turns: [
-    { message: "First message with 10.0.0.1", realValues: ["10.0.0.1"] },
-    { message: "Second message with admin@corp.net", realValues: ["10.0.0.1", "admin@corp.net"] },
-  ],
-}
-```
-
-Each turn's `realValues` must include PII from ALL previous turns — this validates re-obfuscation of the conversation history.
-
-### Adding a sandbox test
-
-Sandbox scenarios go in the `SHROUD_TEST_SANDBOX === "1"` block in `openclaw-runner.mjs`. They use the same format as standard scenarios but only run when the `--sandbox` flag is passed.
+Docker/OpenClaw multi-turn and sandbox tests now live in `shroud-e2e`.
 
 ---
 
@@ -652,8 +501,8 @@ Pass `--report path.json` to save a structured report:
 **Tests fail with "Shroud app-server not found":**
 Run `npm run build` first. The harness needs compiled output in `dist/`.
 
-**Docker E2E fails with "base image not found":**
-The base image hasn't been built yet for this OC version. `run-compat.sh` builds it automatically on first run. Use `--rebuild-base` to force a rebuild.
+**Docker E2E fails before the gateway starts:**
+Check `SHROUD_E2E_PATH` and verify the external `shroud-e2e` checkout is present and up to date.
 
 **Mock LLM timeout (5s):**
 The mock LLM server failed to start. Check for port conflicts or Node.js issues.
@@ -665,7 +514,7 @@ The OpenClaw gateway didn't respond. Check that the OpenClaw version supports th
 The OC version doesn't support the config key (e.g., `tools.exec.host`). Only OC 2026.3.28+ supports sandbox exec.
 
 **Sandbox: "Docker daemon failed to start":**
-The container needs `--privileged` flag. Verify `run-compat.sh` is passing it when `--sandbox` is set.
+The external runner needs privileged Docker access for sandbox mode. Re-run via `compat/run-e2e.sh --sandbox` and inspect the `shroud-e2e` logs.
 
 **CGNAT leak assertions fail:**
 Fake IPv4 surrogates (100.64.x.x) appeared in deobfuscated output. This means deobfuscation missed a mapping. Check the store state and HMAC consistency.

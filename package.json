@@ -24,7 +24,6 @@
     "test:unit": "vitest run --exclude tests/exit.test.ts --testTimeout=30000",
     "test:integration": "npm run build --silent && node tests/harness/run.mjs",
     "test:docker": "bash compat/run-e2e.sh latest",
-    "test:docker:legacy": "bash compat/run-compat.sh latest",
     "test:all": "npm run test:unit && npm run test:integration && npm run test:docker",
     "test:watch": "vitest",
     "pretrain": "npx tsx scripts/pretrain-transformer.ts",

@@ -16,8 +16,6 @@ import { randomUUID } from "node:crypto";
 
 const requestLog = [];
 
-// ── Shared helpers ──────────────────────────────────────────
-
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -41,7 +39,6 @@ function isNoTools(body, url, req) {
     (process.env.MOCK_LLM_NO_TOOLS === "1");
 }
 
-/** Split text into small token-like chunks (~2-4 words). */
 function tokenize(text, wordsPerChunk = 3) {
   const words = text.split(/(\s+)/);
   const chunks = [];
@@ -60,7 +57,6 @@ function tokenize(text, wordsPerChunk = 3) {
   return chunks;
 }
 
-/** Check if text contains an IP/hostname and request declares tools. */
 function maybeToolCall(body, userText, toolsKey = "tools") {
   const tools = body[toolsKey];
   if (!tools || tools.length === 0) return null;
@@ -71,9 +67,6 @@ function maybeToolCall(body, userText, toolsKey = "tools") {
   const toolName = (tools[0].function?.name) || (tools[0].name) || "lookup";
   return { toolName, entity, callId: `call_test_${randomUUID().slice(0, 8)}` };
 }
-
-
-// ── OpenAI /v1/chat/completions ─────────────────────────────
 
 function lastUserContentOpenAI(body) {
   const msgs = body.messages || [];
@@ -136,8 +129,6 @@ function openaiStreamText(res, content, model) {
   const chunks = tokenize(content);
 
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-
-  // Role chunk
   res.write(`data: ${JSON.stringify({
     id, object: "chat.completion.chunk", created, model: m,
     choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
@@ -150,7 +141,6 @@ function openaiStreamText(res, content, model) {
     })}\n\n`);
   }
 
-  // Stop chunk with usage
   res.write(`data: ${JSON.stringify({
     id, object: "chat.completion.chunk", created, model: m,
     choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
@@ -198,9 +188,6 @@ function handleOpenAI(req, res, url, body) {
   }
 }
 
-
-// ── Anthropic /v1/messages ──────────────────────────────────
-
 function lastUserContentAnthropic(body) {
   const msgs = body.messages || [];
   for (let i = msgs.length - 1; i >= 0; i--) {
@@ -208,7 +195,7 @@ function lastUserContentAnthropic(body) {
       const c = msgs[i].content;
       if (typeof c === "string") return c;
       if (Array.isArray(c)) {
-        const textBlock = c.find(b => b.type === "text");
+        const textBlock = c.find((b) => b.type === "text");
         return textBlock ? textBlock.text : JSON.stringify(c);
       }
       return JSON.stringify(c);
@@ -253,7 +240,6 @@ function anthropicNonStreamingToolCall(tc, model) {
   };
 }
 
-/** Write a single named SSE event (Anthropic uses `event:` + `data:` lines). */
 function sseEvent(res, eventName, data) {
   res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -262,12 +248,10 @@ function anthropicStreamText(res, content, model) {
   const m = model || "claude-3-haiku-20240307";
   const msgId = `msg_${randomUUID().slice(0, 24)}`;
   const inputTokens = Math.ceil(content.length / 4);
-  // Smaller chunks than OpenAI — more realistic for Anthropic token streaming
   const chunks = tokenize(content, 2);
 
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
 
-  // message_start
   sseEvent(res, "message_start", {
     type: "message_start",
     message: {
@@ -283,16 +267,12 @@ function anthropicStreamText(res, content, model) {
     },
   });
 
-  // content_block_start (index 0, text block)
   sseEvent(res, "content_block_start", {
     type: "content_block_start", index: 0,
     content_block: { type: "text", text: "" },
   });
-
-  // ping (realistic — Anthropic sends pings during streaming)
   sseEvent(res, "ping", { type: "ping" });
 
-  // content_block_delta — one per chunk
   for (const chunk of chunks) {
     sseEvent(res, "content_block_delta", {
       type: "content_block_delta", index: 0,
@@ -300,17 +280,12 @@ function anthropicStreamText(res, content, model) {
     });
   }
 
-  // content_block_stop
   sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
-
-  // message_delta (stop_reason + final usage)
   sseEvent(res, "message_delta", {
     type: "message_delta",
     delta: { stop_reason: "end_turn", stop_sequence: null },
     usage: { output_tokens: Math.ceil(content.length / 4) },
   });
-
-  // message_stop
   sseEvent(res, "message_stop", { type: "message_stop" });
   res.end();
 }
@@ -331,13 +306,11 @@ function anthropicStreamToolCall(res, tc, model) {
     },
   });
 
-  // Tool use content block
   sseEvent(res, "content_block_start", {
     type: "content_block_start", index: 0,
     content_block: { type: "tool_use", id: tc.callId, name: tc.toolName, input: {} },
   });
 
-  // Stream the JSON input as input_json_delta chunks
   const inputJson = JSON.stringify({ query: tc.entity });
   const mid = Math.floor(inputJson.length / 2);
   sseEvent(res, "content_block_delta", {
@@ -350,52 +323,11 @@ function anthropicStreamToolCall(res, tc, model) {
   });
 
   sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
-
   sseEvent(res, "message_delta", {
     type: "message_delta",
     delta: { stop_reason: "tool_use", stop_sequence: null },
     usage: { output_tokens: 10 },
   });
-
-  sseEvent(res, "message_stop", { type: "message_stop" });
-  res.end();
-}
-
-/** Anthropic multi-block: text block (index 0) + tool_use block (index 1). */
-function anthropicStreamTextAndTool(res, content, tc, model) {
-  const m = model || "claude-3-haiku-20240307";
-  const msgId = `msg_${randomUUID().slice(0, 24)}`;
-  const chunks = tokenize(content, 2);
-
-  res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-
-  sseEvent(res, "message_start", {
-    type: "message_start",
-    message: {
-      id: msgId, type: "message", role: "assistant", model: m,
-      stop_reason: null, stop_sequence: null,
-      usage: { input_tokens: 20, output_tokens: 1 },
-      content: [],
-    },
-  });
-
-  // Block 0: text
-  sseEvent(res, "content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
-  for (const chunk of chunks) {
-    sseEvent(res, "content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: chunk } });
-  }
-  sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 0 });
-
-  // Block 1: tool_use
-  sseEvent(res, "content_block_start", {
-    type: "content_block_start", index: 1,
-    content_block: { type: "tool_use", id: tc.callId, name: tc.toolName, input: {} },
-  });
-  const inputJson = JSON.stringify({ query: tc.entity });
-  sseEvent(res, "content_block_delta", { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: inputJson } });
-  sseEvent(res, "content_block_stop", { type: "content_block_stop", index: 1 });
-
-  sseEvent(res, "message_delta", { type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } });
   sseEvent(res, "message_stop", { type: "message_stop" });
   res.end();
 }
@@ -420,15 +352,12 @@ function handleAnthropic(req, res, url, body) {
   }
 }
 
-
-// ── Google Gemini /v1beta/models/* ──────────────────────────
-
 function lastUserContentGemini(body) {
   const contents = body.contents || [];
   for (let i = contents.length - 1; i >= 0; i--) {
     if (contents[i].role === "user") {
       const parts = contents[i].parts || [];
-      const textPart = parts.find(p => p.text != null);
+      const textPart = parts.find((p) => p.text != null);
       return textPart ? textPart.text : JSON.stringify(parts);
     }
   }
@@ -459,7 +388,6 @@ function geminiNonStreaming(content, model) {
 
 function geminiStreamText(res, content, model) {
   const m = model || "gemini-1.5-flash";
-  // Gemini sends larger chunks than OpenAI/Anthropic
   const chunks = tokenize(content, 6);
 
   res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
@@ -507,27 +435,21 @@ function handleGemini(req, res, url, body) {
   }
 }
 
-
-// ── HTTP Server ─────────────────────────────────────────────
-
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://localhost`);
+  const url = new URL(req.url, "http://localhost");
 
-  // Health check
   if (req.method === "GET" && url.pathname === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ ok: true, requests: requestLog.length, providers: ["openai", "anthropic", "gemini"] }));
     return;
   }
 
-  // Request log retrieval
   if (req.method === "GET" && url.pathname === "/requests") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(requestLog));
     return;
   }
 
-  // Clear request log
   if (req.method === "DELETE" && url.pathname === "/requests") {
     requestLog.length = 0;
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -546,32 +468,24 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // OpenAI Chat Completions
     if (url.pathname === "/v1/chat/completions" || url.pathname === "/chat/completions") {
       handleOpenAI(req, res, url, body);
       return;
     }
-
-    // Anthropic Messages API
     if (url.pathname === "/v1/messages" || url.pathname === "/messages") {
       handleAnthropic(req, res, url, body);
       return;
     }
-
-    // Google Gemini (streaming and non-streaming)
     if (url.pathname.includes(":streamGenerateContent") || url.pathname.includes(":generateContent")) {
       handleGemini(req, res, url, body);
       return;
     }
-
-    // Google Gemini fallback — /v1beta/models/* or /v1/models/*
     if (url.pathname.startsWith("/v1beta/models/") || url.pathname.startsWith("/v1/models/")) {
       handleGemini(req, res, url, body);
       return;
     }
   }
 
-  // 404
   res.writeHead(404, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ error: "Not found", path: url.pathname }));
 });
@@ -579,10 +493,8 @@ const server = http.createServer(async (req, res) => {
 const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 0;
 server.listen(port, "127.0.0.1", () => {
   const addr = server.address();
-  const out = JSON.stringify({ port: addr.port, ready: true });
-  process.stdout.write(out + "\n");
+  process.stdout.write(JSON.stringify({ port: addr.port, ready: true }) + "\n");
 });
 
-// Graceful shutdown
 process.on("SIGTERM", () => server.close());
 process.on("SIGINT", () => server.close());
