@@ -192,9 +192,9 @@
         },
         {
           "agent": "devops-agent",
-          "input": "Scale deployment on server db-master.prod.internal using key AKIA1234567890EXAMPLE",
+          "input": "Scale deployment on server db-master.prod.internal using key AKIA1234567890ABCD12",
           "assertions": {
-            "llm_must_not_see": ["db-master.prod.internal", "AKIA1234567890EXAMPLE"]
+            "llm_must_not_see": ["db-master.prod.internal", "AKIA1234567890ABCD12"]
           }
         }
       ]
