@@ -1,10 +1,10 @@
 [
   {
     "name": "Full email thread with mixed PII",
-    "input": "From: Walter Keating <walter@myisp.at>\nTo: NOC <noc@partner.com>\nSubject: Circuit down\n\nHi team,\n\nThe circuit between site VIE (10.1.0.1) and FRA (10.2.0.1) is down.\nBGP session dropped at 14:32 UTC (remote-as 65200).\nPlease check interface Gi0/0 on hostname CORE-RTR-01.\n\nTACacs credentials may need rotation.\n\nRegards,\nWalter\n+43 664 8563582",
+    "input": "From: Walter Example <walter@example.test>\nTo: NOC <noc@partner.com>\nSubject: Circuit down\n\nHi team,\n\nThe circuit between site VIE (10.1.0.1) and FRA (10.2.0.1) is down.\nBGP session dropped at 14:32 UTC (remote-as 65200).\nPlease check interface Gi0/0 on hostname CORE-RTR-01.\n\nTACacs credentials may need rotation.\n\nRegards,\nWalter\n+43 664 8563582",
     "assertions": {
-      "llm_must_not_see": ["walter@myisp.at", "noc@partner.com", "10.1.0.1", "10.2.0.1", "CORE-RTR-01", "+43 664 8563582"],
-      "user_must_see": ["walter@myisp.at", "noc@partner.com", "10.1.0.1", "10.2.0.1", "CORE-RTR-01", "+43 664 8563582"],
+      "llm_must_not_see": ["walter@example.test", "noc@partner.com", "10.1.0.1", "10.2.0.1", "CORE-RTR-01", "+43 664 8563582"],
+      "user_must_see": ["walter@example.test", "noc@partner.com", "10.1.0.1", "10.2.0.1", "CORE-RTR-01", "+43 664 8563582"],
       "entity_count_min": 6,
       "no_cgnat_leak": true,
       "roundtrip": true

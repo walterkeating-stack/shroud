@@ -93,7 +93,7 @@ function handleSlackApi(req, res) {
       } else if (path === "/api/users.info") {
         // Simulate real users with different profiles
         const users = {
-          "U00000001": { id: "U00000001", name: "walter.keating", real_name: "Walter Keating", is_bot: false, tz: "Europe/Dublin" },
+          "U00000001": { id: "U00000001", name: "walter.example", real_name: "Walter Example", is_bot: false, tz: "Europe/Dublin" },
           "U00000002": { id: "U00000002", name: "jane.ops", real_name: "Jane Ops", is_bot: false, tz: "America/New_York" },
           "UBOT00001": { id: "UBOT00001", name: "shroud-bot", real_name: "Shroud Bot", is_bot: true },
         };
@@ -106,7 +106,7 @@ function handleSlackApi(req, res) {
         json(res, {
           ok: true,
           members: [
-            { id: "U00000001", name: "walter.keating", real_name: "Walter Keating", is_bot: false },
+            { id: "U00000001", name: "walter.example", real_name: "Walter Example", is_bot: false },
             { id: "U00000002", name: "jane.ops", real_name: "Jane Ops", is_bot: false },
             { id: "UBOT00001", name: "shroud-bot", real_name: "Shroud Bot", is_bot: true },
           ],

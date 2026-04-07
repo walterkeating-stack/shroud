@@ -3030,7 +3030,7 @@ interface GigabitEthernet0/1
   test("mixed PII email thread", () => {
     const ob = resolvedObfuscator();
     const r = ob.obfuscate(`
-From: Walter Keating <walter@myisp.at>
+From: Walter Example <walter@example.test>
 To: NOC <noc@partner.com>
 Subject: Circuit CID: VIE-001/2024 down
 
@@ -3046,7 +3046,7 @@ Regards,
 Walter
 +43 664 8563582
 `);
-    expect(r.obfuscated).not.toContain("walter@myisp.at");
+    expect(r.obfuscated).not.toContain("walter@example.test");
     expect(r.obfuscated).not.toContain("noc@partner.com");
     expect(r.obfuscated).not.toContain("10.1.0.1");
     expect(r.obfuscated).not.toContain("10.2.0.1");

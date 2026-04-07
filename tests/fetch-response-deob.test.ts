@@ -228,7 +228,7 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
   test("single email: deobfuscated in response", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
     const fakeEmail = "notify42@beacon.com";
-    obf["_store"].put("walter@keating.at", fakeEmail, "email");
+    obf["_store"].put("walter@example.test", fakeEmail, "email");
 
     sseBody = anthropicMessageStart() +
       anthropicBlockStart(0, "text") +
@@ -245,13 +245,13 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
     const body = await resp.text();
 
     expect(body).not.toContain(fakeEmail);
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
     expect(countParseErrors(body)).toBe(0);
   });
 
   test("multiple PII types: email + IP", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "admin1@test.com", "email");
+    obf["_store"].put("walter@example.test", "admin1@test.com", "email");
     obf["_store"].put("10.0.1.5", "100.64.0.5", "ip_address");
 
     sseBody = anthropicMessageStart() +
@@ -265,7 +265,7 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
 
     expect(body).not.toContain("admin1@test.com");
     expect(body).not.toContain("100.64.0.5");
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
     expect(body).toContain("10.0.1.5");
   });
 
@@ -316,7 +316,7 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
 
   test("text block + tool_use block: tool use untouched", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "fake1@x.com", "email");
+    obf["_store"].put("walter@example.test", "fake1@x.com", "email");
 
     sseBody = anthropicMessageStart() +
       anthropicBlockStart(0, "text") +
@@ -331,7 +331,7 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
     const body = await resp.text();
 
     expect(body).not.toContain("fake1@x.com");
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
     expect(body).toContain("input_json_delta");
     expect(body).toContain("/etc/hosts");
   });
@@ -417,7 +417,7 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
 
   test("JSON response (non-streaming): deobfuscated", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "json1@x.com", "email");
+    obf["_store"].put("walter@example.test", "json1@x.com", "email");
 
     // Use a separate server for JSON
     const jsonServer = createServer(async (req, res) => {
@@ -442,7 +442,7 @@ describe("Fetch response deobfuscation — per-block flushing", () => {
       const body = await resp.text();
       const json = JSON.parse(body);
 
-      expect(json.content[0].text).toContain("walter@keating.at");
+      expect(json.content[0].text).toContain("walter@example.test");
       expect(json.content[0].text).not.toContain("json1@x.com");
     } finally {
       await new Promise((r) => jsonServer.close(r));
@@ -636,7 +636,7 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
 
   test("OpenAI SSE: single email deobfuscated", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "proxy99@fake.com", "email");
+    obf["_store"].put("walter@example.test", "proxy99@fake.com", "email");
 
     sseBody =
       openaiTextDelta(0, "Contact: ") +
@@ -650,12 +650,12 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
     const body = await resp.text();
 
     expect(body).not.toContain("proxy99@fake.com");
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
   });
 
   test("OpenAI SSE: multiple PII types", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "admin1@test.com", "email");
+    obf["_store"].put("walter@example.test", "admin1@test.com", "email");
     obf["_store"].put("10.0.1.5", "100.64.0.5", "ip_address");
 
     sseBody =
@@ -668,7 +668,7 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
 
     expect(body).not.toContain("admin1@test.com");
     expect(body).not.toContain("100.64.0.5");
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
     expect(body).toContain("10.0.1.5");
   });
 
@@ -687,7 +687,7 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
 
   test("OpenAI SSE: finish_reason in separate event from content", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "split99@test.com", "email");
+    obf["_store"].put("walter@example.test", "split99@test.com", "email");
 
     sseBody =
       openaiTextDelta(0, "Email: split99@test.com") +
@@ -698,14 +698,14 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
     const body = await resp.text();
 
     expect(body).not.toContain("split99@test.com");
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
   });
 
   // ── Tool Calls ──────────────────────────────────────────
 
   test("OpenAI SSE: tool_calls arguments deobfuscated", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "tool1@fake.com", "email");
+    obf["_store"].put("walter@example.test", "tool1@fake.com", "email");
 
     sseBody =
       openaiToolCallStart(0, 0, "call_abc", "send_email") +
@@ -718,12 +718,12 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
     const body = await resp.text();
 
     expect(body).not.toContain("tool1@fake.com");
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
   });
 
   test("OpenAI SSE: tool_calls with multiple tools deobfuscated", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "multi1@fake.com", "email");
+    obf["_store"].put("walter@example.test", "multi1@fake.com", "email");
     obf["_store"].put("10.0.1.5", "100.64.0.5", "ip_address");
 
     sseBody =
@@ -739,7 +739,7 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
 
     expect(body).not.toContain("multi1@fake.com");
     expect(body).not.toContain("100.64.0.5");
-    expect(body).toContain("walter@keating.at");
+    expect(body).toContain("walter@example.test");
     expect(body).toContain("10.0.1.5");
   });
 
@@ -747,7 +747,7 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
 
   test("OpenAI JSON: content deobfuscated", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "json1@fake.com", "email");
+    obf["_store"].put("walter@example.test", "json1@fake.com", "email");
 
     jsonMode = true;
     jsonBody = JSON.stringify({
@@ -764,13 +764,13 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
     const body = await resp.text();
     const json = JSON.parse(body);
 
-    expect(json.choices[0].message.content).toContain("walter@keating.at");
+    expect(json.choices[0].message.content).toContain("walter@example.test");
     expect(json.choices[0].message.content).not.toContain("json1@fake.com");
   });
 
   test("OpenAI JSON: tool_calls arguments deobfuscated", async () => {
     const { obf, handlers } = freshInstall(savedFetch);
-    obf["_store"].put("walter@keating.at", "jsontc@fake.com", "email");
+    obf["_store"].put("walter@example.test", "jsontc@fake.com", "email");
 
     jsonMode = true;
     jsonBody = JSON.stringify({
@@ -796,7 +796,7 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
     const json = JSON.parse(body);
 
     const args = json.choices[0].message.tool_calls[0].function.arguments;
-    expect(args).toContain("walter@keating.at");
+    expect(args).toContain("walter@example.test");
     expect(args).not.toContain("jsontc@fake.com");
   });
 
@@ -806,8 +806,8 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
     const { obf, handlers } = freshInstall(savedFetch);
 
     // Pre-populate store with a mapping
-    const result = obf.obfuscate("Contact walter@keating.at please");
-    const fake = obf["_store"].allMappings().get("walter@keating.at")!;
+    const result = obf.obfuscate("Contact walter@example.test please");
+    const fake = obf["_store"].allMappings().get("walter@example.test")!;
     expect(fake).toBeDefined();
 
     // Set up a server that captures the request body
@@ -840,10 +840,10 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
               tool_calls: [{
                 id: "call_abc",
                 type: "function",
-                function: { name: "send_email", arguments: `{"to":"walter@keating.at"}` },
+                function: { name: "send_email", arguments: `{"to":"walter@example.test"}` },
               }],
             },
-            { role: "tool", tool_call_id: "call_abc", content: "Email sent to walter@keating.at" },
+            { role: "tool", tool_call_id: "call_abc", content: "Email sent to walter@example.test" },
           ],
         }),
       });
@@ -853,11 +853,11 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
       const toolContent = parsed.messages[2].content;
 
       // tool_calls arguments should be obfuscated
-      expect(toolCallArgs).not.toContain("walter@keating.at");
+      expect(toolCallArgs).not.toContain("walter@example.test");
       expect(toolCallArgs).toContain(fake);
 
       // tool result content should also be obfuscated
-      expect(toolContent).not.toContain("walter@keating.at");
+      expect(toolContent).not.toContain("walter@example.test");
     } finally {
       await new Promise((r) => captureServer.close(r));
     }
