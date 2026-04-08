@@ -202,6 +202,19 @@ export interface DriftPoint {
   timestamp: number;
 }
 
+const ROUTINE_DRIFT_TOOLS = new Set([
+  "read",
+  "read_file",
+  "memory_search",
+  "memory_get",
+  "exec",
+  "bash",
+  "code_execution",
+  "sessions_send",
+  "sessions_spawn",
+  "session_status",
+]);
+
 /**
  * Tracks semantic drift across a conversation turn.
  *
@@ -306,6 +319,30 @@ export class DriftDetector {
     this._trajectory = [];
     this._prevSimilarity = 1.0;
   }
+}
+
+/**
+ * Decide whether a drift result is noisy enough to suppress at the alerting layer.
+ * Routine tools often have weak lexical overlap with the original user request,
+ * especially on the first few steps of a turn, so we keep the trajectory sample
+ * but avoid flagging unless the drift is extreme or the turn already has context.
+ */
+export function shouldAlertOnDrift(
+  toolName: string,
+  result: DriftResult,
+  trajectoryLength: number,
+): boolean {
+  if (result.severity === "low") return false;
+  if (result.severity === "high") return true;
+
+  const normalized = toolName.toLowerCase();
+  if (!ROUTINE_DRIFT_TOOLS.has(normalized)) return true;
+
+  // Early read/search/exec steps are common setup work. Do not alert on
+  // medium-severity routine drift until the turn has enough history to mean
+  // anything; keep high-severity sharp turns enabled above.
+  if (trajectoryLength < 3) return false;
+  return true;
 }
 
 // ─── Security event builder ───

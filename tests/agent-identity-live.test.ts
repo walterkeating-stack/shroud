@@ -12,7 +12,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "vitest";
-import { AgentSessionTracker, extractPromptSkeleton } from "../src/agent-session.js";
+import { AgentSessionTracker, classifyAgent, extractPromptSkeleton } from "../src/agent-session.js";
 
 // Real OpenClaw event.prompt content (same as body.system[1])
 function makePrompt(channel: string, agent: string) {
@@ -183,6 +183,20 @@ describe("Agent classification", () => {
     const tracker = new AgentSessionTracker();
     const s = tracker.registerAgent("You are a DevOps automation agent. You manage infrastructure deployments.");
     expect(s.classification.role).toBe("DevOps / SRE");
+  });
+
+  test("SOUL.md: orchestrator classified as control plane", () => {
+    const classification = classifyAgent(
+      "OpenClaw Orchestrator",
+      [
+        "You are the OpenClaw control-plane agent.",
+        "You supervise migration readiness, runtime health, capability rollout, cron supervision, packaging validation, and agent provisioning.",
+        "You are the live front door for orchestration.",
+      ].join("\n"),
+    );
+    expect(classification.role).toBe("Orchestration / Control Plane");
+    expect(classification.confidencePct).toBeGreaterThanOrEqual(70);
+    expect(classification.signals.length).toBeGreaterThan(0);
   });
 });
 

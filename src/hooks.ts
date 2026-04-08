@@ -34,12 +34,13 @@ import { DnsCache } from "./dns-cache.js";
 import { InjectionDetector } from "./detectors/injection.js";
 import { SecurityEventBus } from "./security-event.js";
 import type { SecurityEvent } from "./security-event.js";
-import { AgentSessionTracker, isHeartbeatPrompt, _isValidAgentLabel, normalizeLabel } from "./agent-session.js";
+import { AgentSessionTracker, getBehaviorWarmupState, isHeartbeatPrompt, _isValidAgentLabel, normalizeLabel } from "./agent-session.js";
 import { BehaviouralProfiler } from "./profiler.js";
 import { BaselineStore } from "./profiler-store.js";
 import { scanToolCall } from "./detectors/tool-guard.js";
 import { extractIntentSignals, checkToolAlignment, checkEgressAttempt, ToolSequenceTracker, buildToolIntentEvent, TOOL_CATEGORIES } from "./detectors/tool-intent.js";
 import type { IntentSignals } from "./detectors/tool-intent.js";
+import { resolveAgentContract, validateContract } from "./contracts.js";
 import { createTurnContext, validateToolResult, checkExfilChain, checkNovelToolUsage } from "./detectors/result-validator.js";
 import { HoneypotManager } from "./detectors/honeypot.js";
 import { registerPhantomTools } from "./detectors/phantom-tools.js";
@@ -47,7 +48,9 @@ import type { TurnContext } from "./detectors/result-validator.js";
 import { PolicyEngine } from "./policy.js";
 import { AgentRegistry } from "./agent-registry.js";
 import * as sigLoaderMod from "./signature-loader.js";
-import { DriftDetector, buildDriftEvent } from "./detectors/drift-detector.js";
+import { DriftDetector, buildDriftEvent, shouldAlertOnDrift } from "./detectors/drift-detector.js";
+import { IntentLeaseManager } from "./intent-lease.js";
+import { checkTrustZoneOverride } from "./detectors/trust-zone-guard.js";
 import { ShadowExecutor, buildShadowEvent } from "./shadow-executor.js";
 import { CausalCoherenceTracker, buildCoherenceEvent } from "./causal-coherence.js";
 import { VectorStore, buildNovelWorkflowEvent, buildUrlCorrelationEvent } from "./vector-store.js";
@@ -55,6 +58,7 @@ import { IntentChain, buildDelegationDriftEvent } from "./intent-chain.js";
 import { TransformerScorer } from "./transformer/scorer.js";
 import type { AttackTrace } from "./transformer/contrastive.js";
 import { computeAdaptiveThresholds, isSignatureSuppressed } from "./adaptive-thresholds.js";
+import { createFeatureCounterRegistry } from "./feature-counters.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -303,6 +307,33 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const ob = () => getSharedObfuscator(obfuscator);
   const config = ob().config;
   const auditActive = config.auditEnabled || config.verboseLogging;
+  const featureRegistry = (globalThis as any).__shroudFeatureRegistry
+    || createFeatureCounterRegistry(config);
+  (globalThis as any).__shroudFeatureRegistry = featureRegistry;
+
+  function noteFeature(
+    featureId: string,
+    input: {
+      outcome?: "observed" | "suppressed" | "flagged" | "blocked";
+      explanation?: string;
+      suppressionReason?: string;
+      thresholds?: Record<string, unknown>;
+      enabled?: boolean;
+      agentBuildId?: string;
+      agentLabel?: string;
+    } = {},
+  ): void {
+    const currentSession = agentTracker.getCurrentSession();
+    featureRegistry.record(featureId, {
+      agentBuildId: input.agentBuildId ?? currentSession?.agentBuildId,
+      agentLabel: input.agentLabel ?? currentSession?.agentLabel,
+      explanation: input.explanation,
+      suppressionReason: input.suppressionReason,
+      thresholds: input.thresholds,
+      enabled: input.enabled,
+      outcome: input.outcome,
+    });
+  }
 
   // --- Security extension: injection detection (Track 1) ---
   // Runs parallel to the obfuscation pipeline — never touches entity replacement.
@@ -821,6 +852,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   let _currentIntent: IntentSignals | null = null;
   let _turnContext: TurnContext | null = null;
   const _toolSequence = new ToolSequenceTracker();
+  const _intentLease = new IntentLeaseManager();
+  (globalThis as any).__shroudIntentLease = _intentLease;
   // Honeypot manager — injects fake secrets as tripwires
   const _honeypot = new HoneypotManager();
   // Semantic drift detector — tracks trajectory vs user intent
@@ -913,7 +946,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // Only register once per process (the tools persist across plugin reloads).
   if (config.honeypotEnabled && !(globalThis as any).__shroudPhantomToolsRegistered) {
     (globalThis as any).__shroudPhantomToolsRegistered = true;
+    noteFeature("phantom_tools", {
+      outcome: "observed",
+      explanation: "Registered phantom tool canaries in the runtime tool set.",
+    });
     registerPhantomTools(api, (event, toolName, params) => {
+      noteFeature("phantom_tools", {
+        outcome: "blocked",
+        explanation: `Phantom tool ${toolName} was invoked: ${event.description}`,
+      });
       const agentSession = agentTracker.getCurrentSession();
       event.agentBuildId = agentSession?.agentBuildId;
       event.agentLabel = agentSession?.agentLabel;
@@ -971,6 +1012,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         resolvedName = agentRegistry.resolve(event.prompt) || undefined;
       }
       const session = agentTracker.registerAgent(event.prompt, [], "unknown", true, resolvedName);
+      _intentLease.consumeLease(session.agentBuildId, session.agentLabel, ctx?.agentId || resolvedName);
 
       // Store ctx metadata on the session for enrichment
       // Derive channel from ctx.channelId or ctx.sessionKey
@@ -1019,12 +1061,23 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       // Detects prompt hijacking: if the system prompt changes unexpectedly between
       // turns, something injected into it or the agent was reconfigured.
       if (_driftDetector && session.agentBuildId && typeof event.prompt === "string" && event.prompt.length > 50) {
+        const baseline = profiler?.getBaselineStore().load(session.agentBuildId);
+        const warmup = getBehaviorWarmupState(
+          session,
+          baseline?.sessionCount || 0,
+          config.profilingMinBaseline,
+        );
         const provider = _driftDetector.getProvider();
         const promptVec = provider.embed(event.prompt);
         const fpKey = session.agentBuildId;
         const existing = _promptFingerprints.get(fpKey);
 
         if (!existing) {
+          noteFeature("prompt_fingerprint", {
+            outcome: "observed",
+            explanation: `Initialized prompt fingerprint baseline for ${session.agentLabel}.`,
+            thresholds: { similarity: 0.85, warmupSessions: config.profilingMinBaseline },
+          });
           // First turn for this agent — check against persisted cross-session baseline
           let hash = 0;
           for (let i = 0; i < Math.min(promptVec.length, 16); i++) {
@@ -1036,11 +1089,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           existing.turnCount++;
           const similarity = provider.similarity(existing.vec, promptVec);
 
-          if (similarity < 0.85) {
+          if (similarity < 0.85 && !warmup.active) {
             // System prompt changed — could be within-session or cross-session drift
             const isFirstTurn = existing.turnCount === 1;
             const severity = similarity < 0.5 ? "high" : "medium";
             const driftType = isFirstTurn ? "cross-session" : "within-session";
+            noteFeature("prompt_fingerprint", {
+              outcome: "flagged",
+              explanation: `Prompt fingerprint ${driftType} drift for ${session.agentLabel}: similarity=${similarity.toFixed(3)}.`,
+              thresholds: { similarity: 0.85, observed: similarity },
+            });
             if (securityBus) {
               securityBus.emit({
                 timestamp: Date.now(),
@@ -1062,6 +1120,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               agentTracker.recordSecurityEvent(1);
             }
             api.logger?.warn(`[shroud] System prompt ${driftType} fingerprint drift: ${session.agentLabel} similarity=${similarity.toFixed(3)}`);
+          } else {
+            noteFeature("prompt_fingerprint", {
+              outcome: warmup.active ? "suppressed" : "observed",
+              explanation: `Prompt fingerprint stable for ${session.agentLabel}: similarity=${similarity.toFixed(3)}.`,
+              suppressionReason: warmup.active ? "behavioral warmup" : undefined,
+              thresholds: { similarity: 0.85, observed: similarity },
+            });
           }
         }
       }
@@ -1404,6 +1469,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
           if (textToScan.length > 0) {
             const injEvents = hookDetector.scanRequest(textToScan);
+            noteFeature("injection_signatures", {
+              outcome: injEvents.length > 0 ? "flagged" : "observed",
+              explanation: injEvents.length > 0
+                ? `Hook-side request scan matched ${injEvents.length} injection signatures.`
+                : "Hook-side request scan found no injection signatures.",
+            });
             const agentSession = agentTracker.getCurrentSession();
             for (const evt of injEvents) {
               if (agentSession) {
@@ -1428,6 +1499,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const _cats: Record<string, number> = {};
       for (const e of result.entities) _cats[e.category] = (_cats[e.category] || 0) + 1;
       agentTracker.recordObfuscation(result.entities.length, _cats);
+      noteFeature("privacy_obfuscation", {
+        outcome: "observed",
+        explanation: `Obfuscated ${result.entities.length} entities in outbound message content.`,
+        thresholds: { categories: _cats },
+      });
       dumpStatsFile(obfuscator);
       if (auditActive) {
         try {
@@ -1494,6 +1570,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           for (const e of result.entities) _cats[e.category] = (_cats[e.category] || 0) + 1;
         }
         if (_totalEnt > 0) agentTracker.recordObfuscation(_totalEnt, _cats);
+        if (_totalEnt > 0) {
+          noteFeature("privacy_obfuscation", {
+            outcome: "observed",
+            explanation: `Obfuscated ${_totalEnt} entities across structured outbound message blocks.`,
+            thresholds: { categories: _cats },
+          });
+        }
       }
       dumpStatsFile(obfuscator);
       if (auditActive) {
@@ -1530,6 +1613,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (config.honeypotEnabled && _honeypot.getTokens().length > 0) {
       const honeypotHit = _honeypot.checkToolCall(event.toolName ?? "unknown", event.params);
       if (honeypotHit) {
+        noteFeature("honeypot", {
+          outcome: "blocked",
+          explanation: `Honeypot secret used via ${event.toolName ?? "unknown"}: ${honeypotHit.description}`,
+        });
         const agentSession = agentTracker.getCurrentSession();
         honeypotHit.agentBuildId = agentSession?.agentBuildId;
         honeypotHit.agentLabel = agentSession?.agentLabel;
@@ -1558,6 +1645,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
         // Always block — honeypot trips are 100% injection, no false positives possible
         return { block: true, blockReason: `Shroud security: honeypot triggered — confirmed injection attempt` };
+      } else {
+        noteFeature("honeypot", {
+          outcome: "observed",
+          explanation: `Honeypot check passed for ${event.toolName ?? "unknown"}.`,
+        });
       }
     }
 
@@ -1577,6 +1669,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // --- Tool call guard: scan for dangerous commands ---
     if (config.injectionDetection !== "off") {
       const toolResult = scanToolCall(event.toolName ?? "unknown", event.params);
+      noteFeature("tool_guard", {
+        outcome: toolResult.shouldBlock && config.injectionDetection === "block"
+          ? "blocked"
+          : toolResult.events.length > 0 ? "flagged" : "observed",
+        explanation: toolResult.events.length > 0
+          ? `Tool guard matched ${toolResult.events.length} dangerous-call signatures on ${event.toolName}.`
+          : `Tool guard cleared ${event.toolName}.`,
+      });
       if (toolResult.events.length > 0 && securityBus) {
         const agentSession = agentTracker.getCurrentSession();
         for (const evt of toolResult.events) {
@@ -1610,6 +1710,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       // --- Sandbox boundary check: is this tool outside the agent's configured allowlist? ---
       {
         const currentSession = agentTracker.getCurrentSession();
+        const currentContract = currentSession
+          ? resolveAgentContract(currentSession.agentLabel, currentSession.classification?.role || "General Agent")
+          : null;
         const ctxAgentId = (globalThis as any).__shroudCurrentCtxAgentId;
         const checkAgentId = ctxAgentId || currentSession?.agentLabel;
         if (checkAgentId && agentRegistry.loaded) {
@@ -1620,6 +1723,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (agentId) {
             const violation = agentRegistry.checkToolBoundary(agentId, event.toolName ?? "");
             if (violation) {
+              noteFeature("sandbox_boundary", {
+                outcome: config.injectionDetection === "block" ? "blocked" : "flagged",
+                explanation: violation,
+              });
               const evt: any = {
                 timestamp: Date.now(),
                 eventType: "anomaly_detected",
@@ -1643,7 +1750,125 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 return { block: true, blockReason: `Shroud security: ${violation}` };
               }
               api.logger?.warn(`[shroud] Sandbox boundary violation (flagged): ${violation}`);
+            } else {
+              noteFeature("sandbox_boundary", {
+                outcome: "observed",
+                explanation: `Sandbox boundary allowed ${event.toolName ?? "unknown"} for ${currentSession?.agentLabel || agentId}.`,
+              });
             }
+          }
+        }
+
+        if (currentSession && currentContract) {
+          const contractViolation = validateContract(
+            currentContract,
+            event.toolName ?? "unknown",
+            event.params,
+            currentSession.channels || [],
+            _currentIntent?.mentionedDomains || new Set<string>(),
+          );
+          if (contractViolation) {
+            noteFeature("contract_enforcement", {
+              outcome: config.injectionDetection === "block" && contractViolation.severity === "high" ? "blocked" : "flagged",
+              explanation: contractViolation.reason,
+            });
+            const evt: any = {
+              timestamp: Date.now(),
+              eventType: "anomaly_detected",
+              direction: "request",
+              threatClass: "privilege_escalation",
+              signatureId: contractViolation.signatureId,
+              severity: contractViolation.severity,
+              matchedText: `${event.toolName}: ${contractViolation.reason}`,
+              matchStart: 0, matchEnd: 0, textLength: 0,
+              action: config.injectionDetection === "block" ? "blocked" : "flagged",
+              description: contractViolation.reason,
+              agentBuildId: currentSession.agentBuildId,
+              agentLabel: currentSession.agentLabel,
+              agentSessionId: currentSession.sessionId,
+            };
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+            agentTracker.recordSecurityEvent(1);
+            if (config.injectionDetection === "block" && contractViolation.severity === "high") {
+              api.logger?.warn(`[shroud] BLOCKED contract violation: ${contractViolation.reason}`);
+              return { block: true, blockReason: `Shroud security: ${contractViolation.reason}` };
+            }
+            api.logger?.warn(`[shroud] Contract violation (flagged): ${contractViolation.reason}`);
+          } else {
+            noteFeature("contract_enforcement", {
+              outcome: "observed",
+              explanation: `Capability contract allowed ${event.toolName ?? "unknown"} for ${currentSession.agentLabel}.`,
+            });
+          }
+
+          const leaseViolation = _intentLease.checkLease(currentSession.agentBuildId, event.toolName ?? "unknown");
+          if (leaseViolation) {
+            noteFeature("intent_lease", {
+              outcome: config.injectionDetection === "block" && leaseViolation.severity === "high" ? "blocked" : "flagged",
+              explanation: leaseViolation.reason,
+            });
+            const evt: any = {
+              timestamp: Date.now(),
+              eventType: "anomaly_detected",
+              direction: "request",
+              threatClass: "delegation_drift",
+              signatureId: leaseViolation.signatureId,
+              severity: leaseViolation.severity,
+              matchedText: `${event.toolName}: ${leaseViolation.reason}`,
+              matchStart: 0, matchEnd: 0, textLength: 0,
+              action: config.injectionDetection === "block" ? "blocked" : "flagged",
+              description: leaseViolation.reason,
+              agentBuildId: currentSession.agentBuildId,
+              agentLabel: currentSession.agentLabel,
+              agentSessionId: currentSession.sessionId,
+            };
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+            agentTracker.recordSecurityEvent(1);
+            if (config.injectionDetection === "block" && leaseViolation.severity === "high") {
+              api.logger?.warn(`[shroud] BLOCKED intent lease violation: ${leaseViolation.reason}`);
+              return { block: true, blockReason: `Shroud security: ${leaseViolation.reason}` };
+            }
+            api.logger?.warn(`[shroud] Intent lease violation (flagged): ${leaseViolation.reason}`);
+          } else {
+            noteFeature("intent_lease", {
+              outcome: "observed",
+              explanation: `Intent lease allowed ${event.toolName ?? "unknown"} for delegated agent ${currentSession.agentLabel}.`,
+            });
+          }
+
+          const trustZoneViolation = checkTrustZoneOverride(event.toolName ?? "unknown", event.params);
+          if (trustZoneViolation) {
+            noteFeature("trust_zone_guard", {
+              outcome: config.injectionDetection === "block" ? "blocked" : "flagged",
+              explanation: trustZoneViolation.reason,
+            });
+            const evt: any = {
+              timestamp: Date.now(),
+              eventType: "anomaly_detected",
+              direction: "request",
+              threatClass: trustZoneViolation.threatClass,
+              signatureId: trustZoneViolation.signatureId,
+              severity: trustZoneViolation.severity,
+              matchedText: `${event.toolName}: ${trustZoneViolation.reason}`,
+              matchStart: 0, matchEnd: 0, textLength: 0,
+              action: config.injectionDetection === "block" ? "blocked" : "flagged",
+              description: trustZoneViolation.reason,
+              agentBuildId: currentSession.agentBuildId,
+              agentLabel: currentSession.agentLabel,
+              agentSessionId: currentSession.sessionId,
+            };
+            ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
+            agentTracker.recordSecurityEvent(1);
+            if (config.injectionDetection === "block") {
+              api.logger?.warn(`[shroud] BLOCKED trust-zone override: ${trustZoneViolation.reason}`);
+              return { block: true, blockReason: `Shroud security: ${trustZoneViolation.reason}` };
+            }
+            api.logger?.warn(`[shroud] Trust-zone override (flagged): ${trustZoneViolation.reason}`);
+          } else {
+            noteFeature("trust_zone_guard", {
+              outcome: "observed",
+              explanation: `Trust-zone guard cleared ${event.toolName ?? "unknown"}.`,
+            });
           }
         }
       }
@@ -1655,6 +1880,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // 1. Check alignment
         const alignment = checkToolAlignment(toolName, _currentIntent);
         if (!alignment.aligned) {
+          noteFeature("tool_alignment", {
+            outcome: config.injectionDetection === "block" && alignment.severity === "high" ? "blocked" : "flagged",
+            explanation: alignment.reason,
+          });
           const evt = buildToolIntentEvent(toolName, alignment, config.injectionDetection === "block" ? "blocked" : "flagged");
           const agentSession = agentTracker.getCurrentSession();
           evt.agentBuildId = agentSession?.agentBuildId;
@@ -1668,11 +1897,20 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             return { block: true, blockReason: `Shroud security: ${alignment.reason}` };
           }
           api.logger?.info(`[shroud] Tool intent mismatch (flagged): ${alignment.reason}`);
+        } else {
+          noteFeature("tool_alignment", {
+            outcome: "observed",
+            explanation: `Tool ${toolName} matched the extracted user intent.`,
+          });
         }
 
         // 2. Check egress attempt
         const egress = checkEgressAttempt(toolName, event.params, _currentIntent);
         if (egress && !egress.aligned) {
+          noteFeature("egress_attempt", {
+            outcome: config.injectionDetection === "block" && egress.severity === "high" ? "blocked" : "flagged",
+            explanation: egress.reason,
+          });
           const evt = buildToolIntentEvent(toolName, egress, config.injectionDetection === "block" ? "blocked" : "flagged");
           const agentSession = agentTracker.getCurrentSession();
           evt.agentBuildId = agentSession?.agentBuildId;
@@ -1686,12 +1924,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             return { block: true, blockReason: `Shroud security: ${egress.reason}` };
           }
           api.logger?.info(`[shroud] Egress attempt (flagged): ${egress.reason}`);
+        } else {
+          noteFeature("egress_attempt", {
+            outcome: "observed",
+            explanation: `No suspicious egress intent detected for ${toolName}.`,
+          });
         }
 
         // 3. Track sequence and check for anomalies
         _toolSequence.record(toolName);
         const anomaly = _toolSequence.checkAnomaly();
         if (anomaly) {
+          noteFeature("tool_sequence", {
+            outcome: "flagged",
+            explanation: anomaly.reason,
+          });
           const evt = buildToolIntentEvent(toolName, anomaly, "flagged");
           const agentSession = agentTracker.getCurrentSession();
           evt.agentBuildId = agentSession?.agentBuildId;
@@ -1700,12 +1947,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(evt);
           agentTracker.recordSecurityEvent(1);
           api.logger?.warn(`[shroud] Tool sequence anomaly: ${anomaly.reason}`);
+        } else {
+          noteFeature("tool_sequence", {
+            outcome: "observed",
+            explanation: `Tool sequence remained consistent through ${toolName}.`,
+          });
         }
 
         // 4. Exfil chain check: communication/network after PII-containing results
         if (_turnContext) {
           const exfil = checkExfilChain(_turnContext, toolName);
           if (exfil) {
+            noteFeature("exfil_chain", {
+              outcome: config.injectionDetection === "block" ? "blocked" : "flagged",
+              explanation: exfil.description,
+            });
             const agentSession = agentTracker.getCurrentSession();
             exfil.agentBuildId = agentSession?.agentBuildId;
             exfil.agentLabel = agentSession?.agentLabel;
@@ -1717,11 +1973,20 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               return { block: true, blockReason: `Shroud security: ${exfil.description}` };
             }
             api.logger?.warn(`[shroud] Exfil chain detected (flagged): ${exfil.description}`);
+          } else {
+            noteFeature("exfil_chain", {
+              outcome: "observed",
+              explanation: `No exfiltration chain detected for ${toolName}.`,
+            });
           }
 
           // 5. Novel egress tool check: agent using communication/network tool for the first time
           const novelTool = checkNovelToolUsage(_turnContext, toolName);
           if (novelTool) {
+            noteFeature("novel_egress", {
+              outcome: config.injectionDetection === "block" ? "blocked" : "flagged",
+              explanation: novelTool.description,
+            });
             const agentSession = agentTracker.getCurrentSession();
             novelTool.agentBuildId = agentSession?.agentBuildId;
             novelTool.agentLabel = agentSession?.agentLabel;
@@ -1733,6 +1998,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               return { block: true, blockReason: `Shroud security: ${novelTool.description}` };
             }
             api.logger?.warn(`[shroud] Novel egress tool (flagged): ${novelTool.description}`);
+          } else {
+            noteFeature("novel_egress", {
+              outcome: "observed",
+              explanation: `No novel egress behavior for ${toolName}.`,
+            });
           }
 
           // Stash pending tool call for result validation in tool_result_persist
@@ -1755,6 +2025,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         ? profiler.getBaselineStore().load(_agentSession.agentBuildId)
         : null;
       const _adaptiveThresholds = computeAdaptiveThresholds(_agentBaseline, config);
+      const _behaviorWarmup = getBehaviorWarmupState(
+        _agentSession,
+        _agentBaseline?.sessionCount || 0,
+        config.profilingMinBaseline,
+      );
 
       // --- Semantic drift detection + behavioral archetype tracking ---
       if (_driftDetector && _currentIntent) {
@@ -1763,7 +2038,43 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         agentTracker.recordToolCall(event.toolName ?? "unknown", drift.similarity);
         // Use adaptive drift threshold: only flag if similarity is below the per-agent threshold
         const effectiveDrifted = drift.similarity < _adaptiveThresholds.driftThreshold;
-        if ((effectiveDrifted || drift.suddenTurn) && !isSignatureSuppressed(drift.drifted ? "semantic_drift" : "sudden_turn", _adaptiveThresholds)) {
+        const driftSignature = drift.suddenTurn ? "drift_sudden_turn" : "semantic_drift";
+        const shouldAlert = shouldAlertOnDrift(
+          event.toolName ?? "unknown",
+          { ...drift, drifted: effectiveDrifted },
+          _driftDetector.getTrajectory().length,
+        );
+        if (_behaviorWarmup.active) {
+          noteFeature("semantic_drift", {
+            outcome: "suppressed",
+            explanation: drift.reason || `Semantic drift evaluated for ${event.toolName ?? "unknown"}.`,
+            suppressionReason: "behavioral warmup",
+            thresholds: { similarity: drift.similarity, threshold: _adaptiveThresholds.driftThreshold },
+          });
+        } else if ((effectiveDrifted || drift.suddenTurn) && !shouldAlert) {
+          noteFeature("semantic_drift", {
+            outcome: "suppressed",
+            explanation: drift.reason,
+            suppressionReason: "routine tool suppression",
+            thresholds: { similarity: drift.similarity, threshold: _adaptiveThresholds.driftThreshold },
+          });
+        } else if ((effectiveDrifted || drift.suddenTurn) && isSignatureSuppressed(driftSignature, _adaptiveThresholds)) {
+          noteFeature("semantic_drift", {
+            outcome: "suppressed",
+            explanation: drift.reason,
+            suppressionReason: "adaptive signature suppression",
+            thresholds: { similarity: drift.similarity, threshold: _adaptiveThresholds.driftThreshold },
+          });
+        }
+        if (!_behaviorWarmup.active
+            && (effectiveDrifted || drift.suddenTurn)
+            && shouldAlert
+            && !isSignatureSuppressed(driftSignature, _adaptiveThresholds)) {
+          noteFeature("semantic_drift", {
+            outcome: config.injectionDetection === "block" && drift.severity === "high" ? "blocked" : "flagged",
+            explanation: drift.reason,
+            thresholds: { similarity: drift.similarity, threshold: _adaptiveThresholds.driftThreshold },
+          });
           const evt = buildDriftEvent(event.toolName ?? "unknown", drift,
             config.injectionDetection === "block" ? "blocked" : "flagged");
           const agentSession = agentTracker.getCurrentSession();
@@ -1778,17 +2089,43 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             return { block: true, blockReason: `Shroud security: ${drift.reason}` };
           }
           api.logger?.info(`[shroud] Semantic drift (flagged): ${drift.reason}`);
+        } else if (!_behaviorWarmup.active) {
+          noteFeature("semantic_drift", {
+            outcome: "observed",
+            explanation: `Semantic drift within threshold for ${event.toolName ?? "unknown"} (${drift.similarity.toFixed(3)}).`,
+            thresholds: { similarity: drift.similarity, threshold: _adaptiveThresholds.driftThreshold },
+          });
         }
       }
 
       // --- Causal coherence: check result→action pair distance ---
       if (_coherenceTracker && _currentIntent) {
         const coherence = _coherenceTracker.checkCoherence(event.toolName ?? "unknown", event.params);
-        if (coherence && !coherence.coherent && !isSignatureSuppressed("causal_incoherence", _adaptiveThresholds)) {
+        if (_behaviorWarmup.active && coherence) {
+          noteFeature("causal_coherence", {
+            outcome: "suppressed",
+            explanation: coherence.reason,
+            suppressionReason: "behavioral warmup",
+            thresholds: { zScore: coherence.zScore, threshold: _adaptiveThresholds.coherenceZScore },
+          });
+        } else if (coherence && !coherence.coherent && isSignatureSuppressed("causal_incoherence", _adaptiveThresholds)) {
+          noteFeature("causal_coherence", {
+            outcome: "suppressed",
+            explanation: coherence.reason,
+            suppressionReason: "adaptive signature suppression",
+            thresholds: { zScore: coherence.zScore, threshold: _adaptiveThresholds.coherenceZScore },
+          });
+        }
+        if (!_behaviorWarmup.active && coherence && !coherence.coherent && !isSignatureSuppressed("causal_incoherence", _adaptiveThresholds)) {
           // Check if the z-score exceeds the adaptive threshold (coherenceTracker may use global;
           // we post-filter here using the per-agent adaptive z-score)
           const exceedsAdaptive = !coherence.zScore || Math.abs(coherence.zScore) >= _adaptiveThresholds.coherenceZScore;
           if (exceedsAdaptive) {
+            noteFeature("causal_coherence", {
+              outcome: config.injectionDetection === "block" && coherence.severity === "high" ? "blocked" : "flagged",
+              explanation: coherence.reason,
+              thresholds: { zScore: coherence.zScore, threshold: _adaptiveThresholds.coherenceZScore },
+            });
             const evt = buildCoherenceEvent(coherence,
               config.injectionDetection === "block" ? "blocked" : "flagged");
             const agentSession = agentTracker.getCurrentSession();
@@ -1802,7 +2139,20 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               return { block: true, blockReason: `Shroud security: ${coherence.reason}` };
             }
             api.logger?.info(`[shroud] Causal incoherence (flagged): ${coherence.reason}`);
+          } else {
+            noteFeature("causal_coherence", {
+              outcome: "suppressed",
+              explanation: coherence.reason,
+              suppressionReason: "below adaptive z-score threshold",
+              thresholds: { zScore: coherence.zScore, threshold: _adaptiveThresholds.coherenceZScore },
+            });
           }
+        } else if (!_behaviorWarmup.active && coherence) {
+          noteFeature("causal_coherence", {
+            outcome: "observed",
+            explanation: `Causal coherence intact for ${event.toolName ?? "unknown"}.`,
+            thresholds: { zScore: coherence.zScore, threshold: _adaptiveThresholds.coherenceZScore },
+          });
         }
       }
 
@@ -1831,8 +2181,40 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           api.logger?.info(`[shroud] Transformer: ${event.toolName} surprise=${prediction.surprise.toFixed(3)} session=${prediction.sessionAnomalyScore.toFixed(3)} intent_attn=${prediction.intentAttention.toFixed(4)} top=[${topStr}]`);
         }
         // Use adaptive transformer threshold: suppress if below per-agent threshold
-        if (anomalyEvt && prediction.surprise >= _adaptiveThresholds.transformerThreshold
+        if (_behaviorWarmup.active && anomalyEvt) {
+          noteFeature("transformer", {
+            outcome: "suppressed",
+            explanation: anomalyEvt.description,
+            suppressionReason: "behavioral warmup",
+            thresholds: { surprise: prediction.surprise, threshold: _adaptiveThresholds.transformerThreshold },
+          });
+        } else if (anomalyEvt && prediction.surprise < _adaptiveThresholds.transformerThreshold) {
+          noteFeature("transformer", {
+            outcome: "suppressed",
+            explanation: anomalyEvt.description,
+            suppressionReason: "below adaptive transformer threshold",
+            thresholds: { surprise: prediction.surprise, threshold: _adaptiveThresholds.transformerThreshold },
+          });
+        } else if (anomalyEvt && isSignatureSuppressed(anomalyEvt.signatureId, _adaptiveThresholds)) {
+          noteFeature("transformer", {
+            outcome: "suppressed",
+            explanation: anomalyEvt.description,
+            suppressionReason: "adaptive signature suppression",
+            thresholds: { surprise: prediction.surprise, threshold: _adaptiveThresholds.transformerThreshold },
+          });
+        }
+        if (!_behaviorWarmup.active
+            && anomalyEvt && prediction.surprise >= _adaptiveThresholds.transformerThreshold
             && !isSignatureSuppressed(anomalyEvt.signatureId, _adaptiveThresholds)) {
+          noteFeature("transformer", {
+            outcome: config.injectionDetection === "block" && prediction.surprise > 0.95 ? "blocked" : "flagged",
+            explanation: anomalyEvt.description,
+            thresholds: {
+              surprise: prediction.surprise,
+              threshold: _adaptiveThresholds.transformerThreshold,
+              intentAttention: prediction.intentAttention,
+            },
+          });
           const agentSession = agentTracker.getCurrentSession();
           anomalyEvt.agentBuildId = agentSession?.agentBuildId;
           anomalyEvt.agentSessionId = agentSession?.sessionId;
@@ -1842,6 +2224,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             api.logger?.warn(`[shroud] BLOCKED by transformer: surprise=${prediction.surprise.toFixed(3)}`);
             return { block: true, blockReason: `Shroud security: anomalous tool sequence (surprise=${prediction.surprise.toFixed(3)})` };
           }
+        } else {
+          noteFeature("transformer", {
+            outcome: "observed",
+            explanation: `Transformer scored ${event.toolName ?? "unknown"} at surprise=${prediction.surprise.toFixed(3)} without escalation.`,
+            thresholds: {
+              surprise: prediction.surprise,
+              threshold: _adaptiveThresholds.transformerThreshold,
+              intentAttention: prediction.intentAttention,
+            },
+          });
         }
       }
 
@@ -1852,6 +2244,26 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (toolNameLower === "sessions_send" || toolNameLower === "sessions_spawn") {
           const agentSession = agentTracker.getCurrentSession();
           if (agentSession) {
+            const parentContract = resolveAgentContract(
+              agentSession.agentLabel,
+              agentSession.classification?.role || "General Agent",
+            );
+            const p = (typeof event.params === "object" && event.params !== null)
+              ? event.params as Record<string, unknown>
+              : {};
+            const childHint = String(p.agentId || p.agentLabel || p.recipient || "").trim();
+            const delegationText = String(p.message || p.content || p.text || p.body || "").trim();
+            if (delegationText) {
+              _intentLease.issueLease({
+                parentAgentBuildId: agentSession.agentBuildId,
+                parentAgentLabel: agentSession.agentLabel,
+                childHint,
+                intentSummary: delegationText,
+                allowedToolFamilies: parentContract.allowedToolFamilies,
+                allowedDataClasses: parentContract.allowedDataClasses,
+                maxSteps: 8,
+              });
+            }
             _intentChain.captureDelegation(
               agentSession.agentBuildId,
               agentSession.agentLabel,
@@ -1870,6 +2282,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             event.params,
           );
           if (delegDrift && delegDrift.drifted) {
+            noteFeature("delegation_drift", {
+              outcome: config.injectionDetection === "block" && delegDrift.severity === "high" ? "blocked" : "flagged",
+              explanation: delegDrift.reason,
+            });
             const evt = buildDelegationDriftEvent(
               agentSession.agentLabel,
               delegDrift,
@@ -1885,6 +2301,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               return { block: true, blockReason: `Shroud security: ${delegDrift.reason}` };
             }
             api.logger?.info(`[shroud] Delegation drift (flagged): ${delegDrift.reason}`);
+          } else if (agentSession) {
+            noteFeature("delegation_drift", {
+              outcome: "observed",
+              explanation: `Delegation chain remained aligned for ${agentSession.agentLabel}.`,
+            });
           }
         }
       }
@@ -1906,6 +2327,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             if (_vectorStore && config.urlCorrelationEnabled) {
               const urlStatus = _vectorStore.isUrlMalicious(url);
               if (urlStatus.malicious) {
+                noteFeature("url_correlation", {
+                  outcome: config.injectionDetection === "block" ? "blocked" : "flagged",
+                  explanation: `URL ${url} matched malicious correlation store (confidence=${urlStatus.confidence.toFixed(2)}).`,
+                });
                 const evt = buildUrlCorrelationEvent(url, urlStatus.confidence,
                   config.injectionDetection === "block" ? "blocked" : "flagged");
                 const agentSession = agentTracker.getCurrentSession();
@@ -1919,6 +2344,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                   return { block: true, blockReason: `Shroud security: known malicious URL ${url}` };
                 }
                 api.logger?.warn(`[shroud] Malicious URL (flagged): ${url}`);
+              } else {
+                noteFeature("url_correlation", {
+                  outcome: "observed",
+                  explanation: `URL ${url} was not present in the malicious correlation store.`,
+                });
               }
             }
           }
@@ -1939,6 +2369,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         );
 
         if (recentMedium && recentMedium.length > 0) {
+          noteFeature("shadow_execution", {
+            outcome: "observed",
+            explanation: `Shadow execution invoked for ${event.toolName} after ${recentMedium.length} medium/high precursor events.`,
+          });
           api.logger?.info(`[shroud] Shadow execution triggered for "${event.toolName}" (${recentMedium.length} medium+ events)`);
           try {
             const shadowResult = await _shadowExecutor.execute({
@@ -1961,6 +2395,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(shadowEvt);
 
             if (shadowResult.verdict === "block") {
+              noteFeature("shadow_execution", {
+                outcome: "blocked",
+                explanation: shadowResult.verdictReason,
+              });
               agentTracker.recordSecurityEvent(1);
               // Record attack trace for contrastive learning (Tier 2) + threat labels (Tier 4)
               if (_transformerScorer && _sessionToolSequence.length > 0) {
@@ -1985,8 +2423,17 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               api.logger?.warn(`[shroud] BLOCKED by shadow execution: ${shadowResult.verdictReason}`);
               return { block: true, blockReason: `Shroud shadow execution: ${shadowResult.verdictReason}` };
             }
+            noteFeature("shadow_execution", {
+              outcome: "flagged",
+              explanation: shadowResult.verdictReason,
+            });
             api.logger?.info(`[shroud] Shadow execution allowed: ${shadowResult.verdictReason}`);
           } catch (err: any) {
+            noteFeature("shadow_execution", {
+              outcome: "suppressed",
+              explanation: `Shadow execution failed for ${event.toolName}: ${err?.message || "unknown error"}`,
+              suppressionReason: "shadow execution error",
+            });
             api.logger?.warn(`[shroud] Shadow execution error: ${err?.message}`);
           }
         }
@@ -2034,6 +2481,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // Validate tool result against user intent (Heuristic 1 + 3)
     if (_turnContext?.pendingToolCall && config.injectionDetection !== "off" && securityBus) {
       const flags = validateToolResult(_turnContext, resultCategories, totalResultSize);
+      noteFeature("result_validation", {
+        outcome: flags.length > 0 ? "flagged" : "observed",
+        explanation: flags.length > 0
+          ? `Tool result validation raised ${flags.length} result-risk flags for ${_turnContext.pendingToolCall.toolName}.`
+          : `Tool result validation cleared ${_turnContext.pendingToolCall.toolName}.`,
+      });
       if (flags.length > 0) {
         const agentSession = agentTracker.getCurrentSession();
         for (const evt of flags) {
@@ -2647,6 +3100,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 ? activeDetector.scanRequest(textsToScan.join("\n"))
                 : []),
             ];
+            noteFeature("injection_signatures", {
+              outcome: events.length > 0
+                ? (events.some(e => e.action === "blocked") ? "blocked" : "flagged")
+                : "observed",
+              explanation: events.length > 0
+                ? `Fetch-side request scan matched ${events.length} injection signatures.`
+                : "Fetch-side request scan found no injection signatures.",
+            });
 
             // Enrich events with agent identity
             const agentSession = agentTracker.getCurrentSession();
@@ -2787,6 +3248,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (respDetector && securityBus) {
         try {
           const events = respDetector.scanResponse(deobbed);
+          noteFeature("injection_signatures", {
+            outcome: events.length > 0 ? "flagged" : "observed",
+            explanation: events.length > 0
+              ? `Response scan matched ${events.length} suspicious response signatures.`
+              : "Response scan found no injection signatures.",
+          });
           const agentSession = agentTracker.getCurrentSession();
           for (const evt of events) {
             if (agentSession) {
@@ -2808,6 +3275,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           const leaks = canary.checkLeakNearMatch(deobbed, config.canaryNearMatchDistance);
           const behLeaks = canary.checkBehaviouralLeak(deobbed);
           const allLeaks = [...leaks, ...behLeaks];
+          noteFeature("canary", {
+            outcome: allLeaks.length > 0 ? "flagged" : "observed",
+            explanation: allLeaks.length > 0
+              ? `Canary/behavioural tripwire leaked ${allLeaks.length} times in model output.`
+              : "No canary leakage detected in response block.",
+          });
           if (allLeaks.length > 0) {
             const agentSession = agentTracker.getCurrentSession();
             for (const leak of allLeaks) {
@@ -3434,4 +3907,3 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   }
 }
-

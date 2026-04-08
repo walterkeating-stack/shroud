@@ -24,11 +24,14 @@ import { readFileSync, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type { SecurityEventBus, SecurityEvent } from "./security-event.js";
 import type { AgentSessionTracker } from "./agent-session.js";
+import { getBehaviorWarmupState } from "./agent-session.js";
+import { resolveAgentContract } from "./contracts.js";
 import type { BaselineStore } from "./profiler-store.js";
 import type { Obfuscator } from "./obfuscator.js";
 import type { BehaviouralProfiler } from "./profiler.js";
 import type { ShroudConfig } from "./types.js";
 import type { PolicyEngine } from "./policy.js";
+import type { FeatureCounterRegistry } from "./feature-counters.js";
 import type { DriftDetector } from "./detectors/drift-detector.js";
 import type { CausalCoherenceTracker } from "./causal-coherence.js";
 import type { VectorStore } from "./vector-store.js";
@@ -226,6 +229,19 @@ export function startDashboard(
         const buildId = url.slice("/api/profiling/".length);
         handleProfilingDetail(res, deps, buildId);
       }
+      else if (url === "/api/contracts") {
+        handleContracts(res, deps, appSession);
+      }
+      else if (url === "/api/leases") {
+        handleLeases(res);
+      }
+      else if (url === "/api/features") {
+        handleFeatures(res);
+      }
+      else if (url?.startsWith("/api/features/")) {
+        const buildId = url.slice("/api/features/".length);
+        handleFeatureDetail(res, deps, buildId, appSession);
+      }
       else if (url === "/api/stats") {
         handleStats(res, deps);
       }
@@ -384,7 +400,7 @@ export function startDashboard(
           "/health", "/api/overview", "/api/obfuscation", "/api/agents", "/api/agents/:buildId",
           "/api/events", "/api/events/stream", "/api/event-summary",
           "/api/suggestions", "/api/profiling",
-          "/api/profiling/:buildId", "/api/stats", "/api/calls",
+          "/api/profiling/:buildId", "/api/contracts", "/api/leases", "/api/features", "/api/features/:buildId", "/api/stats", "/api/calls",
           "/api/drift", "/api/coherence", "/api/vectors", "/api/vectors/urls",
           "/api/vectors/:buildId/evolution", "/api/intent-chain",
           "/api/intent-chain/:buildId/events", "/api/agent-space", "/api/timeline",
@@ -411,6 +427,23 @@ export function startDashboard(
 }
 
 // ── Route handlers ──────────────────────────────────
+
+function getFeatureRegistry(): FeatureCounterRegistry | null {
+  return ((globalThis as any).__shroudFeatureRegistry as FeatureCounterRegistry | undefined) || null;
+}
+
+function getAgentFeatureSummary(buildId?: string, label?: string) {
+  const registry = getFeatureRegistry();
+  if (!registry) return null;
+  const features = registry.getForAgent(buildId, label);
+  return {
+    total: features.length,
+    evaluated: features.reduce((sum, f) => sum + f.counters.evaluated, 0),
+    suppressed: features.reduce((sum, f) => sum + f.counters.suppressed, 0),
+    flagged: features.reduce((sum, f) => sum + f.counters.flagged, 0),
+    blocked: features.reduce((sum, f) => sum + f.counters.blocked, 0),
+  };
+}
 
 function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
   // Use disk-merged agent count for overview (same as /api/agents)
@@ -442,6 +475,7 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: R
   const agents = deps.agentTracker.getAllSessions();
   const secStats = deps.securityBus?.getStats();
   const profiler = deps.profiler;
+  const featureRegistry = getFeatureRegistry();
 
   // Count honeypot/phantom tripwire hits from security events
   const allEvents = deps.securityBus?.getEvents() ?? [];
@@ -532,6 +566,10 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: R
       blocked: shadowBlocked,
       allowed: shadowEvents.length - shadowBlocked,
     },
+    features: featureRegistry ? {
+      summary: featureRegistry.getSummary(),
+      features: featureRegistry.getAll(),
+    } : null,
   });
 }
 
@@ -558,9 +596,15 @@ function computeAgentHealth(
   agent: import("./agent-session.js").AgentSession,
   baseline: any | null,
   securityEvents: import("./security-event.js").SecurityEvent[],
+  config: import("./types.js").ShroudConfig,
 ): import("./agent-session.js").AgentHealth {
   const issues: string[] = [];
   const now = Date.now();
+  const warmup = getBehaviorWarmupState(
+    agent,
+    baseline?.sessionCount || 0,
+    config.profilingMinBaseline,
+  );
 
   // 1. Liveness — how recently was the agent active?
   const sinceLastCall = now - agent.lastCallAt;
@@ -571,11 +615,18 @@ function computeAgentHealth(
 
   // 2. Security event rate — exclude "low" severity (quoted context, FPs)
   const significantEvents = securityEvents.filter(e => e.severity !== "low");
+  const alertingEvents = warmup.active
+    ? significantEvents.filter(e => e.eventType !== "anomaly_detected")
+    : significantEvents;
   // Use the higher of llmCallCount and securityEventCount as denominator
   // to avoid inflated rates when counters are out of sync (e.g. after restart)
   const callDenominator = Math.max(agent.llmCallCount, agent.securityEventCount, 1);
-  const eventRate = Math.round((significantEvents.length / callDenominator) * 100);
-  if (eventRate > 50) issues.push("High security event rate (" + eventRate + "% of calls)");
+  const eventRate = Math.round((alertingEvents.length / callDenominator) * 100);
+  if (warmup.active) {
+    issues.push(`Behavioral warmup: ${warmup.sessionsUntilReady} sessions or ${warmup.toolCallsUntilReady} tool calls until active`);
+  } else if (eventRate > 50) {
+    issues.push("High security event rate (" + eventRate + "% of calls)");
+  }
 
   // 3. Behavioural compliance — check entity categories and tools against role expectations
   let compliant = true;
@@ -599,7 +650,7 @@ function computeAgentHealth(
   }
 
   // Recent high/medium-severity security events
-  const recentHighSev = securityEvents.filter(
+  const recentHighSev = alertingEvents.filter(
     e => (e.severity === "high" || e.severity === "medium") && (now - e.timestamp) < 3_600_000,
   );
   if (recentHighSev.length > 0) {
@@ -609,14 +660,14 @@ function computeAgentHealth(
 
   // Determine overall status
   let status: "healthy" | "warning" | "critical" = "healthy";
-  if (!compliant || eventRate > 50) status = "warning";
-  if (recentHighSev.filter(e => e.severity === "high").length >= 3 || eventRate > 200) status = "critical";
+  if (!warmup.active && (!compliant || eventRate > 50)) status = "warning";
+  if (!warmup.active && (recentHighSev.filter(e => e.severity === "high").length >= 3 || eventRate > 200)) status = "critical";
 
   const colour = status === "healthy" ? "#3fb950"
     : status === "warning" ? "#d29922"
     : "#f85149";
 
-  return { status, colour, compliant, issues, lastActiveAgo, eventRate };
+  return { status, colour, compliant, issues, lastActiveAgo, eventRate, warmingUp: warmup.active };
 }
 
 function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
@@ -695,7 +746,12 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
     }
     return {
       ...agent,
-      health: computeAgentHealth(agent, baseline, agentEvents),
+      contract: resolveAgentContract(
+        agent.agentLabel,
+        agent.classification?.role || "General Agent",
+      ),
+      featureSummary: getAgentFeatureSummary(agent.agentBuildId, agent.agentLabel),
+      health: computeAgentHealth(agent, baseline, agentEvents, deps.config),
       profiling: baseline ? {
         maturity: baseline.maturity,
         sessionCount: baseline.sessionCount,
@@ -703,6 +759,11 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
           (baseline.sessionCount / deps.config.profilingMinBaseline) * 100,
         )),
         sessionsUntilActive: Math.max(0, deps.config.profilingMinBaseline - baseline.sessionCount),
+        warmingUp: getBehaviorWarmupState(
+          agent,
+          baseline.sessionCount,
+          deps.config.profilingMinBaseline,
+        ).active,
         knownTools: baseline.toolProfile,
         knownCategories: baseline.categoryProfile,
         lastUpdated: new Date(baseline.lastUpdated).toISOString(),
@@ -711,11 +772,108 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
         sessionCount: 0,
         learningProgress: 0,
         sessionsUntilActive: deps.config.profilingMinBaseline,
+        warmingUp: true,
       },
     };
   });
 
   json(res, 200, { agents: enriched });
+}
+
+function handleContracts(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
+  const contracts = deps.agentTracker.getAllSessions().map(agent => ({
+    agentBuildId: agent.agentBuildId,
+    agentLabel: agent.agentLabel,
+    contract: resolveAgentContract(
+      agent.agentLabel,
+      agent.classification?.role || "General Agent",
+    ),
+  }));
+  if (appSession && typeof appSession === "object" && (appSession as any).agentLabel) {
+    const app = appSession as any;
+    if (!contracts.some(c => c.agentLabel === app.agentLabel)) {
+      contracts.push({
+        agentBuildId: app.agentBuildId || "",
+        agentLabel: app.agentLabel,
+        contract: resolveAgentContract(
+          app.agentLabel,
+          app.classification?.role || "General Agent",
+        ),
+      });
+    }
+  }
+  json(res, 200, { contracts });
+}
+
+function handleLeases(res: ServerResponse) {
+  const mgr = (globalThis as any).__shroudIntentLease as any;
+  if (!mgr) {
+    json(res, 200, { enabled: false, pending: [], active: [] });
+    return;
+  }
+  const pending = Array.isArray(mgr._pending) ? mgr._pending : [];
+  const active = mgr._active instanceof Map ? [...mgr._active.entries()] : [];
+  json(res, 200, {
+    enabled: true,
+    pending: pending.map((l: any) => ({
+      leaseId: l.leaseId,
+      parentAgentLabel: l.parentAgentLabel,
+      childHint: l.childHint,
+      intentSummary: l.intentSummary,
+      allowedToolFamilies: l.allowedToolFamilies,
+      maxSteps: l.maxSteps,
+      expiresAt: l.expiresAt,
+    })),
+    active: active.map(([agentBuildId, l]: [string, any]) => ({
+      agentBuildId,
+      leaseId: l.leaseId,
+      parentAgentLabel: l.parentAgentLabel,
+      childHint: l.childHint,
+      intentSummary: l.intentSummary,
+      allowedToolFamilies: l.allowedToolFamilies,
+      maxSteps: l.maxSteps,
+      expiresAt: l.expiresAt,
+    })),
+  });
+}
+
+function handleFeatures(res: ServerResponse) {
+  const registry = getFeatureRegistry();
+  if (!registry) {
+    json(res, 200, { enabled: false, summary: null, features: [] });
+    return;
+  }
+  json(res, 200, {
+    enabled: true,
+    summary: registry.getSummary(),
+    features: registry.getAll(),
+  });
+}
+
+function handleFeatureDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSession?: Record<string, unknown> | null) {
+  const registry = getFeatureRegistry();
+  if (!registry) {
+    json(res, 200, { enabled: false, features: [] });
+    return;
+  }
+  let agentLabel = deps.agentTracker.getSession(buildId)?.agentLabel;
+  if (!agentLabel && deps.agentSessionFile) {
+    try {
+      const raw = readFileSync(deps.agentSessionFile, "utf-8");
+      const diskSessions = JSON.parse(raw) as any[];
+      agentLabel = diskSessions.find((e: any) => e.agentBuildId === buildId)?.agentLabel;
+    } catch {}
+  }
+  if (!agentLabel && appSession && (appSession as any).agentBuildId === buildId) {
+    agentLabel = (appSession as any).agentLabel;
+  }
+  json(res, 200, {
+    enabled: true,
+    agentBuildId: buildId,
+    agentLabel: agentLabel || null,
+    summary: getAgentFeatureSummary(buildId, agentLabel),
+    features: registry.getForAgent(buildId, agentLabel),
+  });
 }
 
 function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
@@ -826,9 +984,15 @@ function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: st
 
   const baseline = deps.baselineStore?.load(buildId);
   const events = deps.securityBus?.getEvents().filter(e => e.agentBuildId === buildId) ?? [];
+  const contract = resolveAgentContract(
+    agent.agentLabel || agent.agentBuildId || "Unknown Agent",
+    agent.classification?.role || "General Agent",
+  );
 
   json(res, 200, {
-    agent,
+    agent: { ...agent, contract },
+    features: getFeatureRegistry()?.getForAgent(buildId, agent.agentLabel) ?? [],
+    featureSummary: getAgentFeatureSummary(buildId, agent.agentLabel),
     baseline: baseline ? {
       maturity: baseline.maturity,
       sessionCount: baseline.sessionCount,
@@ -1040,6 +1204,7 @@ function handleStats(res: ServerResponse, deps: DashboardDeps) {
     obfuscation: deps.obfuscator.getStats(),
     security: deps.securityBus?.getStats() ?? null,
     agentCount: deps.agentTracker.getAllSessions().length,
+    features: getFeatureRegistry()?.getSummary() ?? null,
   });
 }
 
@@ -1869,6 +2034,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <div class="tabs">
   <div class="tab active" onclick="switchTab('overview')">Overview</div>
   <div class="tab" onclick="switchTab('rules')">Firewall Rules</div>
+  <div class="tab" onclick="switchTab('features')">Features</div>
   <div class="tab" onclick="switchTab('signatures')">Signatures</div>
   <div class="tab" onclick="switchTab('transformer')">Transformer</div>
   <div class="tab" onclick="switchTab('obfuscation')">Obfuscation</div>
@@ -1880,6 +2046,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="card"><h2>Initializing...</h2></div>
 </div>
 <div id="rulesContent" style="display:none"></div>
+<div id="featuresContent" style="display:none"></div>
 <div id="sigContent" style="display:none"></div>
 <div id="transformerContent" style="display:none"></div>
 <div id="obfuscationContent" style="display:none"></div>
@@ -2224,6 +2391,19 @@ async function refresh() {
     html += '<div class="row" style="margin-top:12px"><span class="label">Firewall Mode</span><span class="pill ' + modeColor + '">' + sec.injectionDetection.toUpperCase() + '</span></div>';
     html += '</div>';
 
+    const featureSummary = (overview.features && overview.features.summary) || null;
+    if (featureSummary) {
+      html += '<div class="card"><h2>Feature Visibility</h2>';
+      html += '<div class="stat-row">';
+      html += '<div class="stat-group"><div class="stat accent">' + featureSummary.enabled + '<span style="font-size:16px;color:var(--text-muted)">/' + featureSummary.total + '</span></div><div class="stat-label">Features Enabled</div><div class="stat-hint">Runtime feature registry coverage</div></div>';
+      html += '<div class="stat-group"><div class="stat">' + featureSummary.evaluated + '</div><div class="stat-label">Evaluations</div><div class="stat-hint">Total feature checks performed</div></div>';
+      html += '<div class="stat-group"><div class="stat yellow">' + featureSummary.suppressed + '</div><div class="stat-label">Suppressed</div><div class="stat-hint">Warmup, threshold, or advisory suppression</div></div>';
+      html += '</div>';
+      html += '<div class="row" style="margin-top:12px"><span class="label">Escalations</span><span class="value">' + featureSummary.flagged + ' flagged / ' + featureSummary.blocked + ' blocked</span></div>';
+      html += '<div class="row"><span class="label">Visibility</span><span class="value"><a href="#" style="color:var(--accent);text-decoration:none" onclick="switchTab(\\'features\\');return false">Open feature audit</a></span></div>';
+      html += '</div>';
+    }
+
     html += '<div class="card"><h2>Zero-FP Tripwires</h2>';
     html += '<div class="stat-row">';
     html += '<div class="stat-group"><div class="stat ' + (sec.honeypotTrips > 0 ? 'red' : 'green') + '">' + (sec.honeypotTrips||0) + '</div><div class="stat-label">Honeypot Trips</div><div class="stat-hint">Fake secrets used = confirmed injection</div></div>';
@@ -2372,6 +2552,7 @@ async function showAgent(buildId) {
     const a = data.agent;
     const b = data.baseline;
     const evts = data.recentEvents || [];
+    const contract = a.contract || {};
 
     let html = '<div class="card" style="grid-column: span 2">';
     html += '<h2 style="cursor:pointer" onclick="viewingAgent=false;refresh()">< Back to Overview</h2>';
@@ -2394,6 +2575,12 @@ async function showAgent(buildId) {
     html += '<tr class="row"><td class="label">Started</td><td class="value">' + new Date(a.startedAt).toLocaleString() + '</td></tr>';
     const toolInv = a.toolInventory || [];
     html += '<tr class="row"><td class="label">Tool Inventory</td><td class="value">' + (toolInv.length > 0 ? '<span style="color:#d2a8ff">' + toolInv.length + ' tools</span> — ' + toolInv.slice(0, 15).join(', ') + (toolInv.length > 15 ? '... (+' + (toolInv.length - 15) + ')' : '') : '<span style="color:#484f58">none captured yet</span>') + '</td></tr>';
+    html += '<tr class="row"><td class="label">Contract Role</td><td class="value">' + (contract.role || 'none') + '</td></tr>';
+    html += '<tr class="row"><td class="label">Allowed Tool Families</td><td class="value">' + ((contract.allowedToolFamilies || []).join(', ') || 'none') + '</td></tr>';
+    html += '<tr class="row"><td class="label">Allowed Channels</td><td class="value">' + ((contract.allowedChannels || []).join(', ') || 'none') + '</td></tr>';
+    html += '<tr class="row"><td class="label">Delegation Targets</td><td class="value">' + ((contract.allowedDelegationTargets || []).join(', ') || 'none') + '</td></tr>';
+    const fs = data.featureSummary || {};
+    html += '<tr class="row"><td class="label">Feature Checks</td><td class="value">' + ((fs.evaluated || 0) + ' eval / ' + (fs.suppressed || 0) + ' suppressed / ' + (fs.flagged || 0) + ' flagged / ' + (fs.blocked || 0) + ' blocked') + '</td></tr>';
     const soul = a.soulExtract || '';
     html += '<tr class="row"><td class="label">SOUL Extract</td><td class="value">' + (soul ? '<div style="font-family:monospace;font-size:11px;color:#8b949e;max-height:80px;overflow-y:auto;white-space:pre-wrap">' + soul.replace(/</g, '&lt;').slice(0, 300) + (soul.length > 300 ? '...' : '') + '</div>' : '<span style="color:#484f58">not captured yet</span>') + '</td></tr>';
     html += '</tbody></table>';
@@ -2429,9 +2616,66 @@ async function showAgent(buildId) {
       html += '</div></div>';
     }
 
+    const agentFeatures = data.features || [];
+    if (agentFeatures.length > 0) {
+      html += '<div class="card card-wide"><h2>Feature Audit</h2>';
+      html += '<table class="data-table"><thead><tr><th>Feature</th><th>State</th><th>Counters</th><th>Thresholds</th><th>Why</th></tr></thead><tbody>';
+      for (const f of agentFeatures) {
+        const stateCls = f.lastOutcome === 'blocked' ? 'pill-critical'
+          : f.lastOutcome === 'flagged' ? 'pill-medium'
+          : f.lastOutcome === 'suppressed' ? 'pill-info'
+          : 'pill-low';
+        html += '<tr>';
+        html += '<td><div style="font-weight:600;color:var(--text-primary)">' + f.label + '</div><div style="font-size:10px;color:var(--text-muted)">' + f.category + '</div></td>';
+        html += '<td><span class="pill ' + stateCls + '">' + (f.lastOutcome || 'inactive') + '</span></td>';
+        html += '<td>' + f.counters.evaluated + ' eval / ' + f.counters.suppressed + ' sup / ' + f.counters.flagged + ' flag / ' + f.counters.blocked + ' blk</td>';
+        html += '<td><code>' + JSON.stringify(f.thresholds || {}).replace(/</g, '&lt;') + '</code></td>';
+        html += '<td><div style="color:var(--text-primary)">' + (f.lastExplanation || '') + '</div>' + (f.lastSuppressionReason ? '<div style="font-size:10px;color:var(--text-muted)">Suppressed because: ' + f.lastSuppressionReason + '</div>' : '') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
     document.getElementById('content').innerHTML = html;
   } catch(err) {
     document.getElementById('content').innerHTML = '<div class="card"><h2>Error loading agent: ' + err.message + '</h2></div>';
+  }
+}
+
+async function renderFeatures() {
+  try {
+    const data = await fetchJson('/api/features');
+    const features = data.features || [];
+    const summary = data.summary || {};
+    let html = '<div class="policy-section">';
+    html += '<div class="card" style="margin-bottom:16px"><h2>Feature Audit</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat accent">' + (summary.enabled || 0) + '<span style="font-size:16px;color:var(--text-muted)">/' + (summary.total || 0) + '</span></div><div class="stat-label">Enabled</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + (summary.evaluated || 0) + '</div><div class="stat-label">Evaluated</div></div>';
+    html += '<div class="stat-group"><div class="stat yellow">' + (summary.suppressed || 0) + '</div><div class="stat-label">Suppressed</div></div>';
+    html += '<div class="stat-group"><div class="stat red">' + (summary.blocked || 0) + '</div><div class="stat-label">Blocked</div></div>';
+    html += '</div>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Every firewall subsystem exposes last state, thresholds, counters, explanation, and suppression reason here.</p>';
+    html += '</div>';
+
+    html += '<div class="card"><table class="data-table"><thead><tr><th>Feature</th><th>State</th><th>Counters</th><th>Thresholds</th><th>Explanation</th></tr></thead><tbody>';
+    for (const f of features) {
+      const stateCls = f.lastOutcome === 'blocked' ? 'pill-critical'
+        : f.lastOutcome === 'flagged' ? 'pill-medium'
+        : f.lastOutcome === 'suppressed' ? 'pill-info'
+        : 'pill-low';
+      html += '<tr>';
+      html += '<td><div style="font-weight:600;color:var(--text-primary)">' + f.label + '</div><div style="font-size:10px;color:var(--text-muted)">' + f.id + ' · ' + f.category + (f.enabled ? '' : ' · disabled') + '</div></td>';
+      html += '<td><span class="pill ' + stateCls + '">' + (f.lastOutcome || 'inactive') + '</span></td>';
+      html += '<td>' + f.counters.evaluated + ' eval / ' + f.counters.observed + ' ok / ' + f.counters.suppressed + ' sup / ' + f.counters.flagged + ' flag / ' + f.counters.blocked + ' blk</td>';
+      html += '<td><code>' + JSON.stringify(f.thresholds || {}).replace(/</g, '&lt;') + '</code></td>';
+      html += '<td><div style="color:var(--text-primary)">' + (f.lastExplanation || f.explanation || '') + '</div>' + (f.lastSuppressionReason ? '<div style="font-size:10px;color:var(--text-muted)">Suppressed because: ' + f.lastSuppressionReason + '</div>' : '') + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table></div></div>';
+    document.getElementById('featuresContent').innerHTML = html;
+  } catch (err) {
+    document.getElementById('featuresContent').innerHTML = '<div class="policy-section"><div class="rule-card"><h3>Error: ' + err.message + '</h3></div></div>';
   }
 }
 
@@ -2440,6 +2684,7 @@ let currentTab = 'overview';
 const TAB_CONTAINERS = {
   overview: 'content',
   rules: 'rulesContent',
+  features: 'featuresContent',
   signatures: 'sigContent',
   transformer: 'transformerContent',
   obfuscation: 'obfuscationContent',
@@ -2461,6 +2706,7 @@ function switchTab(tab) {
   else if (tab === 'events') renderEvents();
   else if (tab === 'tripwires') renderTripwires();
   else if (tab === 'rules') refreshRules();
+  else if (tab === 'features') renderFeatures();
   else if (tab === 'signatures') renderSignatures();
   else if (tab === 'transformer') renderTransformer();
   else if (tab === 'timeline') renderTimeline();

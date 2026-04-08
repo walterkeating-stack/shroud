@@ -59,6 +59,16 @@ export interface AgentHealth {
   lastActiveAgo: string;
   /** Security event rate per 100 calls. */
   eventRate: number;
+  /** Whether behavioral/anomaly enforcement is still warming up. */
+  warmingUp?: boolean;
+}
+
+export interface BehaviorWarmupState {
+  active: boolean;
+  sessionCount: number;
+  toolCallCount: number;
+  sessionsUntilReady: number;
+  toolCallsUntilReady: number;
 }
 
 /** Represents a tracked agent session. */
@@ -736,6 +746,25 @@ export function normalizeLabel(label: string): string {
 }
 
 /**
+ * Behavioral detection should stay advisory while the agent is still cold.
+ * We consider it warmed up once it has a baseline from enough sessions OR
+ * enough observed tool calls in the current runtime.
+ */
+export function getBehaviorWarmupState(
+  agent: Pick<AgentSession, "behavior"> | null | undefined,
+  baselineSessionCount: number,
+  minBaselineSessions: number,
+  minToolCalls = 20,
+): BehaviorWarmupState {
+  const toolCallCount = agent?.behavior?.totalToolCalls || 0;
+  const sessionCount = Math.max(0, baselineSessionCount || 0);
+  const sessionsUntilReady = Math.max(0, minBaselineSessions - sessionCount);
+  const toolCallsUntilReady = Math.max(0, minToolCalls - toolCallCount);
+  const active = sessionCount < minBaselineSessions && toolCallCount < minToolCalls;
+  return { active, sessionCount, toolCallCount, sessionsUntilReady, toolCallsUntilReady };
+}
+
+/**
  * OpenClaw framework preambles that must be ignored for identity extraction.
  * These match BOTH the full "You are X" form AND the captured group (after
  * "You are a/an/the" is stripped by the regex).
@@ -1119,6 +1148,7 @@ function _extractLabelFromText(text: string): string | null {
 /** Role taxonomy with keyword signals. Ordered by specificity (most specific first). */
 const ROLE_TAXONOMY: { role: string; keywords: RegExp }[] = [
   { role: "Security Research",    keywords: /security|threat|vulnerab|pentest|exploit|malware|incident|forensic|soc\b|siem|ids|ips|firewall/i },
+  { role: "Orchestration / Control Plane", keywords: /orchestrat|control-?\s*plane|runtime\s*health|capability\s*rollout|agent\s*provision|provision(?:ing)?|migration\s*readiness|staged\s*cron|channel\s*migration|live\s*front\s*door/i },
   { role: "DevOps / SRE",        keywords: /devops|sre\b|deploy|infra|kubernetes|k8s|docker|terraform|ansible|ci\s*\/?\s*cd|pipeline|monitoring|grafana|prometheus/i },
   { role: "System Admin",        keywords: /sysadmin|system\s*admin|server|linux|network\s*admin|dns|dhcp|ldap|active\s*directory/i },
   { role: "Network Engineering",  keywords: /network|router|switch|vlan|bgp|ospf|firewall\s*rule|palo\s*alto|juniper|cisco/i },
@@ -1294,6 +1324,7 @@ export function classifyAgent(label: string, systemPrompt: string): AgentClassif
 
 /** Tool name patterns that indicate specific roles. */
 const TOOL_ROLE_SIGNALS: { role: string; tools: RegExp }[] = [
+  { role: "Orchestration / Control Plane", tools: /sessions_spawn|session_status|sessions_send|agent_provision|provision|rollout|orchestrat/i },
   { role: "DevOps / SRE",        tools: /deploy|kubernetes|docker|terraform|ansible|helm|kubectl|aws|gcloud|azure/i },
   { role: "Software Engineering", tools: /code|compile|build|test|lint|git|npm|pip|cargo|debug|exec|write_file|read_file/i },
   { role: "System Admin",        tools: /ssh|systemctl|service|cron|mount|useradd|passwd|iptables/i },

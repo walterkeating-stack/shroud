@@ -5,6 +5,7 @@ import {
   describeToolCall,
   DriftDetector,
   buildDriftEvent,
+  shouldAlertOnDrift,
 } from "../src/detectors/drift-detector.js";
 
 describe("tokenize", () => {
@@ -230,5 +231,55 @@ describe("buildDriftEvent", () => {
     };
     const event = buildDriftEvent("web_fetch", result);
     expect(event.signatureId).toBe("drift_sudden_turn");
+  });
+});
+
+describe("shouldAlertOnDrift", () => {
+  it("suppresses early routine-tool drift noise", () => {
+    const shouldAlert = shouldAlertOnDrift("memory_search", {
+      similarity: 0,
+      drifted: true,
+      suddenTurn: true,
+      delta: -1,
+      severity: "medium",
+      reason: "Trajectory turn",
+    }, 1);
+    expect(shouldAlert).toBe(false);
+  });
+
+  it("alerts on later routine-tool drift once trajectory has context", () => {
+    const shouldAlert = shouldAlertOnDrift("memory_search", {
+      similarity: 0,
+      drifted: true,
+      suddenTurn: true,
+      delta: -1,
+      severity: "medium",
+      reason: "Trajectory turn",
+    }, 3);
+    expect(shouldAlert).toBe(true);
+  });
+
+  it("alerts on non-routine medium drift immediately", () => {
+    const shouldAlert = shouldAlertOnDrift("web_fetch", {
+      similarity: 0,
+      drifted: true,
+      suddenTurn: true,
+      delta: -1,
+      severity: "medium",
+      reason: "Trajectory turn",
+    }, 1);
+    expect(shouldAlert).toBe(true);
+  });
+
+  it("alerts on high severity even for early routine tools", () => {
+    const shouldAlert = shouldAlertOnDrift("exec", {
+      similarity: 0,
+      drifted: true,
+      suddenTurn: true,
+      delta: -1,
+      severity: "high",
+      reason: "Sharp trajectory turn",
+    }, 1);
+    expect(shouldAlert).toBe(true);
   });
 });
