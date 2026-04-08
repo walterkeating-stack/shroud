@@ -8,6 +8,15 @@ export interface TrustZoneViolation {
   reason: string;
 }
 
+export interface TrustZoneSignal {
+  privilegedTool: boolean;
+  lowTrustText: boolean;
+  matchedPatternCount: number;
+  matchedPatterns: string[];
+  riskScore: number;
+  risky: boolean;
+}
+
 const OVERRIDE_PATTERNS = [
   /\bignore\s+(?:all\s+)?previous\b/i,
   /\boverride\b.{0,40}\b(?:policy|system|instruction|guardrail)\b/i,
@@ -26,16 +35,51 @@ function extractCandidateText(params: unknown): string {
   return JSON.stringify(params);
 }
 
-export function checkTrustZoneOverride(toolName: string, params: unknown): TrustZoneViolation | null {
+export function assessTrustZoneContext(toolName: string, params: unknown): TrustZoneSignal {
   const lowerTool = toolName.toLowerCase();
-  if (!["sessions_send", "sessions_spawn", "exec", "bash", "code_execution"].includes(lowerTool)) {
-    return null;
+  const privilegedTool = ["sessions_send", "sessions_spawn", "exec", "bash", "code_execution"].includes(lowerTool);
+  if (!privilegedTool) {
+    return {
+      privilegedTool: false,
+      lowTrustText: false,
+      matchedPatternCount: 0,
+      matchedPatterns: [],
+      riskScore: 0,
+      risky: false,
+    };
   }
 
   const text = extractCandidateText(params);
-  if (!text) return null;
-  const matched = OVERRIDE_PATTERNS.find(p => p.test(text));
-  if (!matched) return null;
+  if (!text) {
+    return {
+      privilegedTool,
+      lowTrustText: false,
+      matchedPatternCount: 0,
+      matchedPatterns: [],
+      riskScore: 0,
+      risky: false,
+    };
+  }
+  const matchedPatterns = OVERRIDE_PATTERNS
+    .filter(p => p.test(text))
+    .map(p => p.source);
+  const matchedPatternCount = matchedPatterns.length;
+  const lowTrustText = matchedPatternCount > 0;
+  const riskScore = Math.min(1, (lowTrustText ? 0.65 : 0) + Math.max(0, matchedPatternCount - 1) * 0.15);
+
+  return {
+    privilegedTool,
+    lowTrustText,
+    matchedPatternCount,
+    matchedPatterns,
+    riskScore,
+    risky: riskScore >= 0.65,
+  };
+}
+
+export function checkTrustZoneOverride(toolName: string, params: unknown): TrustZoneViolation | null {
+  const signal = assessTrustZoneContext(toolName, params);
+  if (!signal.risky) return null;
 
   return {
     severity: "high",

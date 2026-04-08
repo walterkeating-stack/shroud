@@ -52,6 +52,16 @@ export interface ToolPrediction {
   intentAttention: number;
   /** Per-head breakdown of attention to intent (numHeads × numLayers values). */
   intentAttentionPerHead: number[];
+  /** Structured trust-zone override risk from hook-side prompt analysis. */
+  trustZoneScore?: number;
+  trustZoneContext?: TrustZoneContext | null;
+}
+
+export interface TrustZoneContext {
+  privilegedTool: boolean;
+  lowTrustText: boolean;
+  matchedPatternCount: number;
+  riskScore: number;
 }
 
 export interface TransformerStats {
@@ -99,6 +109,10 @@ export const DEFAULT_SCORER_CONFIG: ScorerConfig = {
   trainIntervalSessions: 50,
   intentAttentionThreshold: 0.05,
 };
+
+function predictionLikeIntentHijack(intentAttention: number, threshold: number): boolean {
+  return threshold > 0 && intentAttention > 0 && intentAttention < threshold;
+}
 
 // ─── Scorer ───
 
@@ -155,7 +169,13 @@ export class TransformerScorer {
    *  @param intentVec — 256-dim TF-IDF embedding of the user's message (from DriftDetector).
    *    When provided, the model conditions predictions on user intent — "read secrets.env"
    *    gets different surprise depending on whether the user asked about secrets vs bugs. */
-  scoreToolCall(currentSequence: string[], nextTool: string, intentVec?: Float64Array | null): ToolPrediction {
+  scoreToolCall(
+    currentSequence: string[],
+    nextTool: string,
+    intentVec?: Float64Array | null,
+    trustZoneContext?: TrustZoneContext | null,
+  ): ToolPrediction {
+    const baseTrustZoneScore = trustZoneContext?.riskScore || 0;
     if (!this._modelLoaded || currentSequence.length < this._config.minSequenceLength) {
       return {
         topK: [],
@@ -166,6 +186,8 @@ export class TransformerScorer {
         threatPrediction: null,
         intentAttention: 0,
         intentAttentionPerHead: [],
+        trustZoneScore: baseTrustZoneScore,
+        trustZoneContext: trustZoneContext || null,
       };
     }
 
@@ -254,7 +276,27 @@ export class TransformerScorer {
     this._inferenceCount++;
     this._totalInferenceMs += Date.now() - start;
 
-    return { topK, surprise, perplexity, sessionAnomalyScore, embeddingShift, threatPrediction, intentAttention, intentAttentionPerHead };
+    const trustZoneScore = trustZoneContext
+      ? Math.min(
+          1,
+          trustZoneContext.riskScore
+            + (predictionLikeIntentHijack(intentAttention, this._config.intentAttentionThreshold) ? 0.15 : 0)
+            + (surprise > this._config.anomalyThreshold ? 0.1 : 0),
+        )
+      : 0;
+
+    return {
+      topK,
+      surprise,
+      perplexity,
+      sessionAnomalyScore,
+      embeddingShift,
+      threatPrediction,
+      intentAttention,
+      intentAttentionPerHead,
+      trustZoneScore,
+      trustZoneContext: trustZoneContext || null,
+    };
   }
 
   /** Check if a prediction triggers a security event.
@@ -264,6 +306,24 @@ export class TransformerScorer {
     nextTool: string,
     agentLabel?: string,
   ): SecurityEvent | null {
+    if (prediction.trustZoneContext?.privilegedTool && (prediction.trustZoneScore ?? 0) >= 0.8) {
+      return {
+        timestamp: Date.now(),
+        eventType: "anomaly_detected",
+        direction: "request",
+        threatClass: ThreatClass.INSTRUCTION_OVERRIDE,
+        signatureId: "transformer_trust_zone_override",
+        severity: (prediction.trustZoneScore ?? 0) >= 0.9 ? "high" : "medium",
+        matchedText: `Tool "${nextTool}" trust_zone_score=${(prediction.trustZoneScore ?? 0).toFixed(3)}`,
+        matchStart: 0,
+        matchEnd: 0,
+        textLength: 0,
+        action: "flagged",
+        description: `Transformer trust-zone head: low-trust override pressure reached ${nextTool} (score=${(prediction.trustZoneScore ?? 0).toFixed(3)}, matched_patterns=${prediction.trustZoneContext.matchedPatternCount}).`,
+        agentLabel,
+      };
+    }
+
     // Check threat head classification first
     if (prediction.threatPrediction) {
       const tp = prediction.threatPrediction;

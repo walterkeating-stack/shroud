@@ -50,7 +50,7 @@ import { AgentRegistry } from "./agent-registry.js";
 import * as sigLoaderMod from "./signature-loader.js";
 import { DriftDetector, buildDriftEvent, shouldAlertOnDrift } from "./detectors/drift-detector.js";
 import { IntentLeaseManager } from "./intent-lease.js";
-import { checkTrustZoneOverride } from "./detectors/trust-zone-guard.js";
+import { assessTrustZoneContext, checkTrustZoneOverride } from "./detectors/trust-zone-guard.js";
 import { ShadowExecutor, buildShadowEvent } from "./shadow-executor.js";
 import { CausalCoherenceTracker, buildCoherenceEvent } from "./causal-coherence.js";
 import { VectorStore, buildNovelWorkflowEvent, buildUrlCorrelationEvent } from "./vector-store.js";
@@ -1836,7 +1836,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             });
           }
 
-          const trustZoneViolation = checkTrustZoneOverride(event.toolName ?? "unknown", event.params);
+          const trustZoneSignal = assessTrustZoneContext(event.toolName ?? "unknown", event.params);
+          const trustZoneViolation = trustZoneSignal.risky
+            ? checkTrustZoneOverride(event.toolName ?? "unknown", event.params)
+            : null;
           if (trustZoneViolation) {
             noteFeature("trust_zone_guard", {
               outcome: config.injectionDetection === "block" ? "blocked" : "flagged",
@@ -2169,6 +2172,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           _sessionToolSequence,
           event.toolName ?? "unknown",
           intentVec,
+          assessTrustZoneContext(event.toolName ?? "unknown", event.params),
         );
         const anomalyEvt = _transformerScorer.checkAnomaly(
           prediction,
