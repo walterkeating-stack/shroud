@@ -19,5 +19,5 @@ Use this checklist before publishing any new `shroud-privacy` version.
    - `npm run test:unit`
    - `npm run test:integration`
    - `npm run build`
-   - compat baseline + latest scenarios
+   - compat baseline + latest-at-release scenarios
 5. Confirm CI on `main` is green and trusted-publisher release succeeded.
