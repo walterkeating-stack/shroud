@@ -2616,8 +2616,16 @@ async function showAgent(buildId) {
       html += '</div></div>';
     }
 
-    const agentFeatures = data.features || [];
+    const agentFeatures = [...(data.features || [])];
     if (agentFeatures.length > 0) {
+      const agentFeaturePriority = (f) => {
+        const counters = f.counters || {};
+        return ((counters.blocked || 0) * 1000000)
+          + ((counters.flagged || 0) * 10000)
+          + ((counters.suppressed || 0) * 100)
+          + (counters.evaluated || 0);
+      };
+      agentFeatures.sort((a, b) => agentFeaturePriority(b) - agentFeaturePriority(a) || a.label.localeCompare(b.label));
       html += '<div class="card card-wide"><h2>Feature Audit</h2>';
       html += '<table class="data-table"><thead><tr><th>Feature</th><th>State</th><th>Counters</th><th>Thresholds</th><th>Why</th></tr></thead><tbody>';
       for (const f of agentFeatures) {
@@ -2645,8 +2653,23 @@ async function showAgent(buildId) {
 async function renderFeatures() {
   try {
     const data = await fetchJson('/api/features');
-    const features = data.features || [];
+    const features = [...(data.features || [])];
     const summary = data.summary || {};
+    const featurePriority = (f) => {
+      const counters = f.counters || {};
+      const blocked = counters.blocked || 0;
+      const flagged = counters.flagged || 0;
+      const suppressed = counters.suppressed || 0;
+      const evaluated = counters.evaluated || 0;
+      const observed = counters.observed || 0;
+      const enabled = f.enabled ? 1 : 0;
+      return (blocked * 1000000) + (flagged * 10000) + (suppressed * 100) + evaluated + observed + enabled;
+    };
+    features.sort((a, b) => featurePriority(b) - featurePriority(a) || a.label.localeCompare(b.label));
+    const noisiest = features.filter((f) => {
+      const counters = f.counters || {};
+      return (counters.blocked || 0) > 0 || (counters.flagged || 0) > 0 || (counters.suppressed || 0) > 0;
+    }).slice(0, 5);
     let html = '<div class="policy-section">';
     html += '<div class="card" style="margin-bottom:16px"><h2>Feature Audit</h2>';
     html += '<div class="stat-row">';
@@ -2656,6 +2679,24 @@ async function renderFeatures() {
     html += '<div class="stat-group"><div class="stat red">' + (summary.blocked || 0) + '</div><div class="stat-label">Blocked</div></div>';
     html += '</div>';
     html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Every firewall subsystem exposes last state, thresholds, counters, explanation, and suppression reason here.</p>';
+    html += '</div>';
+
+    html += '<div class="card" style="margin-bottom:16px"><h2>Noisiest Features</h2>';
+    if (noisiest.length === 0) {
+      html += '<div style="color:var(--text-muted);font-size:12px">No feature has flagged, blocked, or suppressed activity yet.</div>';
+    } else {
+      html += '<table class="data-table"><thead><tr><th>Feature</th><th>Impact</th><th>Latest Why</th></tr></thead><tbody>';
+      for (const f of noisiest) {
+        const counters = f.counters || {};
+        const impact = (counters.blocked || 0) + ' blk / ' + (counters.flagged || 0) + ' flag / ' + (counters.suppressed || 0) + ' sup';
+        html += '<tr>';
+        html += '<td><div style="font-weight:600;color:var(--text-primary)">' + f.label + '</div><div style="font-size:10px;color:var(--text-muted)">' + f.id + ' · ' + f.category + '</div></td>';
+        html += '<td>' + impact + '</td>';
+        html += '<td><div style="color:var(--text-primary)">' + (f.lastExplanation || f.explanation || 'No recent explanation.') + '</div>' + (f.lastSuppressionReason ? '<div style="font-size:10px;color:var(--text-muted)">Suppressed because: ' + f.lastSuppressionReason + '</div>' : '') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+    }
     html += '</div>';
 
     html += '<div class="card"><table class="data-table"><thead><tr><th>Feature</th><th>State</th><th>Counters</th><th>Thresholds</th><th>Explanation</th></tr></thead><tbody>';
