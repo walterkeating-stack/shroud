@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.18] - 2026-04-08
+
+### Changed
+- **Release metadata aligned with `2.2.18`.** `openclaw.plugin.json` now matches the package version again, and the release docs now point at the actual validation target for this release.
+- **Release validation matrix updated.** This release is validated against baseline `2026.3.28` plus explicit latest-at-release `2026.4.7` on the Slack E2E path.
+
+### Verified
+- **OpenClaw `2026.4.7` compat pass recorded.** Focused Slack E2E compat completed successfully for `shroud-main`; artifact: `/tmp/shroud-loop-logs/compat-2026.4.7.log`.
+
 ## [2.2.17] - 2026-04-07
 
 ### Fixed

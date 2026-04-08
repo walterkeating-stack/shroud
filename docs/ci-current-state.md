@@ -1,6 +1,6 @@
 # CI Current State
 
-Last updated: 2026-04-06
+Last updated: 2026-04-08
 
 ## Shroud (`wkeything/shroud`)
 
@@ -26,11 +26,12 @@ Last updated: 2026-04-06
 - OpenClaw matrix policy:
   - test `latest` from npm.
   - test last validated baseline (`2026.3.28`).
+  - explicit release-target checks may pin a specific OpenClaw version before publish.
 - Focused checks supported via env:
   - `SHROUD_SCENARIO='WhatsApp E2E' bash compat/run-compat.sh 2026.3.28`
   - `SHROUD_SCENARIO='Slack E2E' bash compat/run-compat.sh latest --rebuild-base`
 - Latest-channel compatibility handling:
-  - OpenClaw `2026.4.5` may not support `whatsapp channels add`.
+  - OpenClaw `2026.4.7` was explicitly validated on the Slack E2E path for release `2.2.18`.
   - harness auto-skips WhatsApp E2E only when channel provisioning is unavailable.
 - Base image hardening for latest OpenClaw lazy deps:
   - installs optional deps used by bundled channels (`@slack/web-api`, `@slack/bolt`,
@@ -48,4 +49,4 @@ Last updated: 2026-04-06
 ## Quick Verification
 1. `npm ci && npm run lint && npm run test:unit && npm run test:integration && npm run build`
 2. `SHROUD_SCENARIO='WhatsApp E2E' bash compat/run-compat.sh 2026.3.28`
-3. `SHROUD_SCENARIO='Slack E2E' bash compat/run-compat.sh latest --rebuild-base`
+3. `SHROUD_SCENARIO='Slack E2E' bash compat/run-compat.sh 2026.4.7 --rebuild-base`
