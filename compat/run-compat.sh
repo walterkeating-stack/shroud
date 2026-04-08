@@ -37,6 +37,32 @@ BASE_TAG="shroud-compat-base:oc-${OC_VERSION}"
 TEST_TAG="shroud-compat:oc-${OC_VERSION}"
 SANDBOX_TAG="shroud-compat-sandbox:oc-${OC_VERSION}"
 NETWORK="shroud-compat-net"
+CURRENT_CONTAINER=""
+
+cleanup() {
+  local cleanup_exit="${1:-$?}"
+
+  echo ""
+  echo "Cleaning up..."
+
+  if [ -n "${CURRENT_CONTAINER}" ]; then
+    docker rm -f "${CURRENT_CONTAINER}" 2>/dev/null && echo "  Removed container: ${CURRENT_CONTAINER}" || true
+  fi
+
+  docker network rm "${NETWORK}" 2>/dev/null && echo "  Removed network: ${NETWORK}" || true
+
+  docker images --format '{{.Repository}}:{{.Tag}}' \
+    | grep -E '^shroud-compat(:|$)|^shroud-compat-base(:|$)|^shroud-compat-sandbox(:|$)' \
+    | xargs -r docker rmi -f >/dev/null 2>&1 || true
+  echo "  Removed compat images"
+
+  docker ps -a --filter "name=openclaw-sbx-" --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null \
+    && echo "  Removed stale OC sandbox containers" || true
+
+  return "${cleanup_exit}"
+}
+
+trap 'cleanup $?' EXIT
 
 cd "${REPO_ROOT}"
 
@@ -99,6 +125,7 @@ echo "Running compat tests against OpenClaw ${OC_VERSION}..."
 echo "============================================="
 
 if [ -n "${SANDBOX}" ]; then
+  CURRENT_CONTAINER="shroud-compat-sandbox-${OC_VERSION}"
   # Sandbox: Docker-in-Docker needs privileged mode for dockerd.
   # This is safe because:
   #   1. Network is --internal (zero egress, no packets leave)
@@ -110,7 +137,7 @@ if [ -n "${SANDBOX}" ]; then
     --memory 2g \
     --cpus 2 \
     --privileged \
-    --name "shroud-compat-sandbox-${OC_VERSION}" \
+    --name "${CURRENT_CONTAINER}" \
     "${SANDBOX_TAG}"
   EXIT_CODE=$?
 else
@@ -123,27 +150,16 @@ else
   if [ -n "${SHROUD_SCENARIO:-}" ]; then
     DOCKER_ENV_ARGS+=(-e "SHROUD_SCENARIO=${SHROUD_SCENARIO}")
   fi
+  CURRENT_CONTAINER="shroud-compat-${OC_VERSION}"
   docker run --rm \
     --network "${NETWORK}" \
     --memory "${MEMORY_LIMIT}" \
     --cpus 2 \
-    --name "shroud-compat-${OC_VERSION}" \
+    --name "${CURRENT_CONTAINER}" \
     "${DOCKER_ENV_ARGS[@]}" \
     "${TEST_TAG}"
   EXIT_CODE=$?
 fi
-
-# ── Step 6: Cleanup ──
-# Remove the isolated network (containers already removed by --rm).
-# Remove the test image (base image is cached for reuse).
-echo ""
-echo "Cleaning up..."
-docker network rm "${NETWORK}" 2>/dev/null && echo "  Removed network: ${NETWORK}"
-docker rmi "${TEST_TAG}" 2>/dev/null && echo "  Removed test image: ${TEST_TAG}"
-[ -n "${SANDBOX}" ] && docker rmi "${SANDBOX_TAG}" 2>/dev/null && echo "  Removed sandbox image: ${SANDBOX_TAG}"
-# Kill any leftover OpenClaw sandbox containers from this run
-docker ps -a --filter "name=openclaw-sbx-" --format '{{.ID}}' | xargs -r docker rm -f 2>/dev/null && echo "  Removed stale OC sandbox containers"
-echo ""
 
 if [ ${EXIT_CODE} -eq 0 ]; then
   echo "OpenClaw ${OC_VERSION}: PASS"
