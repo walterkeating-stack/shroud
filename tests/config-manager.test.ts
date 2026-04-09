@@ -56,11 +56,16 @@ describe("ConfigManager", () => {
     cleanup();
   });
 
-  it("returns base config when no file exists", () => {
+  it("auto-creates config file with built-in rules when none exists", () => {
     const base = baseConfig();
     const cm = new ConfigManager(CONFIG_PATH, base);
     expect(cm.getEffective().driftThreshold).toBe(base.driftThreshold);
-    expect(cm.getFileOverrides()).toEqual({});
+    // Auto-created file should have rules section with built-in patterns
+    const overrides = cm.getFileOverrides();
+    expect(overrides.rules).toBeDefined();
+    expect(Object.keys(overrides.rules!).length).toBeGreaterThan(0);
+    expect(overrides.rules!.email).toBeDefined();
+    expect(overrides.rules!.email.pattern).toBeDefined();
   });
 
   it("merges file overrides with base config", () => {

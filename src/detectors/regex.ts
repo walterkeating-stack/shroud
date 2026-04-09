@@ -1310,16 +1310,92 @@ class SpanTracker {
 /** Override config for individual rules: disable or change confidence. */
 export type DetectorOverrides = Record<string, { enabled?: boolean; confidence?: number }>;
 
+/** Config-as-code rule definition (pattern as string, not RegExp). */
+export type ConfigRule = {
+  enabled?: boolean;
+  pattern?: string;
+  category?: string;
+  confidence?: number;
+};
+
+/** Resolve a category string to a Category enum value. */
+function resolveCategory(name: string): Category {
+  const upper = name.toUpperCase().replace(/[^A-Z_]/g, "_");
+  if (upper in Category) return Category[upper as keyof typeof Category];
+  // Common aliases
+  const aliases: Record<string, Category> = {
+    EMAIL: Category.EMAIL,
+    IP: Category.IP_ADDRESS,
+    IP_ADDRESS: Category.IP_ADDRESS,
+    PHONE: Category.PHONE,
+    CREDIT_CARD: Category.CREDIT_CARD,
+    SSN: Category.SSN,
+    API_KEY: Category.API_KEY,
+    URL: Category.URL,
+    FILE_PATH: Category.FILE_PATH,
+    HOSTNAME: Category.HOSTNAME,
+    MAC_ADDRESS: Category.MAC_ADDRESS,
+    NETWORK_CREDENTIAL: Category.NETWORK_CREDENTIAL,
+    CUSTOM: Category.CUSTOM,
+  };
+  return aliases[upper] ?? Category.CUSTOM;
+}
+
 /** Detects sensitive entities using regex patterns. */
 export class RegexDetector implements BaseDetector {
   readonly name = "regex";
   private patterns: PatternDef[];
 
-  constructor(extraPatterns?: PatternDef[], overrides?: DetectorOverrides) {
+  constructor(
+    extraPatterns?: PatternDef[],
+    overrides?: DetectorOverrides,
+    configRules?: Record<string, ConfigRule>,
+  ) {
     let patterns = [...BUILTIN_PATTERNS];
     if (extraPatterns) {
       patterns.push(...extraPatterns);
     }
+
+    // Config-as-code rules: override built-in properties, disable, or add new
+    if (configRules) {
+      const builtinNames = new Set(patterns.map(p => p.name));
+
+      // Override existing rules
+      patterns = patterns.map((p) => {
+        const rule = configRules[p.name];
+        if (!rule) return p;
+        const updated = { ...p };
+        if (rule.pattern) {
+          try { updated.pattern = new RegExp(rule.pattern, "g"); } catch { /* invalid regex — keep built-in */ }
+        }
+        if (rule.confidence !== undefined) updated.confidence = rule.confidence;
+        if (rule.category) updated.category = resolveCategory(rule.category);
+        return updated;
+      });
+
+      // Disable rules
+      patterns = patterns.filter((p) => {
+        const rule = configRules[p.name];
+        return rule?.enabled !== false;
+      });
+
+      // Add new rules (names not in built-ins)
+      for (const [name, rule] of Object.entries(configRules)) {
+        if (builtinNames.has(name)) continue; // already handled above
+        if (rule.enabled === false) continue;
+        if (!rule.pattern) continue; // new rules must have a pattern
+        try {
+          patterns.push({
+            name,
+            pattern: new RegExp(rule.pattern, "g"),
+            category: rule.category ? resolveCategory(rule.category) : Category.CUSTOM,
+            confidence: rule.confidence ?? 0.9,
+          });
+        } catch { /* invalid regex — skip */ }
+      }
+    }
+
+    // Legacy detectorOverrides (applied after config rules for backwards compat)
     if (overrides) {
       patterns = patterns.filter((p) => {
         const ov = overrides[p.name];
