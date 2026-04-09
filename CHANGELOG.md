@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added
+- **Config-as-code manager with hot-reload.** `ConfigManager` watches `~/.shroud/shroud.config.json` (JSONC) and merges file overrides with base config at runtime. Supports field-change callbacks, 50-version commit/rollback history, dashboard read/write via `setFields()`, and env-var priority. Restart-only fields are safely rejected with warnings.
+
 ## [2.2.20] - 2026-04-09
 
 ### Verified
