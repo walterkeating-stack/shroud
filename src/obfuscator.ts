@@ -273,9 +273,10 @@ export class Obfuscator {
 
   private _initDetectors(): void {
     const overrides = this.config.detectorOverrides;
+    const configRules = this.config.rules;
 
-    // Always enable the regex detector (with optional overrides)
-    const regexDetector = new RegexDetector(undefined, overrides);
+    // Always enable the regex detector (with config rules + legacy overrides)
+    const regexDetector = new RegexDetector(undefined, overrides, configRules);
 
     // Wrap with ContextDetector for confidence boosting, proximity,
     // hostname propagation, learned entities, and frequency decay

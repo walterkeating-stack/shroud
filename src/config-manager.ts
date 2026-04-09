@@ -18,6 +18,7 @@ import { readFileSync, writeFileSync, existsSync, watchFile, unwatchFile, mkdirS
 import { dirname } from "node:path";
 import type { ShroudConfig } from "./types.js";
 import { resolveConfig, validateConfig, type ConfigIssue } from "./config.js";
+import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 
 /** Fields that cannot be hot-reloaded — require gateway restart. */
 const RESTART_ONLY = new Set([
@@ -57,6 +58,10 @@ export class ConfigManager {
     this._configPath = configPath;
     this._historyPath = configPath + ".history.json";
     this._base = baseConfig;
+    // Auto-create config file with built-in rules if it doesn't exist
+    if (!existsSync(configPath)) {
+      this._writeDefaultConfig();
+    }
     this._fileOverrides = this._loadFile();
     this._effective = this._merge(this._base, this._fileOverrides);
     this._loadHistory();
@@ -174,6 +179,40 @@ export class ConfigManager {
   }
 
   // ── Internal ───────────────────────────────────────────
+
+  /** Generate default config file with all built-in detection rules. */
+  private _writeDefaultConfig(): void {
+    const lines: string[] = [
+      "{",
+      "  // Shroud config-as-code — auto-generated with built-in detection rules.",
+      "  // Edit rules here. Changes hot-reload within 2 seconds (no restart needed).",
+      "  // Priority: env vars > this file > plugin config > defaults.",
+      "  //",
+      "  // Rule format:",
+      '  //   "rule_name": {',
+      '  //     "pattern": "regex string",     // override or define the detection regex',
+      '  //     "category": "email",            // entity category (email, ip_address, phone, etc.)',
+      '  //     "confidence": 0.95,             // detection confidence (0.0-1.0)',
+      '  //     "enabled": false                // set to false to disable a rule',
+      "  //   }",
+      "  //",
+      '  "rules": {',
+    ];
+    for (let i = 0; i < BUILTIN_PATTERNS.length; i++) {
+      const p = BUILTIN_PATTERNS[i];
+      const comma = i < BUILTIN_PATTERNS.length - 1 ? "," : "";
+      // Convert RegExp to source string
+      lines.push(`    "${p.name}": { "pattern": ${JSON.stringify(p.pattern.source)}, "category": "${p.category}", "confidence": ${p.confidence} }${comma}`);
+    }
+    lines.push("  }");
+    lines.push("}");
+    lines.push("");
+
+    try {
+      mkdirSync(dirname(this._configPath), { recursive: true });
+      writeFileSync(this._configPath, lines.join("\n"), "utf-8");
+    } catch { /* non-fatal — config file is optional */ }
+  }
 
   private _reload(): string[] {
     const oldEffective = this._effective;

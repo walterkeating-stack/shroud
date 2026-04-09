@@ -103,6 +103,11 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
         ? (raw.detectorOverrides as Record<string, { enabled?: boolean; confidence?: number }>)
         : {},
 
+    rules:
+      raw.rules != null && typeof raw.rules === "object"
+        ? (raw.rules as ShroudConfig["rules"])
+        : {},
+
     // Tool chain depth
     maxToolDepth:
       typeof raw.maxToolDepth === "number" ? raw.maxToolDepth : 10,
@@ -174,6 +179,22 @@ export function validateConfig(config: ShroudConfig): ConfigIssue[] {
   // Detector overrides referencing unknown rules (info-level since we can't check at config time)
   if (Object.keys(config.detectorOverrides).length > 0) {
     issues.push({ severity: "info", field: "detectorOverrides", message: `${Object.keys(config.detectorOverrides).length} detector override(s) configured.` });
+  }
+
+  // Rules as code
+  if (config.rules && Object.keys(config.rules).length > 0) {
+    const ruleCount = Object.keys(config.rules).length;
+    const disabled = Object.values(config.rules).filter(r => r.enabled === false).length;
+    const custom = Object.entries(config.rules).filter(([, r]) => r.pattern && r.enabled !== false).length;
+    issues.push({ severity: "info", field: "rules", message: `${ruleCount} rule(s) configured (${custom} custom/override, ${disabled} disabled).` });
+    // Validate regex patterns
+    for (const [name, rule] of Object.entries(config.rules)) {
+      if (rule.pattern) {
+        try { new RegExp(rule.pattern); } catch {
+          issues.push({ severity: "error", field: "rules", message: `Rule "${name}" has invalid regex pattern.` });
+        }
+      }
+    }
   }
 
   return issues;
