@@ -127,14 +127,17 @@ export default {
     const config = resolveConfig(api.pluginConfig);
     const obfuscator = new Obfuscator(config);
 
-    // Config-as-code: watch ~/.shroud/shroud.config.json for hot-reload
+    // Config-as-code: watch ~/.shroud/shroud.config.json for hot-reload.
+    // Defer startWatching so watchFile doesn't block plugin install (which
+    // loads the plugin to verify it, then expects the process to exit).
     const configPath = join(process.env.HOME || "/root", ".shroud", "shroud.config.json");
     const configManager = new ConfigManager(configPath, config);
     configManager.onReload((newConfig) => {
       obfuscator.updateConfig(newConfig);
       api.logger?.info("[shroud] Config hot-reloaded from " + configPath);
     });
-    configManager.startWatching();
+    const watchTimer = setTimeout(() => configManager.startWatching(), 5000);
+    watchTimer.unref();
 
     registerHooks(api, obfuscator);
 
