@@ -103,6 +103,8 @@ export class ConfigManager {
   startWatching(): void {
     if (this._watching) return;
     this._watching = true;
+    // Ensure parent directory exists so watchFile can stat the path
+    mkdirSync(dirname(this._configPath), { recursive: true });
     watchFile(this._configPath, { interval: 2000 }, () => {
       this._reload();
     });
