@@ -2,11 +2,66 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.3.0] - 2026-04-09
 
-### Added
-- **Detection rules as code with hot-reload.** All detection rules are now fully configurable from `~/.shroud/shroud.config.json`. The config file is auto-generated on first run with every built-in rule as editable JSONC. Override patterns, confidence, and categories; disable rules; add custom rules. Changes hot-reload within 2 seconds — no gateway restart needed.
-- **Config-as-code manager.** `ConfigManager` watches the config file and merges overrides with base config at runtime. Supports field-change callbacks, 50-version commit/rollback history, dashboard read/write via `setFields()`, and env-var priority. Restart-only fields are safely rejected with warnings.
+### Added — Detection Rules as Code
+
+Shroud's detection rules are now fully configurable from a standalone JSONC config file that hot-reloads without gateway restart.
+
+**Config file:** `~/.shroud/shroud.config.json` (or `$OPENCLAW_STATE_DIR/.shroud/shroud.config.json` in Docker).
+
+**Auto-generated on first run** with every built-in detection rule (100+ rules) laid out as editable JSONC with comments explaining the format.
+
+**What you can do from the config file:**
+- **Override any built-in rule** — change the regex pattern, confidence threshold, or entity category
+- **Disable rules** — set `"enabled": false` on any rule to suppress it
+- **Add custom rules** — define new detection patterns with name, regex, category, and confidence
+- **Hot-reload** — save the file and changes apply within 2 seconds, no gateway restart
+
+**Example:**
+```jsonc
+{
+  "rules": {
+    // Tighten email detection
+    "email": { "confidence": 0.99 },
+    // Disable US phone detection (too many false positives in your environment)
+    "phone_us": { "enabled": false },
+    // Add a custom rule for internal ticket IDs
+    "internal_ticket": {
+      "pattern": "\\bTICK-\\d{6}\\b",
+      "category": "custom",
+      "confidence": 0.9
+    }
+  }
+}
+```
+
+**Config priority:** env vars > config file > plugin config > defaults.
+
+**Config manager features:**
+- JSONC format (JSON with `//` and `/* */` comments)
+- 50-version commit/rollback history
+- Dashboard read/write via `setFields()` API
+- Field-change callbacks (only fires when watched fields actually change)
+- Restart-only fields (`secretKey`, `persistentSalt`, `dashboardEnabled`, `dashboardPort`, `maxStoreMappings`) are rejected with warnings
+
+**Backwards compatible:** existing `detectorOverrides` and `customPatterns` in `openclaw.json` still work. The `rules` config in `shroud.config.json` is the preferred way forward — it replaces both.
+
+### Verified
+- **OpenClaw `2026.4.8` full compat pass.** 193/193 E2E scenarios pass (full profile, including config-as-code hot-reload scenario). 911/911 unit tests, 359/359 APP integration tests pass.
+- **Compatibility matrix:** OC 2026.3.22, 2026.3.24, 2026.3.28, 2026.4.8 (latest).
+
+### Changed
+- **`openclaw.plugin.json` version aligned to `2.3.0`.**
+- **README updated** with full detection rules as code documentation: override rules, disable rules, add custom rules, auto-generated config file, config manager features.
+- **`Obfuscator.config` changed from `readonly` to mutable** to support hot-reload via `updateConfig()`.
+- **`RegexDetector` constructor accepts `configRules`** — merges config-file rules with built-in patterns before legacy `detectorOverrides`.
+- **`applyEnvOverrides` uses string keys** instead of `keyof ShroudConfig` for cross-branch type compatibility.
+
+### Fixed
+- **`ConfigManager.startWatching()` deferred by 5s** to avoid blocking OpenClaw plugin install verification (which loads the plugin and expects the process to exit).
+- **Config file path resolves via `OPENCLAW_STATE_DIR`** when available, falling back to `HOME/.shroud`. Fixes path mismatch where gateway `HOME` differs from entrypoint `HOME` in Docker.
+- **Parent directory created before `watchFile`** so stat succeeds on non-existent config files.
 
 ## [2.2.20] - 2026-04-09
 
