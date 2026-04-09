@@ -305,4 +305,87 @@ describe("RegexDetector - overrides", () => {
     expect(email).toBeDefined();
     expect(email!.detector).toBe("regex:email");
   });
+
+  // ── Config rules as code ──────────────────────────────
+
+  test("configRules: disable a built-in rule", () => {
+    const detector = new RegexDetector(undefined, undefined, {
+      email: { enabled: false },
+    });
+    const entities = detector.detect("Contact john@acme.com");
+    expect(entities.find(e => e.category === Category.EMAIL)).toBeUndefined();
+  });
+
+  test("configRules: override a built-in rule pattern", () => {
+    const detector = new RegexDetector(undefined, undefined, {
+      email: { pattern: "\\b[A-Z]+@[A-Z]+\\.[A-Z]+\\b" },
+    });
+    // Lowercase email should no longer match
+    expect(detector.detect("Contact john@acme.com").find(e => e.category === Category.EMAIL)).toBeUndefined();
+    // Uppercase email should match
+    expect(detector.detect("Contact JOHN@ACME.COM").find(e => e.category === Category.EMAIL)).toBeDefined();
+  });
+
+  test("configRules: override confidence", () => {
+    const detector = new RegexDetector(undefined, undefined, {
+      email: { confidence: 0.1 },
+    });
+    const entities = detector.detect("Contact john@acme.com");
+    const email = entities.find(e => e.category === Category.EMAIL);
+    expect(email).toBeDefined();
+    expect(email!.confidence).toBe(0.1);
+  });
+
+  test("configRules: override category", () => {
+    const detector = new RegexDetector(undefined, undefined, {
+      email: { category: "custom" },
+    });
+    const entities = detector.detect("Contact john@acme.com");
+    const email = entities.find(e => e.detector === "regex:email");
+    expect(email).toBeDefined();
+    expect(email!.category).toBe(Category.CUSTOM);
+  });
+
+  test("configRules: add a new custom rule", () => {
+    const detector = new RegexDetector(undefined, undefined, {
+      ticket_id: { pattern: "\\bTICK-\\d{6}\\b", category: "custom", confidence: 0.9 },
+    });
+    const entities = detector.detect("See TICK-123456 for details");
+    const ticket = entities.find(e => e.detector === "regex:ticket_id");
+    expect(ticket).toBeDefined();
+    expect(ticket!.value).toBe("TICK-123456");
+    expect(ticket!.category).toBe(Category.CUSTOM);
+    expect(ticket!.confidence).toBe(0.9);
+  });
+
+  test("configRules: invalid regex is silently skipped", () => {
+    const detector = new RegexDetector(undefined, undefined, {
+      bad_rule: { pattern: "[invalid", category: "custom" },
+    });
+    // Should not throw, built-in rules still work
+    const entities = detector.detect("Contact john@acme.com");
+    expect(entities.find(e => e.category === Category.EMAIL)).toBeDefined();
+  });
+
+  test("configRules: new rule without pattern is ignored", () => {
+    const detector = new RegexDetector(undefined, undefined, {
+      no_pattern: { category: "custom", confidence: 0.5 },
+    });
+    // Should not throw
+    const entities = detector.detect("anything");
+    expect(entities.find(e => e.detector === "regex:no_pattern")).toBeUndefined();
+  });
+
+  test("configRules: legacy detectorOverrides still apply after configRules", () => {
+    const detector = new RegexDetector(
+      undefined,
+      { ipv4: { enabled: false } },
+      { email: { confidence: 0.1 } },
+    );
+    // email should have overridden confidence
+    const entities = detector.detect("Contact john@acme.com from 10.1.1.1");
+    expect(entities.find(e => e.category === Category.EMAIL)?.confidence).toBe(0.1);
+    // ipv4 should be disabled by legacy override
+    expect(entities.find(e => e.category === Category.IP_ADDRESS)).toBeUndefined();
+  });
 });
