@@ -224,49 +224,77 @@ Out of the box, Shroud:
 
 > **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override their respective config keys (priority: env var > plugin config > default).
 
-### Config-as-code (hot-reload)
+### Detection rules as code (hot-reload)
 
-Instead of editing `openclaw.json` and restarting, you can manage detector config in a standalone JSONC file that Shroud watches and hot-reloads:
+Shroud auto-generates a JSONC config file on first run containing every built-in detection rule:
 
 ```
 ~/.shroud/shroud.config.json
 ```
 
+The file is fully editable. Changes hot-reload within 2 seconds — no gateway restart needed.
+
 **Priority:** env vars > config file > plugin config > defaults.
+
+#### Override a built-in rule
+
+Change the regex, confidence, or category of any rule:
 
 ```jsonc
 {
-  // Comments are allowed (JSONC)
-  "driftThreshold": 0.25,
-  "canaryEnabled": true,
-  "injectionDetection": "block"
+  "rules": {
+    "email": { "pattern": "\\b[\\w.+-]+@[\\w-]+\\.[a-z]{2,}\\b", "confidence": 0.99 }
+  }
 }
 ```
 
-Changes take effect within 2 seconds — no gateway restart needed. Fields that require a restart (`secretKey`, `persistentSalt`, `dashboardEnabled`, `dashboardPort`, `maxStoreMappings`) are skipped with a warning.
+#### Disable a rule
 
-**Version history:** Shroud keeps the last 50 config commits. The dashboard can read, write, commit, and rollback config through the `ConfigManager` API.
+```jsonc
+{
+  "rules": {
+    "phone_us": { "enabled": false },
+    "gps_coordinate": { "enabled": false }
+  }
+}
+```
+
+#### Add a custom rule
+
+```jsonc
+{
+  "rules": {
+    "internal_ticket": {
+      "pattern": "\\bTICK-\\d{6}\\b",
+      "category": "custom",
+      "confidence": 0.9
+    }
+  }
+}
+```
+
+#### Rule format
+
+Each rule in the `rules` object supports:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `pattern` | string | Regex pattern (required for new rules, optional for overrides) |
+| `category` | string | Entity category: `email`, `ip_address`, `phone`, `hostname`, `network_credential`, `custom`, etc. |
+| `confidence` | number | Detection confidence 0.0-1.0 (filtered by `minConfidence`) |
+| `enabled` | boolean | Set to `false` to disable a rule |
+
+#### Config manager features
 
 | Feature | Detail |
 |---------|--------|
 | Format | JSONC (JSON with `//` and `/* */` comments) |
+| Auto-create | Config file generated on first run with all built-in rules |
 | Watch interval | 2 seconds |
-| History depth | 50 versions |
-| Rollback | By version number |
-| Dashboard writes | `setFields()` — merges partial config, fires callbacks |
-| Restart-only fields | Logged as warnings, not applied until restart |
+| History depth | 50 versions (commit/rollback via dashboard API) |
+| Restart-only fields | `secretKey`, `persistentSalt`, `dashboardEnabled`, `dashboardPort`, `maxStoreMappings` — logged as warnings, not applied until restart |
 
-### Detector overrides
-
-Disable or tune individual detection rules by name. Rule names match the built-in pattern names (e.g. `email`, `ipv4`, `phone_intl`, `cisco_enable_secret`). See `src/detectors/regex.ts` for the full list.
-
-```jsonc
-"detectorOverrides": {
-  "phone_intl": { "enabled": false },         // disable international phone detection
-  "file_path_unix": { "confidence": 0.5 },    // lower confidence (filtered by minConfidence)
-  "snmp_community": { "confidence": 1.0 }     // boost to always match
-}
-```
+> **Legacy:** `detectorOverrides` and `customPatterns` in `openclaw.json` still work. The `rules` config is the preferred way — it replaces both.
 
 ---
 
