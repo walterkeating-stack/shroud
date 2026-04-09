@@ -93,6 +93,20 @@ export interface ShroudConfig {
   auditMaxFakesSample: number;
   detectorOverrides: Record<string, { enabled?: boolean; confidence?: number }>;
 
+  /**
+   * Detection rules as code. Each key is a rule name.
+   * - Override built-in rules: change pattern, confidence, or category
+   * - Disable rules: { "enabled": false }
+   * - Add new rules: { "pattern": "regex string", "category": "email", "confidence": 0.9 }
+   * Built-in rules from BUILTIN_PATTERNS are the defaults; this merges on top.
+   */
+  rules: Record<string, {
+    enabled?: boolean;
+    pattern?: string;
+    category?: string;
+    confidence?: number;
+  }>;
+
   /** Tool chain depth awareness — max depth before warning. */
   maxToolDepth: number;
 
