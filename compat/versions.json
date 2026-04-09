@@ -24,11 +24,18 @@
     },
     {
       "version": "2026.3.28",
+      "status": "supported",
+      "shroudMinVersion": "2.2.0",
+      "notes": "Adds async requireApproval in before_tool_call hooks, WhatsApp echo loop fix, plugin SDK moduleUrl fix.",
+      "knownIssues": []
+    },
+    {
+      "version": "2026.4.9",
       "status": "current",
       "shroudMinVersion": "2.2.0",
-      "notes": "Latest release. Adds async requireApproval in before_tool_call hooks, WhatsApp echo loop fix, plugin SDK moduleUrl fix.",
+      "notes": "Latest release. Full 192-scenario E2E pass.",
       "knownIssues": []
     }
   ],
-  "lastChecked": "2026-03-29T00:00:00Z"
+  "lastChecked": "2026-04-09T00:00:00Z"
 }
