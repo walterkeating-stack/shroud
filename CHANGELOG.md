@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.2.19] - 2026-04-09
+
+### Verified
+- **OpenClaw `2026.4.8` full compat pass.** 192/192 E2E scenarios pass (full profile). 879/879 unit tests pass.
+- **Compatibility matrix:** OC 2026.3.22, 2026.3.24, 2026.3.28, 2026.4.7, 2026.4.8 (latest).
+
+### Changed
+- **`openclaw.plugin.json` version aligned to `2.2.19`.**
+- **README updated** to declare `2026.4.8` as latest-at-release.
+
 ## [2.2.18] - 2026-04-08
 
 ### Changed
