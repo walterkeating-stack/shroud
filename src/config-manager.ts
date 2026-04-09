@@ -327,11 +327,11 @@ export function stripComments(jsonc: string): string {
  * Env vars always win over file and plugin config.
  */
 function applyEnvOverrides(config: ShroudConfig): ShroudConfig {
-  const result = { ...config };
+  const result = { ...config } as Record<string, unknown>;
   const env = process.env;
 
   // Boolean env overrides
-  const boolOverrides: Array<[string, keyof ShroudConfig]> = [
+  const boolOverrides: Array<[string, string]> = [
     ["SHROUD_CANARY_ENABLED", "canaryEnabled"],
     ["SHROUD_HONEYPOT_ENABLED", "honeypotEnabled"],
     ["SHROUD_PROFILING_ENABLED", "profilingEnabled"],
@@ -349,8 +349,8 @@ function applyEnvOverrides(config: ShroudConfig): ShroudConfig {
     ["SHROUD_TRANSFORMER_ENABLED", "transformerEnabled"],
   ];
   for (const [envKey, field] of boolOverrides) {
-    if (env[envKey] === "true") (result as unknown as Record<string, unknown>)[field] = true;
-    else if (env[envKey] === "false") (result as unknown as Record<string, unknown>)[field] = false;
+    if (env[envKey] === "true") result[field] = true;
+    else if (env[envKey] === "false") result[field] = false;
   }
 
   // Enum env overrides
@@ -365,17 +365,22 @@ function applyEnvOverrides(config: ShroudConfig): ShroudConfig {
   }
 
   // String env overrides
-  if (env.SHROUD_SECRET_KEY) result.secretKey = env.SHROUD_SECRET_KEY;
-  if (env.SHROUD_PERSISTENT_SALT) result.persistentSalt = env.SHROUD_PERSISTENT_SALT;
-  if (env.SHROUD_PROFILING_DIR) result.profilingProfileDir = env.SHROUD_PROFILING_DIR;
-  if (env.SHROUD_SIGNATURES_URL) result.signaturesUrl = env.SHROUD_SIGNATURES_URL;
-  if (env.SHROUD_SIGNATURES_FILE) result.signaturesFile = env.SHROUD_SIGNATURES_FILE;
-  if (env.SHROUD_SIEM_WEBHOOK_URL) result.siemWebhookUrl = env.SHROUD_SIEM_WEBHOOK_URL;
-  if (env.SHROUD_SIEM_WEBHOOK_AUTH) result.siemWebhookAuth = env.SHROUD_SIEM_WEBHOOK_AUTH;
-  if (env.SHROUD_SIEM_JSONL_PATH) result.siemJsonlPath = env.SHROUD_SIEM_JSONL_PATH;
+  const stringOverrides: Array<[string, string]> = [
+    ["SHROUD_SECRET_KEY", "secretKey"],
+    ["SHROUD_PERSISTENT_SALT", "persistentSalt"],
+    ["SHROUD_PROFILING_DIR", "profilingProfileDir"],
+    ["SHROUD_SIGNATURES_URL", "signaturesUrl"],
+    ["SHROUD_SIGNATURES_FILE", "signaturesFile"],
+    ["SHROUD_SIEM_WEBHOOK_URL", "siemWebhookUrl"],
+    ["SHROUD_SIEM_WEBHOOK_AUTH", "siemWebhookAuth"],
+    ["SHROUD_SIEM_JSONL_PATH", "siemJsonlPath"],
+  ];
+  for (const [envKey, field] of stringOverrides) {
+    if (env[envKey]) result[field] = env[envKey];
+  }
 
   // Numeric env overrides
-  const numOverrides: Array<[string, keyof ShroudConfig]> = [
+  const numOverrides: Array<[string, string]> = [
     ["SHROUD_DRIFT_THRESHOLD", "driftThreshold"],
     ["SHROUD_DRIFT_SUDDEN_TURN", "driftSuddenTurnDelta"],
     ["SHROUD_COHERENCE_ZSCORE", "coherenceZScore"],
@@ -395,9 +400,9 @@ function applyEnvOverrides(config: ShroudConfig): ShroudConfig {
   for (const [envKey, field] of numOverrides) {
     if (env[envKey]) {
       const parsed = parseFloat(env[envKey]!);
-      if (!isNaN(parsed)) (result as unknown as Record<string, unknown>)[field] = parsed;
+      if (!isNaN(parsed)) result[field] = parsed;
     }
   }
 
-  return result;
+  return result as unknown as ShroudConfig;
 }
