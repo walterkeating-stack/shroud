@@ -233,6 +233,38 @@ Out of the box, Shroud:
 
 > **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override their respective config keys (priority: env var > plugin config > default).
 
+### Config-as-code (hot-reload)
+
+Instead of editing `openclaw.json` and restarting, you can manage detector config in a standalone JSONC file that Shroud watches and hot-reloads:
+
+```
+~/.shroud/shroud.config.json
+```
+
+**Priority:** env vars > config file > plugin config > defaults.
+
+```jsonc
+{
+  // Comments are allowed (JSONC)
+  "driftThreshold": 0.25,
+  "canaryEnabled": true,
+  "injectionDetection": "block"
+}
+```
+
+Changes take effect within 2 seconds — no gateway restart needed. Fields that require a restart (`secretKey`, `persistentSalt`, `dashboardEnabled`, `dashboardPort`, `maxStoreMappings`) are skipped with a warning.
+
+**Version history:** Shroud keeps the last 50 config commits. The dashboard can read, write, commit, and rollback config through the `ConfigManager` API.
+
+| Feature | Detail |
+|---------|--------|
+| Format | JSONC (JSON with `//` and `/* */` comments) |
+| Watch interval | 2 seconds |
+| History depth | 50 versions |
+| Rollback | By version number |
+| Dashboard writes | `setFields()` — merges partial config, fires callbacks |
+| Restart-only fields | Logged as warnings, not applied until restart |
+
 ### Detector overrides
 
 Disable or tune individual detection rules by name. Rule names match the built-in pattern names (e.g. `email`, `ipv4`, `phone_intl`, `cisco_enable_secret`). See `src/detectors/regex.ts` for the full list.

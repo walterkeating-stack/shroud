@@ -238,7 +238,7 @@ export class ConfigManager {
   private _merge(base: ShroudConfig, overlay: Partial<ShroudConfig>): ShroudConfig {
     const result = { ...base };
     for (const [key, value] of Object.entries(overlay)) {
-      if (value !== undefined && key in result) {
+      if (value !== undefined) {
         (result as unknown as Record<string, unknown>)[key] = value;
       }
     }
