@@ -17,6 +17,7 @@ import { startDashboard } from "./dashboard.js";
 import type { AgentSessionTracker } from "./agent-session.js";
 import { PolicyEngine } from "./policy.js";
 import { SiemShipper } from "./siem.js";
+import { ConfigManager } from "./config-manager.js";
 
 // ---------------------------------------------------------------------------
 // Runtime prototype patch: wrap EventStream.prototype.push() with the
@@ -125,6 +126,15 @@ export default {
 
     const config = resolveConfig(api.pluginConfig);
     const obfuscator = new Obfuscator(config);
+
+    // Config-as-code: watch ~/.shroud/shroud.config.json for hot-reload
+    const configPath = join(process.env.HOME || "/root", ".shroud", "shroud.config.json");
+    const configManager = new ConfigManager(configPath, config);
+    configManager.onReload((newConfig) => {
+      obfuscator.updateConfig(newConfig);
+      api.logger?.info("[shroud] Config hot-reloaded from " + configPath);
+    });
+    configManager.startWatching();
 
     registerHooks(api, obfuscator);
 

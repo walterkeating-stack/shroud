@@ -219,7 +219,7 @@ function wildcardMatch(value: string, pattern: string): boolean {
 }
 
 export class Obfuscator {
-  readonly config: ShroudConfig;
+  config: ShroudConfig;
 
   private _store: MappingStore;
   private _subnetMapper: SubnetMapper;
@@ -305,6 +305,32 @@ export class Obfuscator {
 
     // Code-aware detector shares the same configured regex detector
     this._detectors.push(new CodeDetector(regexDetector));
+  }
+
+  /**
+   * Hot-swap config at runtime (called by ConfigManager on reload).
+   * Preserves mappings, stores, and stats — only swaps behaviour flags.
+   * Fields that require restart (secretKey, persistentSalt, etc.) are
+   * already filtered by ConfigManager before this is called.
+   */
+  updateConfig(newConfig: ShroudConfig): void {
+    this.config = newConfig;
+    // Rebuild detectors to pick up new overrides / custom patterns
+    this._detectors = [];
+    this._contextDetector = null;
+    this._initDetectors();
+    // Toggle canary
+    if (newConfig.canaryEnabled && !this._canary) {
+      this._canary = new CanaryInjector(newConfig.canaryPrefix, newConfig.secretKey);
+    } else if (!newConfig.canaryEnabled) {
+      this._canary = null;
+    }
+    // Toggle audit
+    if (newConfig.auditEnabled && !this._audit) {
+      this._audit = new AuditLogger(newConfig.secretKey);
+    } else if (!newConfig.auditEnabled) {
+      this._audit = null;
+    }
   }
 
   /** Add a custom detector at runtime. */
