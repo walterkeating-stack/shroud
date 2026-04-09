@@ -199,6 +199,55 @@ describe("ConfigManager", () => {
     expect(cm.getConfigPath()).toBe(CONFIG_PATH);
   });
 
+  // ── Rules as code ──────────────────────────────────────
+
+  it("rules: disable a built-in rule", () => {
+    writeFileSync(CONFIG_PATH, JSON.stringify({
+      rules: { email: { enabled: false } },
+    }));
+    const cm = new ConfigManager(CONFIG_PATH, baseConfig());
+    const effective = cm.getEffective();
+    expect(effective.rules.email.enabled).toBe(false);
+  });
+
+  it("rules: override a built-in rule pattern", () => {
+    writeFileSync(CONFIG_PATH, JSON.stringify({
+      rules: { email: { pattern: "custom@pattern", confidence: 0.5 } },
+    }));
+    const cm = new ConfigManager(CONFIG_PATH, baseConfig());
+    const effective = cm.getEffective();
+    expect(effective.rules.email.pattern).toBe("custom@pattern");
+    expect(effective.rules.email.confidence).toBe(0.5);
+  });
+
+  it("rules: add a custom rule", () => {
+    writeFileSync(CONFIG_PATH, JSON.stringify({
+      rules: { my_custom_rule: { pattern: "\\bCUSTOM-\\d+\\b", category: "custom", confidence: 0.85 } },
+    }));
+    const cm = new ConfigManager(CONFIG_PATH, baseConfig());
+    const effective = cm.getEffective();
+    expect(effective.rules.my_custom_rule).toBeDefined();
+    expect(effective.rules.my_custom_rule.pattern).toBe("\\bCUSTOM-\\d+\\b");
+    expect(effective.rules.my_custom_rule.category).toBe("custom");
+  });
+
+  it("rules: hot-reload picks up rule changes via setFields", () => {
+    const cm = new ConfigManager(CONFIG_PATH, baseConfig());
+    const { changedFields } = cm.setFields({
+      rules: { phone_us: { enabled: false } },
+    } as any);
+    expect(changedFields).toContain("rules");
+    expect(cm.getEffective().rules.phone_us.enabled).toBe(false);
+  });
+
+  it("rules: validate catches invalid regex in rules", () => {
+    const cm = new ConfigManager(CONFIG_PATH, baseConfig());
+    const issues = cm.validate({
+      rules: { bad_rule: { pattern: "[invalid", category: "custom" } },
+    } as any);
+    expect(issues.some(i => i.field === "rules" && i.severity === "error")).toBe(true);
+  });
+
   it("history persists to disk and reloads", () => {
     const cm1 = new ConfigManager(CONFIG_PATH, baseConfig());
     cm1.setFields({ driftThreshold: 0.42 });
