@@ -124,7 +124,11 @@ export default {
     // Config-as-code: watch ~/.shroud/shroud.config.json for hot-reload.
     // Defer startWatching so watchFile doesn't block plugin install (which
     // loads the plugin to verify it, then expects the process to exit).
-    const configPath = join(process.env.HOME || "/root", ".shroud", "shroud.config.json");
+    // Resolve config path: prefer OPENCLAW_STATE_DIR, then HOME/.shroud
+    const configDir = process.env.OPENCLAW_STATE_DIR
+      ? join(process.env.OPENCLAW_STATE_DIR, ".shroud")
+      : join(process.env.HOME || "/root", ".shroud");
+    const configPath = join(configDir, "shroud.config.json");
     const configManager = new ConfigManager(configPath, config);
     configManager.onReload((newConfig) => {
       obfuscator.updateConfig(newConfig);
