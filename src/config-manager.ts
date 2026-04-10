@@ -201,8 +201,10 @@ export class ConfigManager {
     for (let i = 0; i < BUILTIN_PATTERNS.length; i++) {
       const p = BUILTIN_PATTERNS[i];
       const comma = i < BUILTIN_PATTERNS.length - 1 ? "," : "";
-      // Convert RegExp to source string
-      lines.push(`    "${p.name}": { "pattern": ${JSON.stringify(p.pattern.source)}, "category": "${p.category}", "confidence": ${p.confidence} }${comma}`);
+      // Convert RegExp to source string + flags
+      const flags = p.pattern.flags.replace("g", "") || undefined; // "g" is always added; only store extra flags (i, m, etc.)
+      const flagsPart = flags ? `, "flags": "${flags}"` : "";
+      lines.push(`    "${p.name}": { "pattern": ${JSON.stringify(p.pattern.source)}, "category": "${p.category}", "confidence": ${p.confidence}${flagsPart} }${comma}`);
     }
     lines.push("  }");
     lines.push("}");
