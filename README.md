@@ -236,41 +236,30 @@ Out of the box, Shroud:
 
 ### Per-tool field scoping
 
-By default, Shroud scans every string field in every message. This catches everything but also produces false positives — file paths agents need, config values, UUIDs matching credit card patterns, etc.
+By default Shroud scans every string field in every message. This catches everything but produces false positives — file paths agents need, config values, UUIDs matching credit card patterns.
 
-Field scoping lets you control *which fields* get scanned per tool, and *which entity categories* are exempt per agent. Add a `fieldScoping` block to your `shroud.config.json`:
+Field scoping narrows what gets scanned. Add a `fieldScoping` block to `shroud.config.json`:
 
 ```jsonc
 {
   "fieldScoping": {
-    // Per-tool rules: only scan these fields for matching tools.
-    // Keys support * and ? wildcards.
     "toolFields": {
       "Read":     { "scanFields": ["content", "text"] },
       "Bash":     { "scanFields": ["output", "stdout", "stderr"] },
       "gmail_*":  { "scanFields": ["subject", "body", "snippet", "from", "to"] },
       "github_*": { "scanFields": ["title", "body", "description", "comment"] }
     },
-    // Fields that are NEVER scanned regardless of tool.
     "neverScanFields": ["id", "created_at", "updated_at", "sha", "hash", "ref", "type", "status"],
-    // Default fields to scan for tools not matching any pattern.
-    // Empty array = scan everything (backward compatible).
-    "defaultScanFields": [],
-    // When true, exempt entity categories that the agent's contract allows.
-    // Requires the contracts module (feature/transformer branch).
-    "useContractExemptions": false
+    "defaultScanFields": []
   }
 }
 ```
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `fieldScoping.toolFields` | object | `{}` | Tool name pattern → fields to scan |
-| `fieldScoping.neverScanFields` | string[] | `[]` | Structural fields to always skip |
-| `fieldScoping.defaultScanFields` | string[] | `[]` | Default fields for unmatched tools (empty = scan all) |
-| `fieldScoping.useContractExemptions` | boolean | `false` | Use agent contract `allowedDataClasses` to exempt categories |
+**`toolFields`** maps tool name patterns (wildcards `*` `?` supported) to the fields that should be scanned in their results. Unmatched tools fall back to `defaultScanFields` — set it to `[]` to scan everything for unknown tools (safe default).
 
-Field scoping is hot-reloadable — changes take effect on the next prompt build without a restart. No `fieldScoping` config = current behavior (scan everything).
+**`neverScanFields`** lists structural fields that never contain user-generated content. These are skipped regardless of tool.
+
+Hot-reloadable. No config = scan everything (backward compatible).
 
 ### Detection rules as code (hot-reload)
 
