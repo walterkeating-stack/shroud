@@ -28,6 +28,7 @@ import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 import { STATS_FILE, IS_TEST } from "./config.js";
 import { DnsCache } from "./dns-cache.js";
+import { FieldScopeResolver } from "./field-scope.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -215,6 +216,39 @@ function walkStrings(
   return value;
 }
 
+function walkStringsScoped(
+  value: unknown,
+  fn: (s: string) => string,
+  shouldScan: (fieldName: string) => boolean,
+  currentField?: string,
+): unknown {
+  if (typeof value === "string") {
+    if (currentField !== undefined && !shouldScan(currentField)) return value;
+    return fn(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === "object" && item !== null && "text" in item && typeof (item as any).text === "string") {
+        if (!shouldScan("text")) return item;
+        return { ...item, text: fn((item as any).text) };
+      }
+      return walkStringsScoped(item, fn, shouldScan);
+    });
+  }
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (typeof v === "string") {
+        out[k] = shouldScan(k) ? fn(v) : v;
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Hook registration
 // ---------------------------------------------------------------------------
@@ -276,6 +310,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   const ob = () => getSharedObfuscator(obfuscator);
   const sessionScope = (globalThis as any);
   const config = ob().config;
+  let _fieldScopeResolver: FieldScopeResolver | undefined;
+  let _fieldScopeConfigRef: unknown;
+  function getFieldScopeResolver(): FieldScopeResolver {
+    const liveConfig = ob().config.fieldScoping;
+    if (_fieldScopeResolver && _fieldScopeConfigRef === liveConfig) return _fieldScopeResolver;
+    _fieldScopeResolver = new FieldScopeResolver(liveConfig);
+    _fieldScopeConfigRef = liveConfig;
+    return _fieldScopeResolver;
+  }
   const auditActive = config.auditEnabled || config.verboseLogging;
 
 
@@ -352,12 +395,19 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     let totalEntities = 0;
 
+    // Resolve per-agent category exemptions from contract
+    const _resolver = getFieldScopeResolver();
+    const _exemptCats = new Set<string>();
+    // Note: main branch has no agent session tracker, so contract exemptions
+    // are resolved when useContractExemptions is enabled via config only.
+    // The full agent-aware path is on feature/transformer.
+
     // Obfuscate the system prompt
     const prompt = event?.prompt;
     let obfuscatedPrompt: string | undefined;
     if (typeof prompt === "string" && prompt) {
       const cleaned = stripSlackLinksForHook(prompt);
-      const result = ob().obfuscate(cleaned);
+      const result = ob().obfuscate(cleaned, undefined, _exemptCats);
       if (result.entities.length > 0 || cleaned !== prompt) {
         obfuscatedPrompt = result.entities.length > 0 ? result.obfuscated : cleaned;
         totalEntities += result.entities.length;
@@ -376,7 +426,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // String content (Anthropic/OpenAI)
         if (typeof msg.content === "string") {
           const cleaned = stripSlackLinksForHook(msg.content);
-          const result = ob().obfuscate(cleaned);
+          const result = ob().obfuscate(cleaned, undefined, _exemptCats);
           totalEntities += result.entities.length;
           if (result.entities.length > 0 || cleaned !== msg.content) {
             msg.content = result.entities.length > 0 ? result.obfuscated : cleaned;
@@ -387,7 +437,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           for (const b of msg.content) {
             if (b?.type === "text" && typeof b.text === "string") {
               const cleaned = stripSlackLinksForHook(b.text);
-              const result = ob().obfuscate(cleaned);
+              const result = ob().obfuscate(cleaned, undefined, _exemptCats);
               totalEntities += result.entities.length;
               if (result.entities.length > 0 || cleaned !== b.text) {
                 b.text = result.entities.length > 0 ? result.obfuscated : cleaned;
@@ -396,7 +446,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             // tool_result blocks with string content
             if (typeof b?.content === "string") {
               const cleaned = stripSlackLinksForHook(b.content);
-              const result = ob().obfuscate(cleaned);
+              const result = ob().obfuscate(cleaned, undefined, _exemptCats);
               totalEntities += result.entities.length;
               if (result.entities.length > 0 || cleaned !== b.content) {
                 b.content = result.entities.length > 0 ? result.obfuscated : cleaned;
@@ -408,7 +458,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (Array.isArray(msg.tool_calls)) {
           for (const tc of msg.tool_calls) {
             if (typeof tc.function?.arguments === "string") {
-              const result = ob().obfuscate(tc.function.arguments);
+              const result = ob().obfuscate(tc.function.arguments, undefined, _exemptCats);
               totalEntities += result.entities.length;
               if (result.entities.length > 0) tc.function.arguments = result.obfuscated;
             }
@@ -640,10 +690,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     // Exit tool depth
     ob().exitToolCall();
 
-    const obfuscated = walkStrings(event.message, (s) => {
+    // Resolve per-tool field scope
+    const toolName = event.toolName ?? "";
+    const resolver = getFieldScopeResolver();
+    const toolScope = resolver.resolveToolScope(toolName);
+    const shouldScan = (field: string) => resolver.shouldScanField(field, toolScope);
+
+    const obfuscated = walkStringsScoped(event.message, (s) => {
       const result = ob().obfuscate(s);
       return result.obfuscated;
-    });
+    }, shouldScan);
 
     dumpStatsFile(obfuscator);
     return { message: obfuscated };
