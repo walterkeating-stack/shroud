@@ -2,7 +2,173 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [2.4.0] - 2026-04-10
+
+### Added — Healthcare, Finance, Legal, Cloud & Crypto Detection
+
+9 new entity categories, 34 new detection patterns, and improved generators for 4 existing categories. All patterns are context-triggered where needed to avoid false positives. All feed into config-as-code (`~/.shroud/shroud.config.json`) — disable, tune confidence, or modify regex with hot-reload.
+
+**Phase 1 — Healthcare + Finance:**
+- `DATE_OF_BIRTH` — US/ISO/European date formats and written months (DOB, birthdate, Geburtsdatum)
+- `MEDICAL_RECORD_NUMBER` — MRN, NPI (National Provider Identifier), DEA numbers, health insurance member/policy IDs
+- `BANK_ACCOUNT_NUMBER` — US routing numbers, account numbers, UK sort codes, SWIFT/BIC codes
+- `TAX_ID` — US EIN (XX-XXXXXXX), UK UTR, generic TIN/taxpayer IDs
+
+**Phase 2 — Legal + Identity Documents:**
+- `PASSPORT_NUMBER` — generic passport, German Reisepass, travel documents
+- `DRIVERS_LICENSE` — driver's license, DL, Führerschein, license plates, vehicle registration
+- `CASE_NUMBER` — US federal court docket (1:23-cv-01234), generic case/filing numbers, patent numbers (US/EP/WO), German Aktenzeichen
+
+**Phase 3 — Cloud + Crypto:**
+- `CRYPTOCURRENCY_ADDRESS` — Ethereum (0x+40 hex), Bitcoin P2PKH/P2SH (base58), Bech32 (bc1), context-triggered wallet keywords
+- `AWS_ARN` — full ARN (with/without account ID), AWS account ID with keyword
+
+**Phase 4 — Generator Quality Improvements:**
+- `NATIONAL_ID` — format-aware per sub-type: Austrian SVNR (4+6 digits), German Personalausweis (specific char set), generic format-preserving
+- `GPS_COORDINATE` — distributes across 10 real-world anchor cities instead of clustering near null island (0,0)
+- `ICS_IDENTIFIER` — sub-type-aware: OPC UA endpoints, Modbus addresses (1-247), BACnet device IDs, IEC 61850 IED names, historian tags (dotted paths)
+- `CERTIFICATE` — structurally valid PEM blocks (BEGIN/END markers, base64 body, 64-char line wrapping) instead of `[REDACTED-CERT-XXXX]`
+
+**After upgrading:** delete `~/.shroud/shroud.config.json` and restart to regenerate with the new patterns:
+```bash
+rm ~/.shroud/shroud.config.json
+openclaw gateway restart
+```
+
+71 new tests, all existing tests unaffected.
+
+## [2.3.1] - 2026-04-10
+
+### Fixed — Regex flags lost on config hot-reload
+
+**Critical fix.** The config-as-code system (`~/.shroud/shroud.config.json`) wrote detection rule patterns as regex source strings but dropped the flags (`i` for case-insensitive, `m` for multiline). On the first hot-reload (~7 seconds after gateway startup), approximately 40 detection patterns silently lost their flags, making them case-sensitive or single-line only.
+
+**Impact:** Entities that required case-insensitive matching (API keys, credentials, SNMP communities, connection strings, TACACS keys, etc.) were missed during obfuscation. With no mapping in the store, deobfuscation had nothing to reverse — causing fake values to leak to end users.
+
+**Fix:** The config file now stores a `"flags"` field alongside each pattern (e.g. `"flags": "i"`). The `RegexDetector` applies stored flags when constructing `RegExp` objects from config rules. Old config files without the `flags` field are backwards-compatible (default to `"g"` only). Deleting `~/.shroud/shroud.config.json` and restarting the gateway regenerates the file with correct flags.
+
+**If you are on v2.3.0:** delete `~/.shroud/shroud.config.json` and restart:
+```bash
+rm ~/.shroud/shroud.config.json
+openclaw gateway restart
+```
+
+## [2.3.0] - 2026-04-09
+
+### Added — Detection Rules as Code
+
+Shroud's detection rules are now fully configurable from a standalone JSONC config file that hot-reloads without gateway restart.
+
+**Config file:** `~/.shroud/shroud.config.json` (or `$OPENCLAW_STATE_DIR/.shroud/shroud.config.json` in Docker).
+
+**Auto-generated on first run** with every built-in detection rule (100+ rules) laid out as editable JSONC with comments explaining the format.
+
+**What you can do from the config file:**
+- **Override any built-in rule** — change the regex pattern, confidence threshold, or entity category
+- **Disable rules** — set `"enabled": false` on any rule to suppress it
+- **Add custom rules** — define new detection patterns with name, regex, category, and confidence
+- **Hot-reload** — save the file and changes apply within 2 seconds, no gateway restart
+
+**Example:**
+```jsonc
+{
+  "rules": {
+    // Tighten email detection
+    "email": { "confidence": 0.99 },
+    // Disable US phone detection (too many false positives in your environment)
+    "phone_us": { "enabled": false },
+    // Add a custom rule for internal ticket IDs
+    "internal_ticket": {
+      "pattern": "\\bTICK-\\d{6}\\b",
+      "category": "custom",
+      "confidence": 0.9
+    }
+  }
+}
+```
+
+**Config priority:** env vars > config file > plugin config > defaults.
+
+**Config manager features:**
+- JSONC format (JSON with `//` and `/* */` comments)
+- 50-version commit/rollback history
+- Dashboard read/write via `setFields()` API
+- Field-change callbacks (only fires when watched fields actually change)
+- Restart-only fields (`secretKey`, `persistentSalt`, `dashboardEnabled`, `dashboardPort`, `maxStoreMappings`) are rejected with warnings
+
+**Backwards compatible:** existing `detectorOverrides` and `customPatterns` in `openclaw.json` still work. The `rules` config in `shroud.config.json` is the preferred way forward — it replaces both.
+
+### Verified
+- **OpenClaw `2026.4.8` full compat pass.** 193/193 E2E scenarios pass (full profile, including config-as-code hot-reload scenario). 911/911 unit tests, 359/359 APP integration tests pass.
+- **Compatibility matrix:** OC 2026.3.22, 2026.3.24, 2026.3.28, 2026.4.8 (latest).
+
+### Changed
+- **`openclaw.plugin.json` version aligned to `2.3.0`.**
+- **README updated** with full detection rules as code documentation: override rules, disable rules, add custom rules, auto-generated config file, config manager features.
+- **`Obfuscator.config` changed from `readonly` to mutable** to support hot-reload via `updateConfig()`.
+- **`RegexDetector` constructor accepts `configRules`** — merges config-file rules with built-in patterns before legacy `detectorOverrides`.
+- **`applyEnvOverrides` uses string keys** instead of `keyof ShroudConfig` for cross-branch type compatibility.
+
+### Fixed
+- **`ConfigManager.startWatching()` deferred by 5s** to avoid blocking OpenClaw plugin install verification (which loads the plugin and expects the process to exit).
+- **Config file path resolves via `OPENCLAW_STATE_DIR`** when available, falling back to `HOME/.shroud`. Fixes path mismatch where gateway `HOME` differs from entrypoint `HOME` in Docker.
+- **Parent directory created before `watchFile`** so stat succeeds on non-existent config files.
+
+## [2.2.20] - 2026-04-09
+
+### Verified
+- **OpenClaw `2026.4.9` full compat pass.** 192/192 E2E scenarios pass (full profile). 879/879 unit tests, 359/359 APP integration tests pass.
+- **Compatibility matrix:** OC 2026.3.22, 2026.3.24, 2026.3.28, 2026.4.9 (latest).
+
+### Changed
+- **`openclaw.plugin.json` version aligned to `2.2.20`.**
+- **README updated** to declare `2026.4.9` as latest-at-release.
+- **`compat/versions.json` updated** to add `2026.4.9` as current, demote `2026.3.28` to supported.
+
+## [2.2.19] - 2026-04-09
+
+### Verified
+- **OpenClaw `2026.4.8` full compat pass.** 192/192 E2E scenarios pass (full profile). 879/879 unit tests pass.
+- **Compatibility matrix:** OC 2026.3.22, 2026.3.24, 2026.3.28, 2026.4.7, 2026.4.8 (latest).
+
+### Changed
+- **`openclaw.plugin.json` version aligned to `2.2.19`.**
+- **README updated** to declare `2026.4.8` as latest-at-release.
+
+## [2.2.18] - 2026-04-08
+
+### Changed
+- **Release metadata aligned with `2.2.18`.** `openclaw.plugin.json` now matches the package version again, and the release docs now point at the actual validation target for this release.
+- **Release validation matrix updated.** This release is validated against baseline `2026.3.28` plus explicit latest-at-release `2026.4.7` on the Slack E2E path.
+
+### Verified
+- **OpenClaw `2026.4.7` compat pass recorded.** Focused Slack E2E compat completed successfully for `shroud-main`; artifact: `/tmp/shroud-loop-logs/compat-2026.4.7.log`.
+
+## [2.2.17] - 2026-04-07
+
+### Fixed
+- **Passthrough state corruption across long-running sessions.** Public URLs, workspace paths, Slack URL markup, and long mixed-content prompts could be re-obfuscated after context learning. Passthrough state is now preserved consistently across runtime flows.
+
+### Changed
+- **Release metadata aligned with `2.2.17`.** Public security guidance was tightened, stale fixture data was scrubbed from tests, `CLAUDE.md` was removed from the public repo, the legacy Docker E2E npm script was removed, and `openclaw.plugin.json` now matches the published package version.
+
+## [2.2.16] - 2026-04-06
+
+### Fixed
+- **CI release blocker on main.** `npm test` executed before `dist/` existed on fresh checkout, causing dist-based unit tests to fail in GitHub Actions. CI now builds before tests.
+- **Compat test source mismatch on main.** `compat/Dockerfile.test` was installing `shroud-privacy@latest` from npm instead of the local branch tarball, so compat checks could miss unreleased changes. Compat tests now always use the local packed build.
+- **WhatsApp compat harness fragility.** Mock intercept patching depended on a hashed OpenClaw session filename and had weak inject-server readiness handling. Updated to dynamic session-bundle discovery plus health/retry handling.
+
+### Changed
+- **OpenClaw compatibility declaration clarified.** Formal minimum support remains `minOpenClawVersion: 2026.3.24`; release validation matrix for this version is baseline `2026.3.28` + latest-at-release (`2026.4.5`).
+- **Latest-channel behavior documented.** On OpenClaw builds where WhatsApp channel provisioning is unavailable via `channels add`, latest-focused compat runs skip WhatsApp E2E and validate Slack E2E.
+- **Plugin metadata aligned with release.** `openclaw.plugin.json` version updated to `2.2.16`.
+
+## [2.2.12] - 2026-04-04
+
+### Fixed
+- **OpenAI/ChatGPT PII leak: tool_calls arguments not obfuscated.** `tool_calls[].function.arguments` were completely skipped in both outbound obfuscation and inbound deobfuscation (SSE streaming + JSON). PII in tool call arguments leaked to ChatGPT unobfuscated. Added per-tool-call-index SSE buffering, JSON response handling, and outbound re-obfuscation.
+- **OpenAI SDK fetch bypass.** The OpenAI SDK v6 captures `globalThis.fetch` at construction time. If initialized before Shroud patches fetch, all requests bypassed the intercept. Fixed by obfuscating messages in-place in `before_prompt_build` so PII is replaced at the hook level, before any HTTP client touches it.
 
 ### Added
 - **Detection rules as code with hot-reload.** All detection rules are now fully configurable from `~/.shroud/shroud.config.json`. The config file is auto-generated on first run with every built-in rule as editable JSONC. Override patterns, confidence, and categories; disable rules; add custom rules. Changes hot-reload within 2 seconds — no gateway restart needed.
