@@ -554,14 +554,20 @@ export class AgentSessionTracker {
   }
 
   /** Record deobfuscation stats for the current agent. */
-  recordDeobfuscation(replacementCount: number): void {
-    const session = this._sessions.get(this._currentLabel);
+  recordDeobfuscation(replacementCount: number, agentLabel?: string): void {
+    const key = agentLabel ? normalizeLabel(agentLabel) : this._currentLabel;
+    const session = this._sessions.get(key);
     if (!session) return;
     if (!session.privacy) {
       session.privacy = { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
     }
     session.privacy.deobfuscationCalls++;
     session.privacy.replacementsDeobfuscated += replacementCount;
+  }
+
+  /** Get the current agent label (normalized). */
+  getCurrentLabel(): string {
+    return this._currentLabel;
   }
 
   /** Get the current active agent session. */

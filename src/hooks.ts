@@ -2998,6 +2998,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         return originalFetch.call(globalThis, input, init);
       }
 
+      // Capture the current agent label at request time so deobfuscation
+      // stats are attributed correctly even if another agent's
+      // before_prompt_build fires before the response arrives.
+      const _requestAgentLabel = agentTracker.getCurrentLabel();
+
       // Track this LLM call against the current agent session
       agentTracker.markCallStart();
       const callSession = agentTracker.recordLlmCall();
@@ -3443,13 +3448,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             headers.set("content-length", String(new TextEncoder().encode(newBody).length));
             newInit.headers = headers;
           }
-          return deobfuscateResponse(originalFetch.call(globalThis, input, newInit));
+          return deobfuscateResponse(originalFetch.call(globalThis, input, newInit), _requestAgentLabel);
         }
       } catch {
         // JSON parse failed or other error — pass through unmodified
       }
 
-      return deobfuscateResponse(originalFetch.call(globalThis, input, init));
+      return deobfuscateResponse(originalFetch.call(globalThis, input, init), _requestAgentLabel);
     };
 
     // ── Response deobfuscation ──────────────────────────────
@@ -3648,7 +3653,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       responseTextAccum = "";
     }
 
-    async function deobfuscateResponse(fetchPromise: Promise<Response>): Promise<Response> {
+    async function deobfuscateResponse(fetchPromise: Promise<Response>, _requestAgentLabel?: string): Promise<Response> {
       const response = await fetchPromise;
       if (!response.ok || !response.body) return response;
 
@@ -3718,7 +3723,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 if (accumulated && buffered && buffered.length > 0) {
                   const { text: _deobText, replacementCount: _deobRc } = ob().deobfuscateWithStats(accumulated);
                   let deobbed = _deobText;
-                  if (_deobRc > 0) agentTracker.recordDeobfuscation(_deobRc);
+                  if (_deobRc > 0) agentTracker.recordDeobfuscation(_deobRc, _requestAgentLabel);
                   scanDeobfuscatedBlock(deobbed);
                   // Response-side block: replace content with warning if exfiltration detected
                   if (config.injectionDetection === "block" && securityBus) {
@@ -3786,7 +3791,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                     if (accumulated && buf && buf.length > 0) {
                       const { text: _deobText2, replacementCount: _deobRc2 } = ob().deobfuscateWithStats(accumulated);
                       let deobbed = _deobText2;
-                      if (_deobRc2 > 0) agentTracker.recordDeobfuscation(_deobRc2);
+                      if (_deobRc2 > 0) agentTracker.recordDeobfuscation(_deobRc2, _requestAgentLabel);
                       scanDeobfuscatedBlock(deobbed);
                       if (config.injectionDetection === "block" && securityBus) {
                         const recent = securityBus.getEvents();
@@ -3827,7 +3832,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                       for (const [tcIdx, args] of tcMap) {
                         const { text: deobArg, replacementCount: tcRc } = ob().deobfuscateWithStats(args);
                         deobArgs.set(tcIdx, deobArg);
-                        if (tcRc > 0) agentTracker.recordDeobfuscation(tcRc);
+                        if (tcRc > 0) agentTracker.recordDeobfuscation(tcRc, _requestAgentLabel);
                       }
                       // Track per-tool-call whether we've emitted the deobbed args
                       const tcEmitted: Set<number> = new Set();
@@ -3896,7 +3901,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                   if (block?.type === "text" && typeof block.text === "string") {
                     const { text: _dt, replacementCount: _drc } = ob().deobfuscateWithStats(block.text);
                     block.text = _dt;
-                    if (_drc > 0) agentTracker.recordDeobfuscation(_drc);
+                    if (_drc > 0) agentTracker.recordDeobfuscation(_drc, _requestAgentLabel);
                   }
                 }
                 const nonDataLines = part.split("\n").filter((l: string) => !l.startsWith("data: ")).join("\n");
@@ -3915,7 +3920,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             for (const [idx, buffered] of blockBuffer) {
               const accumulated = blockAccum.get(idx) || "";
               const { text: deobbed, replacementCount: _flushRc } = ob().deobfuscateWithStats(accumulated);
-              if (_flushRc > 0) agentTracker.recordDeobfuscation(_flushRc);
+              if (_flushRc > 0) agentTracker.recordDeobfuscation(_flushRc, _requestAgentLabel);
               scanDeobfuscatedBlock(deobbed);
               let first = true;
               for (const eventStr of buffered) {
@@ -3939,7 +3944,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             for (const [idx, buffered] of choiceBuffer) {
               const accumulated = choiceAccum.get(idx) || "";
               const { text: deobbed, replacementCount: _flushRc2 } = ob().deobfuscateWithStats(accumulated);
-              if (_flushRc2 > 0) agentTracker.recordDeobfuscation(_flushRc2);
+              if (_flushRc2 > 0) agentTracker.recordDeobfuscation(_flushRc2, _requestAgentLabel);
               scanDeobfuscatedBlock(deobbed);
               let first = true;
               for (const eventStr of buffered) {
@@ -3972,7 +3977,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                 for (const [tcIdx, args] of tcMap) {
                   const { text: deobArg, replacementCount: tcFlushRc } = ob().deobfuscateWithStats(args);
                   deobArgs.set(tcIdx, deobArg);
-                  if (tcFlushRc > 0) agentTracker.recordDeobfuscation(tcFlushRc);
+                  if (tcFlushRc > 0) agentTracker.recordDeobfuscation(tcFlushRc, _requestAgentLabel);
                 }
                 const tcEmitted: Set<number> = new Set();
                 for (const eventStr of tcBuf) {
@@ -4049,7 +4054,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               if (block?.type === "text" && typeof block.text === "string") {
                 const { text: _jdt, replacementCount: _jdrc } = ob().deobfuscateWithStats(block.text);
                 block.text = _jdt;
-                if (_jdrc > 0) agentTracker.recordDeobfuscation(_jdrc);
+                if (_jdrc > 0) agentTracker.recordDeobfuscation(_jdrc, _requestAgentLabel);
                 scanDeobfuscatedBlock(block.text);
               }
             }
@@ -4059,7 +4064,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               if (typeof choice.message?.content === "string") {
                 const { text: _jdt2, replacementCount: _jdrc2 } = ob().deobfuscateWithStats(choice.message.content);
                 choice.message.content = _jdt2;
-                if (_jdrc2 > 0) agentTracker.recordDeobfuscation(_jdrc2);
+                if (_jdrc2 > 0) agentTracker.recordDeobfuscation(_jdrc2, _requestAgentLabel);
                 scanDeobfuscatedBlock(choice.message.content);
               }
               // OpenAI: deobfuscate tool_calls arguments
@@ -4068,7 +4073,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                   if (typeof tc.function?.arguments === "string") {
                     const { text: _jdt3, replacementCount: _jdrc3 } = ob().deobfuscateWithStats(tc.function.arguments);
                     tc.function.arguments = _jdt3;
-                    if (_jdrc3 > 0) agentTracker.recordDeobfuscation(_jdrc3);
+                    if (_jdrc3 > 0) agentTracker.recordDeobfuscation(_jdrc3, _requestAgentLabel);
                   }
                 }
               }
