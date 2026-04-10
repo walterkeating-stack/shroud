@@ -357,7 +357,7 @@ export class Obfuscator {
    * 6. Map and replace (with redaction level)
    * 7. Inject canary if enabled
    */
-  obfuscate(text: string, context?: string): ObfuscationResult {
+  obfuscate(text: string, context?: string, exemptCategories?: Set<string>): ObfuscationResult {
     const startTime = Date.now();
 
     // 0. Strip Slack/chat mrkdwn link formatting so detection sees clean text.
@@ -406,8 +406,10 @@ export class Obfuscator {
     let belowThreshold = 0;
     let allowlisted = 0;
     let alreadyObfuscated = 0;
+    let exempted = 0;
     const filtered = entities.filter((e) => {
       if (e.confidence < this.config.minConfidence) { belowThreshold++; return false; }
+      if (exemptCategories?.has(e.category)) { exempted++; return false; }
       if (allowExact.has(e.value) || allowWild.some((p) => wildcardMatch(e.value, p))) {
         allowlisted++; return false;
       }
@@ -534,6 +536,7 @@ export class Obfuscator {
       allowlisted,
       docExamples: 0, // doc examples are filtered inside detectors before reaching here
       alreadyObfuscated,
+      exempted,
     };
 
     this._obfuscationEvents++;

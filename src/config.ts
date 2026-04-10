@@ -122,6 +122,31 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     // LRU store eviction (0 = unlimited)
     maxStoreMappings:
       typeof raw.maxStoreMappings === "number" ? raw.maxStoreMappings : 0,
+
+    // Field scoping (optional, backward compatible)
+    fieldScoping: (() => {
+      const fs = raw.fieldScoping;
+      if (!fs || typeof fs !== "object") return undefined;
+      const fsc = fs as Record<string, unknown>;
+      const toolFields: Record<string, { scanFields: string[] }> = {};
+      if (fsc.toolFields && typeof fsc.toolFields === "object") {
+        for (const [pattern, rule] of Object.entries(fsc.toolFields as Record<string, unknown>)) {
+          if (rule && typeof rule === "object" && Array.isArray((rule as any).scanFields)) {
+            toolFields[pattern] = { scanFields: (rule as any).scanFields.filter((f: unknown) => typeof f === "string") };
+          }
+        }
+      }
+      return {
+        toolFields,
+        neverScanFields: Array.isArray(fsc.neverScanFields)
+          ? (fsc.neverScanFields as unknown[]).filter((f): f is string => typeof f === "string")
+          : [],
+        defaultScanFields: Array.isArray(fsc.defaultScanFields)
+          ? (fsc.defaultScanFields as unknown[]).filter((f): f is string => typeof f === "string")
+          : [],
+        useContractExemptions: typeof fsc.useContractExemptions === "boolean" ? fsc.useContractExemptions : false,
+      };
+    })(),
   };
 
   return config;
