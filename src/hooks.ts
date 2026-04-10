@@ -542,13 +542,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           _immuneEngine.flush();
         }
 
-        // Red team: run adversarial stress test periodically (every 10 sessions)
+        // Red team: run adversarial stress test periodically (every N sessions)
         // Uses seed corpus when no real attack traces exist — always has material.
-        if (_redTeam && agentSession) {
-          const sessionCount = agentSession.llmCallCount || 0;
-          if (sessionCount > 0 && sessionCount % config.redTeamIntervalSessions === 0) {
+        if (_redTeam && agentSession && agentSession.agentBuildId) {
+          const baseline = profiler?.getBaselineStore()?.load(agentSession.agentBuildId) ?? null;
+          const totalSessions = baseline?.sessionCount ?? 0;
+          if (totalSessions > 0 && totalSessions % config.redTeamIntervalSessions === 0) {
             const traces = _transformerScorer?._attackTraceStore?.getAll() ?? [];
-            const baseline = profiler?.getBaselineStore()?.load(agentSession.agentBuildId) ?? null;
             const report = _redTeam.runStressTest(
               traces, // empty = seed corpus kicks in
               [{ buildId: agentSession.agentBuildId, label: agentSession.agentLabel, baseline, toolProfile: baseline?.toolProfile }],
