@@ -544,10 +544,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
         // Red team: run adversarial stress test periodically (every N sessions)
         // Uses seed corpus when no real attack traces exist — always has material.
+        // Tracks last-run session count per agent to avoid modulo alignment issues.
         if (_redTeam && agentSession && agentSession.agentBuildId) {
           const baseline = profiler?.getBaselineStore()?.load(agentSession.agentBuildId) ?? null;
           const totalSessions = baseline?.sessionCount ?? 0;
-          if (totalSessions > 0 && totalSessions % config.redTeamIntervalSessions === 0) {
+          const lastRunKey = `__shroudRedTeamLastRun_${agentSession.agentBuildId}`;
+          const lastRunAt = (globalThis as any)[lastRunKey] || 0;
+          const sessionsSinceLastRun = totalSessions - lastRunAt;
+          if (totalSessions > 0 && (lastRunAt === 0 || sessionsSinceLastRun >= config.redTeamIntervalSessions)) {
+            (globalThis as any)[lastRunKey] = totalSessions;
             const traces = _transformerScorer?._attackTraceStore?.getAll() ?? [];
             const report = _redTeam.runStressTest(
               traces, // empty = seed corpus kicks in
