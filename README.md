@@ -32,7 +32,7 @@ Frontier LLMs are transformative for infrastructure operations — network troub
 - **Customer PII** — emails, phone numbers, national IDs, credit cards, physical addresses
 - **Internal URLs** — wiki pages, Jira tickets, admin portals, API endpoints
 
-Shroud sits between your agent and the LLM. It detects all of the above (100+ entity types), replaces each with a deterministic format-preserving fake, and reverses the mapping on the way back. The LLM reasons over realistic-looking data. Your real infrastructure stays private.
+Shroud sits between your agent and the LLM. It detects all of the above (130+ entity types), replaces each with a deterministic format-preserving fake, and reverses the mapping on the way back. The LLM reasons over realistic-looking data. Your real infrastructure stays private.
 
 ### Who needs this
 
@@ -56,7 +56,7 @@ Shroud does not guarantee compliance — regex-based detection has limitations (
 
 ## What it does
 
-1. **Detects** 100+ entity types: emails, IPs, phones, API keys, hostnames, SNMP communities, BGP ASNs, credit cards, SSNs, file paths, URLs, person/org/location names, VLANs, route-maps, ACLs, OSPF IDs, IBANs, JWTs, PEM certs, GPS coordinates, ICS/SCADA identifiers, vendor-specific secrets (Cisco, Juniper, Palo Alto, Check Point, Fortinet, F5, Arista), and custom regex patterns.
+1. **Detects** 130+ entity types: emails, IPs, phones, API keys, hostnames, SNMP communities, BGP ASNs, credit cards, SSNs, file paths, URLs, person/org/location names, VLANs, route-maps, ACLs, OSPF IDs, IBANs, JWTs, PEM certs, GPS coordinates, ICS/SCADA identifiers, dates of birth, medical record numbers (MRN/NPI/DEA), bank accounts (routing/sort code/SWIFT), tax IDs (EIN/UTR), passport numbers, driver's licenses, court case/docket/patent numbers, cryptocurrency addresses (Ethereum/Bitcoin), AWS ARNs, vendor-specific secrets (Cisco, Juniper, Palo Alto, Check Point, Fortinet, F5, Arista), and custom regex patterns.
 2. **Replaces** each value with a deterministic fake (same input + key = same fake every time). Fakes are format-preserving: IPv4 stays in CGNAT range (`100.64.0.0/10`), IPv6 uses ULA range (`fd00::/8`), emails keep `@domain` structure, credit cards pass Luhn, etc.
 3. **Passes through public URLs** — external URLs (arxiv.org, docs.stripe.com, etc.) are not obfuscated. Shroud resolves FQDNs via DNS: public IPs pass through, RFC 1918 / NXDOMAIN / internal IPs are obfuscated. Well-known platforms (GitHub, YouTube, Wikipedia, etc.) are always passed through.
 4. **Deobfuscates** LLM responses and tool parameters so the user sees real values and tools receive real arguments.
@@ -409,7 +409,7 @@ shroud-stats --test "Contact john@acme.com"   # test detection
 
 ## Entity categories
 
-`person_name`, `email`, `phone`, `ip_address`, `api_key`, `url`, `org_name`, `location`, `file_path`, `credit_card`, `ssn`, `mac_address`, `hostname`, `snmp_community`, `bgp_asn`, `network_credential`, `vlan_id`, `interface_desc`, `route_map`, `ospf_id`, `acl_name`, `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`, `custom`
+`person_name`, `email`, `phone`, `ip_address`, `api_key`, `url`, `org_name`, `location`, `file_path`, `credit_card`, `ssn`, `mac_address`, `hostname`, `snmp_community`, `bgp_asn`, `network_credential`, `vlan_id`, `interface_desc`, `route_map`, `ospf_id`, `acl_name`, `iban`, `national_id`, `jwt`, `ics_identifier`, `gps_coordinate`, `certificate`, `date_of_birth`, `medical_record_number`, `bank_account_number`, `tax_id`, `passport_number`, `drivers_license`, `case_number`, `cryptocurrency_address`, `aws_arn`, `custom`
 
 ---
 
