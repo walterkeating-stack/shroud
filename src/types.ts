@@ -33,6 +33,18 @@ export enum Category {
   ICS_IDENTIFIER = "ics_identifier",
   GPS_COORDINATE = "gps_coordinate",
   CERTIFICATE = "certificate",
+  // Healthcare / finance / identity
+  DATE_OF_BIRTH = "date_of_birth",
+  MEDICAL_RECORD_NUMBER = "medical_record_number",
+  BANK_ACCOUNT_NUMBER = "bank_account_number",
+  TAX_ID = "tax_id",
+  // Legal / identity documents
+  PASSPORT_NUMBER = "passport_number",
+  DRIVERS_LICENSE = "drivers_license",
+  CASE_NUMBER = "case_number",
+  // Cloud / crypto
+  CRYPTOCURRENCY_ADDRESS = "cryptocurrency_address",
+  AWS_ARN = "aws_arn",
   CUSTOM = "custom",
 }
 
