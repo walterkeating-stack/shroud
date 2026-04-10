@@ -48,6 +48,8 @@ export class BehaviouralProfiler {
   private _previousTurnBigrams: Set<string> = new Set();
   private _allSessionWords: Set<string> = new Set();
   private _startedAt: number;
+  /** Optional sigma overrides injected by the immune response engine. */
+  sigmaOverrides: Record<string, number> | undefined;
 
   // Partial features accumulated during a turn (request side fills, response side completes)
   private _pendingRequest: Partial<FeatureVector> | null = null;
@@ -235,6 +237,7 @@ export class BehaviouralProfiler {
       this._config.sigma,
       knownTools,
       knownCategories,
+      this.sigmaOverrides,
     );
 
     this._alerts.push(...alerts);

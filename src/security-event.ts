@@ -29,6 +29,7 @@ export enum ThreatClass {
   PRIVILEGE_ESCALATION_LEARNED = "privilege_escalation_learned",
   RECONNAISSANCE_LEARNED = "reconnaissance_learned",
   INTENT_HIJACK = "intent_hijack",
+  IMMUNE_RESPONSE = "immune_response",
 }
 
 /** Severity levels for security events. */

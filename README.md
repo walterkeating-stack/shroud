@@ -87,9 +87,11 @@ Shroud does not guarantee compliance — regex-based detection has limitations (
 
 ```bash
 openclaw --version    # ensure 2026.3.22+
-openclaw plugins install shroud-privacy
+openclaw plugins install shroud-privacy --dangerously-force-unsafe-install
 openclaw gateway restart
 ```
+
+> **Why `--dangerously-force-unsafe-install`?** OpenClaw's plugin safety scanner flags Shroud because it intercepts `globalThis.fetch` to obfuscate/deobfuscate LLM traffic at the HTTP level and inspects every tool call for injection signatures. This is by design — Shroud must sit between the agent and the LLM to provide privacy and security. The flag acknowledges that you trust the plugin to operate at this privilege level. No other plugin capabilities are affected.
 
 That's it — Shroud is automatically enabled on install. All 100+ detectors are active with safe defaults, no configuration required. To customise, see [Configure](#configure).
 
@@ -151,7 +153,7 @@ Other methods: `reset`, `stats`, `health`, `configure`, `shutdown`.
 git clone https://github.com/wkeything/shroud-agent-firewall.git
 cd shroud
 npm install && npm run build
-openclaw plugins install --path .
+openclaw plugins install --path . --dangerously-force-unsafe-install
 openclaw gateway restart
 ```
 
@@ -159,7 +161,7 @@ openclaw gateway restart
 
 ```bash
 openclaw plugins remove shroud-privacy
-openclaw plugins install shroud-privacy
+openclaw plugins install shroud-privacy --dangerously-force-unsafe-install
 openclaw gateway restart
 ```
 

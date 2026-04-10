@@ -230,6 +230,32 @@ export interface ShroudConfig {
   delegationDriftThreshold: number;
 
   // --- Transformer sequence predictor ---
+  // --- Collective immune response ---
+
+  /** Enable collective immune response (cross-agent attack propagation). */
+  immuneEnabled: boolean;
+  /** TTL in seconds before antibodies decay (default: 86400 = 24h). */
+  immuneTtlSec: number;
+  /** Sigma tightening factor when antibody active (0.5 = halve sigma, default: 0.5). */
+  immuneSigmaTightenFactor: number;
+  /** Cosine similarity threshold for antibody trigram matching (default: 0.7). */
+  immuneMatchThreshold: number;
+  /** Maximum active antibodies (LRU eviction, default: 100). */
+  immuneMaxAntibodies: number;
+
+  // --- Adversarial stress test (red team) ---
+
+  /** Enable adversarial stress testing (automated red team). */
+  redTeamEnabled: boolean;
+  /** Max synthetic attack scenarios per stress test run (default: 50). */
+  redTeamMaxScenarios: number;
+  /** Mutations per attack trace (default: 5). */
+  redTeamMutationCount: number;
+  /** Sessions between stress test runs per agent (default: 10). */
+  redTeamIntervalSessions: number;
+
+  // --- Transformer sequence predictor ---
+
   /** Enable transformer next-tool predictor (auto-enables with dashboard). */
   transformerEnabled: boolean;
   /** Surprise score threshold to trigger security event (default: 0.85). */

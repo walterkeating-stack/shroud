@@ -368,6 +368,63 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       return typeof raw.delegationDriftThreshold === "number" ? raw.delegationDriftThreshold : 0.10;
     })(),
 
+    // --- Adversarial stress test (red team) ---
+    redTeamEnabled: (() => {
+      const env = process.env.SHROUD_RED_TEAM_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.redTeamEnabled === "boolean") return raw.redTeamEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    redTeamMaxScenarios: (() => {
+      const env = process.env.SHROUD_RED_TEAM_MAX_SCENARIOS;
+      if (env) return parseInt(env, 10) || 50;
+      return typeof raw.redTeamMaxScenarios === "number" ? raw.redTeamMaxScenarios : 50;
+    })(),
+    redTeamMutationCount: (() => {
+      const env = process.env.SHROUD_RED_TEAM_MUTATIONS;
+      if (env) return parseInt(env, 10) || 5;
+      return typeof raw.redTeamMutationCount === "number" ? raw.redTeamMutationCount : 5;
+    })(),
+    redTeamIntervalSessions: (() => {
+      const env = process.env.SHROUD_RED_TEAM_INTERVAL;
+      if (env) return parseInt(env, 10) || 10;
+      return typeof raw.redTeamIntervalSessions === "number" ? raw.redTeamIntervalSessions : 10;
+    })(),
+
+    // --- Collective immune response ---
+    immuneEnabled: (() => {
+      const env = process.env.SHROUD_IMMUNE_ENABLED;
+      if (env === "true") return true;
+      if (env === "false") return false;
+      if (typeof raw.immuneEnabled === "boolean") return raw.immuneEnabled;
+      const dash = process.env.SHROUD_DASHBOARD;
+      if (dash === "true") return true;
+      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+    })(),
+    immuneTtlSec: (() => {
+      const env = process.env.SHROUD_IMMUNE_TTL;
+      if (env) return parseInt(env, 10) || 86400;
+      return typeof raw.immuneTtlSec === "number" ? raw.immuneTtlSec : 86400;
+    })(),
+    immuneSigmaTightenFactor: (() => {
+      const env = process.env.SHROUD_IMMUNE_SIGMA_TIGHTEN;
+      if (env) return parseFloat(env) || 0.5;
+      return typeof raw.immuneSigmaTightenFactor === "number" ? raw.immuneSigmaTightenFactor : 0.5;
+    })(),
+    immuneMatchThreshold: (() => {
+      const env = process.env.SHROUD_IMMUNE_MATCH_THRESHOLD;
+      if (env) return parseFloat(env) || 0.7;
+      return typeof raw.immuneMatchThreshold === "number" ? raw.immuneMatchThreshold : 0.7;
+    })(),
+    immuneMaxAntibodies: (() => {
+      const env = process.env.SHROUD_IMMUNE_MAX_ANTIBODIES;
+      if (env) return parseInt(env, 10) || 100;
+      return typeof raw.immuneMaxAntibodies === "number" ? raw.immuneMaxAntibodies : 100;
+    })(),
+
     // --- Transformer sequence predictor ---
     transformerEnabled: (() => {
       const env = process.env.SHROUD_TRANSFORMER_ENABLED;

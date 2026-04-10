@@ -32,7 +32,7 @@ import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 import { STATS_FILE, IS_TEST } from "./config.js";
 import { DnsCache } from "./dns-cache.js";
 import { InjectionDetector } from "./detectors/injection.js";
-import { SecurityEventBus } from "./security-event.js";
+import { SecurityEventBus, ThreatClass } from "./security-event.js";
 import type { SecurityEvent } from "./security-event.js";
 import { AgentSessionTracker, getBehaviorWarmupState, isHeartbeatPrompt, _isValidAgentLabel, normalizeLabel } from "./agent-session.js";
 import { BehaviouralProfiler } from "./profiler.js";
@@ -59,6 +59,8 @@ import { TransformerScorer } from "./transformer/scorer.js";
 import type { AttackTrace } from "./transformer/contrastive.js";
 import { computeAdaptiveThresholds, isSignatureSuppressed } from "./adaptive-thresholds.js";
 import { createFeatureCounterRegistry } from "./feature-counters.js";
+import { ImmuneResponseEngine } from "./immune-response.js";
+import { AdversarialStressTest } from "./red-team.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
@@ -534,6 +536,32 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
         _vectorStore.flush();
 
+        // Immune response: decay expired antibodies + persist state
+        if (_immuneEngine) {
+          _immuneEngine.decayTick();
+          _immuneEngine.flush();
+        }
+
+        // Red team: run adversarial stress test periodically (every 10 sessions)
+        // Uses seed corpus when no real attack traces exist — always has material.
+        if (_redTeam && agentSession) {
+          const sessionCount = agentSession.llmCallCount || 0;
+          if (sessionCount > 0 && sessionCount % config.redTeamIntervalSessions === 0) {
+            const traces = _transformerScorer?._attackTraceStore?.getAll() ?? [];
+            const baseline = profiler?.getBaselineStore()?.load(agentSession.agentBuildId) ?? null;
+            const report = _redTeam.runStressTest(
+              traces, // empty = seed corpus kicks in
+              [{ buildId: agentSession.agentBuildId, label: agentSession.agentLabel, baseline, toolProfile: baseline?.toolProfile }],
+              config,
+              _immuneEngine,
+            );
+            _redTeam.flush();
+            if (report.totalMissed > 0) {
+              api.logger?.warn(`[shroud] Red team: ${report.overallCoverage}% coverage — ${report.totalMissed} missed, ${report.patchesApplied} patches applied`);
+            }
+          }
+        }
+
         // Trigger transformer retraining if enough new data.
         // Runs async with setImmediate yields so the gateway stays responsive.
         // Fire-and-forget — _flushToDisk is sync, retraining runs in background.
@@ -938,6 +966,36 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     (globalThis as any).__shroudTransformerScorer = scorer;
     return scorer;
   })();
+  // Collective immune response — cross-agent attack propagation
+  const _immuneEngine: ImmuneResponseEngine | null = (() => {
+    if (!config.immuneEnabled) return null;
+    const existing = (globalThis as any).__shroudImmuneEngine;
+    if (existing) return existing;
+    const engine = new ImmuneResponseEngine(config.profilingProfileDir, {
+      ttlSec: config.immuneTtlSec,
+      sigmaTightenFactor: config.immuneSigmaTightenFactor,
+      matchThreshold: config.immuneMatchThreshold,
+      maxAntibodies: config.immuneMaxAntibodies,
+    });
+    (globalThis as any).__shroudImmuneEngine = engine;
+    return engine;
+  })();
+  // Inject immune response sigma overrides into profiler (if both exist)
+  if (_immuneEngine && profiler) {
+    profiler.sigmaOverrides = _immuneEngine.getSigmaOverrides(config.profilingSigma);
+  }
+  // Adversarial stress test — automated red team
+  const _redTeam: AdversarialStressTest | null = (() => {
+    if (!config.redTeamEnabled) return null;
+    const existing = (globalThis as any).__shroudRedTeam;
+    if (existing) return existing;
+    const rt = new AdversarialStressTest(config.profilingProfileDir, {
+      maxScenarios: config.redTeamMaxScenarios,
+      mutationCount: config.redTeamMutationCount,
+    });
+    (globalThis as any).__shroudRedTeam = rt;
+    return rt;
+  })();
   // Session tool sequence accumulator for vector store workflow recording
   let _sessionToolSequence: string[] = [];
   let _sessionUrls: string[] = [];
@@ -976,6 +1034,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // Extract trapType from signatureId (format: pt_<trapType>)
         const trapType = event.signatureId.replace(/^pt_/, "") || "data_upload";
         _transformerScorer.onPhantomTrigger(trapType, [..._sessionToolSequence, toolName]);
+        // Immune response: extract fingerprint + propagate antibodies fleet-wide
+        if (_immuneEngine) {
+          const fp = _immuneEngine.extractFingerprint(
+            trace, agentSession?.agentBuildId || "", agentSession?.agentLabel || "", "phantom",
+            event.signatureId, [], [],
+          );
+          _immuneEngine.propagate(fp);
+        }
       }
     });
   }
@@ -1642,6 +1708,14 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             [..._sessionToolSequence, event.toolName ?? "unknown"],
             _sessionToolSequence.length,
           );
+          // Immune response: extract fingerprint + propagate antibodies fleet-wide
+          if (_immuneEngine) {
+            const fp = _immuneEngine.extractFingerprint(
+              trace, agentSession?.agentBuildId || "", agentSession?.agentLabel || "", "honeypot",
+              honeypotHit.signatureId, [], [],
+            );
+            _immuneEngine.propagate(fp);
+          }
         }
         // Always block — honeypot trips are 100% injection, no false positives possible
         return { block: true, blockReason: `Shroud security: honeypot triggered — confirmed injection attempt` };
@@ -2027,12 +2101,52 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const _agentBaseline = _agentSession?.agentBuildId && profiler
         ? profiler.getBaselineStore().load(_agentSession.agentBuildId)
         : null;
-      const _adaptiveThresholds = computeAdaptiveThresholds(_agentBaseline, config);
+      let _adaptiveThresholds = computeAdaptiveThresholds(_agentBaseline, config);
+      // Apply immune response overrides — tighten thresholds + force-enable signatures
+      if (_immuneEngine) {
+        _adaptiveThresholds = _immuneEngine.applyToThresholds(_adaptiveThresholds);
+      }
       const _behaviorWarmup = getBehaviorWarmupState(
         _agentSession,
         _agentBaseline?.sessionCount || 0,
         config.profilingMinBaseline,
       );
+
+      // --- Immune response: check session against active antibodies ---
+      if (_immuneEngine && _sessionToolSequence.length >= 2) {
+        const abMatches = _immuneEngine.matchAntibodies(_sessionToolSequence);
+        if (abMatches.length > 0) {
+          const best = abMatches[0];
+          noteFeature("immune_response", {
+            outcome: "flagged",
+            explanation: `Session matches antibody ${best.fingerprintId} (similarity=${best.similarity.toFixed(3)})`,
+          });
+          const immuneEvt: SecurityEvent = {
+            timestamp: Date.now(),
+            eventType: "anomaly_detected",
+            direction: "request",
+            threatClass: ThreatClass.IMMUNE_RESPONSE,
+            signatureId: `immune_${best.fingerprintId}`,
+            severity: best.similarity > 0.9 ? "high" : "medium",
+            matchedText: `antibody:${best.fingerprintId}`,
+            matchStart: 0,
+            matchEnd: 0,
+            textLength: 0,
+            action: config.injectionDetection === "block" ? "blocked" : "flagged",
+            description: `Collective immune response: session tool sequence matches known attack pattern (antibody ${best.fingerprintId}, similarity ${best.similarity.toFixed(3)})`,
+            agentBuildId: _agentSession?.agentBuildId,
+            agentLabel: _agentSession?.agentLabel,
+            agentSessionId: _agentSession?.sessionId,
+          };
+          ((globalThis as any).__shroudSecurityBus || securityBus)?.emit(immuneEvt);
+          // Re-confirm the antibody to extend TTL
+          _immuneEngine.reconfirm(best.fingerprintId);
+          // Update sigma overrides for profiler since antibody was confirmed
+          if (profiler) {
+            profiler.sigmaOverrides = _immuneEngine.getSigmaOverrides(config.profilingSigma);
+          }
+        }
+      }
 
       // --- Semantic drift detection + behavioral archetype tracking ---
       if (_driftDetector && _currentIntent) {
@@ -2423,6 +2537,15 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
                   [..._sessionToolSequence],
                   [event.toolName ?? "unknown", ...shadowToolNames],
                 );
+                // Immune response: extract fingerprint + propagate antibodies fleet-wide
+                if (_immuneEngine) {
+                  const agentSession2 = agentTracker.getCurrentSession();
+                  const fp = _immuneEngine.extractFingerprint(
+                    trace, agentSession2?.agentBuildId || "", agentSession2?.agentLabel || "", "shadow",
+                    "se_shadow_detected", [], [],
+                  );
+                  _immuneEngine.propagate(fp);
+                }
               }
               api.logger?.warn(`[shroud] BLOCKED by shadow execution: ${shadowResult.verdictReason}`);
               return { block: true, blockReason: `Shroud shadow execution: ${shadowResult.verdictReason}` };

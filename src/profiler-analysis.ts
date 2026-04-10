@@ -160,6 +160,7 @@ const NUMERIC_FEATURES: Array<{
  * @param sigma - Z-score threshold (default 3.0)
  * @param knownTools - Set of tool names seen in baseline sessions
  * @param knownCategories - Set of entity categories seen in baseline sessions
+ * @param sigmaOverrides - Per-feature sigma overrides (e.g. from immune response)
  */
 export function detectAnomalies(
   features: FeatureVector,
@@ -167,6 +168,7 @@ export function detectAnomalies(
   sigma: number,
   knownTools: Set<string>,
   knownCategories: Set<string>,
+  sigmaOverrides?: Record<string, number>,
 ): AnomalyAlert[] {
   const alerts: AnomalyAlert[] = [];
   const ts = features.timestamp;
@@ -181,8 +183,9 @@ export function detectAnomalies(
     const sd = stddev(stats);
     const z = zScore(observed, stats.mean, sd);
 
-    if (Math.abs(z) > sigma) {
-      const severity = Math.abs(z) > sigma * 1.5 ? "critical" : "warning";
+    const effectiveSigma = sigmaOverrides?.[feat.name] ?? sigma;
+    if (Math.abs(z) > effectiveSigma) {
+      const severity = Math.abs(z) > effectiveSigma * 1.5 ? "critical" : "warning";
       alerts.push({
         type: feat.anomalyType,
         severity,

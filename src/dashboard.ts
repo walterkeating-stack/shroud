@@ -395,6 +395,14 @@ export function startDashboard(
       else if (url === "/api/tripwires") {
         handleTripwires(res, deps);
       }
+      // --- Collective immune response ---
+      else if (url === "/api/immune") {
+        handleImmune(res);
+      }
+      // --- Adversarial stress test ---
+      else if (url === "/api/red-team") {
+        handleRedTeam(res);
+      }
       else {
         json(res, 404, { error: "Not found", endpoints: [
           "/health", "/api/overview", "/api/obfuscation", "/api/agents", "/api/agents/:buildId",
@@ -404,7 +412,7 @@ export function startDashboard(
           "/api/drift", "/api/coherence", "/api/vectors", "/api/vectors/urls",
           "/api/vectors/:buildId/evolution", "/api/intent-chain",
           "/api/intent-chain/:buildId/events", "/api/agent-space", "/api/timeline",
-          "/api/tripwires",
+          "/api/tripwires", "/api/immune", "/api/red-team",
         ]});
       }
     } catch (err: any) {
@@ -1634,6 +1642,83 @@ function handleTimeline(res: ServerResponse, deps: DashboardDeps) {
 
 // ── Tripwires API handler ──────────────────────────
 
+function handleRedTeam(res: ServerResponse) {
+  const engine = (globalThis as any).__shroudRedTeam;
+  if (!engine) {
+    json(res, 200, { enabled: false });
+    return;
+  }
+  const state = engine.getState();
+  const latest = engine.getLatestReport();
+  json(res, 200, {
+    enabled: true,
+    stats: state.stats,
+    latestReport: latest ? {
+      id: latest.id,
+      timestamp: latest.timestamp,
+      durationMs: latest.durationMs,
+      totalScenarios: latest.totalScenarios,
+      totalCaught: latest.totalCaught,
+      totalMissed: latest.totalMissed,
+      overallCoverage: latest.overallCoverage,
+      patchesApplied: latest.patchesApplied,
+      agentCoverage: latest.agentCoverage.map((ac: { agentBuildId: string; agentLabel: string; totalScenarios: number; caught: number; missed: number; coveragePercent: number; byThreatType: Record<string, { total: number; caught: number; percent: number }>; missedScenarios: Array<{ id: string; mutation: string; threatType: string }> }) => ({
+        agentBuildId: ac.agentBuildId,
+        agentLabel: ac.agentLabel,
+        totalScenarios: ac.totalScenarios,
+        caught: ac.caught,
+        missed: ac.missed,
+        coveragePercent: ac.coveragePercent,
+        byThreatType: ac.byThreatType,
+        missedCount: ac.missedScenarios.length,
+        missedSample: ac.missedScenarios.slice(0, 5).map(s => ({
+          id: s.id,
+          mutation: s.mutation,
+          threatType: s.threatType,
+        })),
+      })),
+    } : null,
+    reportCount: state.reports.length,
+  });
+}
+
+function handleImmune(res: ServerResponse) {
+  const engine = (globalThis as any).__shroudImmuneEngine;
+  if (!engine) {
+    json(res, 200, { enabled: false });
+    return;
+  }
+  const state = engine.getState();
+  const now = Date.now();
+  json(res, 200, {
+    enabled: true,
+    stats: state.stats,
+    activeAntibodies: state.antibodies
+      .filter((a: { active: boolean }) => a.active)
+      .map((a: { fingerprintId: string; sigmaTightening: Record<string, number>; watchTrigrams: string[]; forcedSignatures: string[]; createdAt: number; expiresAt: number; confirmations: number; lastConfirmedAt: number }) => ({
+        fingerprintId: a.fingerprintId,
+        sigmaTightening: a.sigmaTightening,
+        watchTrigrams: a.watchTrigrams.slice(0, 10),
+        forcedSignatures: a.forcedSignatures,
+        createdAt: a.createdAt,
+        expiresAt: a.expiresAt,
+        ttlRemainingSec: Math.max(0, Math.round((a.expiresAt - now) / 1000)),
+        confirmations: a.confirmations,
+        lastConfirmedAt: a.lastConfirmedAt,
+      })),
+    recentFingerprints: state.fingerprints.slice(-20).reverse().map((fp: { id: string; signatureId: string; threatType: string; sourceAgentLabel: string; source: string; timestamp: number; flaggedDimensions: string[]; trigrams: string[] }) => ({
+      id: fp.id,
+      signatureId: fp.signatureId,
+      threatType: fp.threatType,
+      sourceAgent: fp.sourceAgentLabel,
+      source: fp.source,
+      timestamp: fp.timestamp,
+      flaggedDimensions: fp.flaggedDimensions,
+      trigramCount: fp.trigrams.length,
+    })),
+  });
+}
+
 function handleTripwires(res: ServerResponse, deps: DashboardDeps) {
   const allEvents = deps.securityBus?.getEvents() ?? [];
   const vs = (globalThis as any).__shroudVectorStore as VectorStore | undefined;
@@ -2040,6 +2125,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
   <div class="tab" onclick="switchTab('obfuscation')">Obfuscation</div>
   <div class="tab" onclick="switchTab('events')">Events</div>
   <div class="tab" onclick="switchTab('tripwires')">Tripwires</div>
+  <div class="tab" onclick="switchTab('immune')">Immune</div>
+  <div class="tab" onclick="switchTab('redteam')">Red Team</div>
   <div class="tab" onclick="switchTab('timeline')">Timeline</div>
 </div>
 <div class="grid" id="content">
@@ -2052,6 +2139,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <div id="obfuscationContent" style="display:none"></div>
 <div id="eventsContent" style="display:none"></div>
 <div id="tripwiresContent" style="display:none"></div>
+<div id="immuneContent" style="display:none"></div>
+<div id="redteamContent" style="display:none"></div>
 <div id="timelineContent" style="display:none"></div>
 <div class="toast" id="toast"></div>
 
@@ -2731,6 +2820,8 @@ const TAB_CONTAINERS = {
   obfuscation: 'obfuscationContent',
   events: 'eventsContent',
   tripwires: 'tripwiresContent',
+  immune: 'immuneContent',
+  redteam: 'redteamContent',
   timeline: 'timelineContent',
 };
 function switchTab(tab) {
@@ -2750,6 +2841,8 @@ function switchTab(tab) {
   else if (tab === 'features') renderFeatures();
   else if (tab === 'signatures') renderSignatures();
   else if (tab === 'transformer') renderTransformer();
+  else if (tab === 'immune') renderImmune();
+  else if (tab === 'redteam') renderRedTeam();
   else if (tab === 'timeline') renderTimeline();
 }
 
@@ -3811,6 +3904,161 @@ async function renderTripwires() {
     el.innerHTML = html;
   } catch (e) {
     el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + e.message + '</p></div></div>';
+  }
+}
+
+
+// ─── Immune Response tab ───
+async function renderImmune() {
+  const el = document.getElementById('immuneContent');
+  try {
+    const data = await fetchJson('/api/immune');
+    let html = '<div style="padding:20px 28px">';
+
+    if (!data.enabled) {
+      html += '<div class="card"><h2>Collective Immune Response</h2><p style="color:var(--text-muted)">Immune response is disabled. Enable with <code>immuneEnabled: true</code> or <code>SHROUD_IMMUNE_ENABLED=true</code>.</p></div>';
+      html += '</div>';
+      el.innerHTML = html;
+      return;
+    }
+
+    // Stats overview
+    html += '<div class="card" style="margin-bottom:16px"><h2>Immune System Stats</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat accent">' + (data.activeAntibodies || []).length + '</div><div class="stat-label">Active Antibodies</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.stats.totalFingerprintsExtracted + '</div><div class="stat-label">Fingerprints</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.stats.totalPropagations + '</div><div class="stat-label">Propagations</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.stats.totalReconfirmations + '</div><div class="stat-label">Reconfirmations</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.stats.totalDecays + '</div><div class="stat-label">Decayed</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (data.stats.totalMatches > 0 ? 'red' : '') + '">' + data.stats.totalMatches + '</div><div class="stat-label">Matches</div></div>';
+    html += '</div>';
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">When an attack is confirmed on any agent, antibodies propagate fleet-wide to tighten detection for all agents. Antibodies decay after TTL unless re-confirmed.</p>';
+    html += '</div>';
+
+    // Active antibodies
+    const abs = data.activeAntibodies || [];
+    html += '<div class="card" style="margin-bottom:16px"><h2>Active Antibodies (' + abs.length + ')</h2>';
+    if (abs.length === 0) {
+      html += '<p style="color:var(--text-muted);font-size:12px">No active antibodies. Antibodies are created when honeypots, phantom tools, or shadow execution confirm an attack.</p>';
+    } else {
+      html += '<table class="data-table"><thead><tr><th>Fingerprint</th><th>Tightened Dims</th><th>Forced Sigs</th><th>TTL</th><th>Confirmations</th></tr></thead><tbody>';
+      for (const ab of abs) {
+        const dims = Object.keys(ab.sigmaTightening || {}).join(', ') || '—';
+        const sigs = (ab.forcedSignatures || []).join(', ') || '—';
+        const ttl = ab.ttlRemainingSec > 3600 ? Math.round(ab.ttlRemainingSec / 3600) + 'h' : Math.round(ab.ttlRemainingSec / 60) + 'm';
+        html += '<tr><td><code>' + ab.fingerprintId + '</code></td><td>' + dims + '</td><td><code>' + sigs + '</code></td><td>' + ttl + '</td><td>' + ab.confirmations + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+
+    // Recent fingerprints
+    const fps = data.recentFingerprints || [];
+    if (fps.length > 0) {
+      html += '<div class="card"><h2>Recent Fingerprints</h2>';
+      html += '<table class="data-table"><thead><tr><th>ID</th><th>Source</th><th>Threat Type</th><th>Agent</th><th>Trigrams</th><th>When</th></tr></thead><tbody>';
+      for (const fp of fps) {
+        const srcColor = fp.source === 'honeypot' ? 'var(--critical)' : fp.source === 'phantom' ? 'var(--high)' : 'var(--accent)';
+        html += '<tr><td><code>' + fp.id + '</code></td><td style="color:' + srcColor + '">' + fp.source + '</td><td>' + fp.threatType + '</td><td>' + (fp.sourceAgent || '—') + '</td><td>' + fp.trigramCount + '</td><td>' + timeAgo(fp.timestamp) + '</td></tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + err.message + '</p></div></div>';
+  }
+}
+
+
+// ─── Red Team tab ───
+async function renderRedTeam() {
+  const el = document.getElementById('redteamContent');
+  try {
+    const data = await fetchJson('/api/red-team');
+    let html = '<div style="padding:20px 28px">';
+
+    if (!data.enabled) {
+      html += '<div class="card"><h2>Adversarial Stress Test</h2><p style="color:var(--text-muted)">Red team is disabled. Enable with <code>redTeamEnabled: true</code> or <code>SHROUD_RED_TEAM_ENABLED=true</code>.</p></div>';
+      html += '</div>';
+      el.innerHTML = html;
+      return;
+    }
+
+    // Stats overview
+    html += '<div class="card" style="margin-bottom:16px"><h2>Red Team Stats</h2>';
+    html += '<div class="stat-row">';
+    html += '<div class="stat-group"><div class="stat accent">' + data.stats.totalRuns + '</div><div class="stat-label">Total Runs</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.stats.totalScenarios + '</div><div class="stat-label">Scenarios Tested</div></div>';
+    html += '<div class="stat-group"><div class="stat green">' + data.stats.totalCaught + '</div><div class="stat-label">Caught</div></div>';
+    html += '<div class="stat-group"><div class="stat ' + (data.stats.totalMissed > 0 ? 'red' : 'green') + '">' + data.stats.totalMissed + '</div><div class="stat-label">Missed</div></div>';
+    html += '<div class="stat-group"><div class="stat">' + data.stats.totalPatches + '</div><div class="stat-label">Auto-Patches</div></div>';
+    html += '</div>';
+    if (data.stats.lastRunAt) {
+      html += '<div class="row"><span class="label">Last run</span><span class="value">' + timeAgo(data.stats.lastRunAt) + '</span></div>';
+    }
+    if (data.stats.bestCoverage > 0) {
+      html += '<div class="row"><span class="label">Best coverage</span><span class="value" style="color:var(--success)">' + data.stats.bestCoverage + '%</span></div>';
+      html += '<div class="row"><span class="label">Worst coverage</span><span class="value" style="color:' + (data.stats.worstCoverage < 70 ? 'var(--critical)' : 'var(--medium)') + '">' + data.stats.worstCoverage + '%</span></div>';
+    }
+    html += '<p style="color:var(--text-muted);font-size:11px;margin-top:10px">Automated adversarial testing: 50 seed attack traces (12 families) mutated and dry-run against each agent\\\\u2019s detection stack. Missed attacks auto-patched as immune antibodies.</p>';
+    html += '</div>';
+
+    // Latest report
+    const report = data.latestReport;
+    if (report) {
+      html += '<div class="card" style="margin-bottom:16px"><h2>Latest Report</h2>';
+      html += '<div class="stat-row" style="margin-bottom:12px">';
+      const covColor = report.overallCoverage >= 90 ? 'var(--success)' : report.overallCoverage >= 70 ? 'var(--medium)' : 'var(--critical)';
+      html += '<div class="stat-group"><div class="stat" style="color:' + covColor + ';font-size:28px">' + report.overallCoverage + '%</div><div class="stat-label">Overall Coverage</div></div>';
+      html += '<div class="stat-group"><div class="stat">' + report.totalScenarios + '</div><div class="stat-label">Scenarios</div></div>';
+      html += '<div class="stat-group"><div class="stat green">' + report.totalCaught + '</div><div class="stat-label">Caught</div></div>';
+      html += '<div class="stat-group"><div class="stat ' + (report.totalMissed > 0 ? 'red' : 'green') + '">' + report.totalMissed + '</div><div class="stat-label">Missed</div></div>';
+      html += '<div class="stat-group"><div class="stat">' + report.patchesApplied + '</div><div class="stat-label">Patches</div></div>';
+      html += '</div>';
+      html += '<div class="row"><span class="label">Duration</span><span class="value">' + report.durationMs + 'ms</span></div>';
+      html += '<div class="row"><span class="label">Report ID</span><span class="value"><code>' + report.id + '</code></span></div>';
+
+      // Per-agent coverage
+      const agents = report.agentCoverage || [];
+      if (agents.length > 0) {
+        html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px">Per-Agent Coverage</div>';
+        html += '<table class="data-table"><thead><tr><th>Agent</th><th>Coverage</th><th>Caught</th><th>Missed</th><th>Exfil</th><th>PrivEsc</th><th>Recon</th></tr></thead><tbody>';
+        for (const ac of agents) {
+          const acColor = ac.coveragePercent >= 90 ? 'var(--success)' : ac.coveragePercent >= 70 ? 'var(--medium)' : 'var(--critical)';
+          const exfil = ac.byThreatType.exfiltration || { percent: '—' };
+          const privesc = ac.byThreatType.privilege_escalation || { percent: '—' };
+          const recon = ac.byThreatType.reconnaissance || { percent: '—' };
+          html += '<tr><td>' + ac.agentLabel + '</td>';
+          html += '<td style="color:' + acColor + ';font-weight:600">' + ac.coveragePercent + '%</td>';
+          html += '<td>' + ac.caught + '</td><td style="color:' + (ac.missed > 0 ? 'var(--critical)' : '') + '">' + ac.missed + '</td>';
+          html += '<td>' + (typeof exfil.percent === 'number' ? exfil.percent + '%' : '—') + '</td>';
+          html += '<td>' + (typeof privesc.percent === 'number' ? privesc.percent + '%' : '—') + '</td>';
+          html += '<td>' + (typeof recon.percent === 'number' ? recon.percent + '%' : '—') + '</td>';
+          html += '</tr>';
+        }
+        html += '</tbody></table>';
+
+        // Missed scenarios sample
+        for (const ac of agents) {
+          if (ac.missedCount > 0) {
+            html += '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin:12px 0 6px">' + ac.agentLabel + ' — Missed Scenarios</div>';
+            for (const s of ac.missedSample || []) {
+              html += '<div class="row"><span class="label" style="font-family:monospace;font-size:11px">' + s.id + '</span><span class="value">' + s.mutation + ' / ' + s.threatType + '</span></div>';
+            }
+          }
+        }
+      }
+      html += '</div>';
+    } else {
+      html += '<div class="card" style="margin-bottom:16px"><h2>Latest Report</h2><p style="color:var(--text-muted);font-size:12px">No stress test has run yet. Tests trigger every ' + (data.stats.totalRuns === 0 ? '10' : '') + ' sessions per agent, or when real attack traces accumulate.</p></div>';
+    }
+
+    html += '</div>';
+    el.innerHTML = html;
+  } catch (err) {
+    el.innerHTML = '<div style="padding:20px 28px"><div class="card"><h2>Error</h2><p style="color:var(--critical)">' + err.message + '</p></div></div>';
   }
 }
 

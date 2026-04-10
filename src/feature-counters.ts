@@ -261,6 +261,22 @@ const FEATURE_DEFINITIONS = (config: ShroudConfig): FeatureDefinition[] => [
     explanation: "Runs suspicious tool calls in a fake sandbox to observe the likely attack chain before execution.",
     thresholds: { maxSteps: config.shadowExecutionMaxSteps, timeoutMs: config.shadowExecutionTimeoutMs },
   },
+  {
+    id: "red_team",
+    label: "Adversarial Stress Test",
+    category: "learned",
+    enabled: config.redTeamEnabled,
+    explanation: "Proactively attacks detection pipeline with synthetic scenarios to find blind spots.",
+    thresholds: { maxScenarios: config.redTeamMaxScenarios, mutations: config.redTeamMutationCount },
+  },
+  {
+    id: "immune_response",
+    label: "Collective Immune Response",
+    category: "learned",
+    enabled: config.immuneEnabled,
+    explanation: "Propagates attack fingerprints from confirmed incidents to tighten detection across all agents.",
+    thresholds: { ttlSec: config.immuneTtlSec, matchThreshold: config.immuneMatchThreshold },
+  },
 ];
 
 export class FeatureCounterRegistry {
