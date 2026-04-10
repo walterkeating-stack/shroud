@@ -1291,6 +1291,8 @@ export type DetectorOverrides = Record<string, { enabled?: boolean; confidence?:
 export type ConfigRule = {
   enabled?: boolean;
   pattern?: string;
+  /** Extra regex flags beyond "g" (e.g. "i", "m", "im"). Always gets "g" automatically. */
+  flags?: string;
   category?: string;
   confidence?: number;
 };
@@ -1343,7 +1345,8 @@ export class RegexDetector implements BaseDetector {
         if (!rule) return p;
         const updated = { ...p };
         if (rule.pattern) {
-          try { updated.pattern = new RegExp(rule.pattern, "g"); } catch { /* invalid regex — keep built-in */ }
+          const flags = "g" + (rule.flags || "").replace(/g/g, "");
+          try { updated.pattern = new RegExp(rule.pattern, flags); } catch { /* invalid regex — keep built-in */ }
         }
         if (rule.confidence !== undefined) updated.confidence = rule.confidence;
         if (rule.category) updated.category = resolveCategory(rule.category);
@@ -1362,9 +1365,10 @@ export class RegexDetector implements BaseDetector {
         if (rule.enabled === false) continue;
         if (!rule.pattern) continue; // new rules must have a pattern
         try {
+          const flags = "g" + (rule.flags || "").replace(/g/g, "");
           patterns.push({
             name,
-            pattern: new RegExp(rule.pattern, "g"),
+            pattern: new RegExp(rule.pattern, flags),
             category: rule.category ? resolveCategory(rule.category) : Category.CUSTOM,
             confidence: rule.confidence ?? 0.9,
           });
