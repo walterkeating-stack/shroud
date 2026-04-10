@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.1] - 2026-04-10
+
+### Added — Per-Tool Field Scoping
+
+- **Per-tool field scoping** — configure which fields to scan per tool name/pattern via `fieldScoping.toolFields` in `shroud.config.json`. Supports `*` and `?` wildcards (e.g., `gmail_*` → only scan `subject, body, snippet`).
+- **Never-scan fields** — structural fields like `id`, `created_at`, `sha` can be globally excluded via `fieldScoping.neverScanFields`.
+- **Category exemptions** — `exemptCategories` parameter on `Obfuscator.obfuscate()` allows callers to skip specific entity categories. Wired to agent contract `allowedDataClasses` when the contracts module is available.
+- **`walkStringsScoped()`** — new field-aware variant of `walkStrings()` used in `tool_result_persist` hook.
+- **`FilterStats.exempted`** — new counter tracking entities skipped by category exemption.
+- Fully backward compatible: no `fieldScoping` config = scan everything (existing behavior).
+- Hot-reloadable: changes to `fieldScoping` take effect on the next prompt build.
+
 ## [2.4.0] - 2026-04-10
 
 ### Added — Healthcare, Finance, Legal, Cloud & Crypto Detection

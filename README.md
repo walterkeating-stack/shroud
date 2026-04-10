@@ -230,8 +230,47 @@ Out of the box, Shroud:
 | `redactionLevel` | `"full"` \| `"masked"` \| `"stats"` | `"full"` | Output mode: fake values, partial masking, or category placeholders |
 | `dryRun` | boolean | `false` | Detect entities but don't replace (testing mode) |
 | `maxStoreMappings` | number | `0` | Max mapping store size with LRU eviction (0 = unlimited) |
+| `fieldScoping` | object | — | Per-tool field scoping and per-agent category exemptions (see below) |
 
 > **Env var overrides:** `SHROUD_SECRET_KEY` and `SHROUD_PERSISTENT_SALT` override their respective config keys (priority: env var > plugin config > default).
+
+### Per-tool field scoping
+
+By default, Shroud scans every string field in every message. This catches everything but also produces false positives — file paths agents need, config values, UUIDs matching credit card patterns, etc.
+
+Field scoping lets you control *which fields* get scanned per tool, and *which entity categories* are exempt per agent. Add a `fieldScoping` block to your `shroud.config.json`:
+
+```jsonc
+{
+  "fieldScoping": {
+    // Per-tool rules: only scan these fields for matching tools.
+    // Keys support * and ? wildcards.
+    "toolFields": {
+      "Read":     { "scanFields": ["content", "text"] },
+      "Bash":     { "scanFields": ["output", "stdout", "stderr"] },
+      "gmail_*":  { "scanFields": ["subject", "body", "snippet", "from", "to"] },
+      "github_*": { "scanFields": ["title", "body", "description", "comment"] }
+    },
+    // Fields that are NEVER scanned regardless of tool.
+    "neverScanFields": ["id", "created_at", "updated_at", "sha", "hash", "ref", "type", "status"],
+    // Default fields to scan for tools not matching any pattern.
+    // Empty array = scan everything (backward compatible).
+    "defaultScanFields": [],
+    // When true, exempt entity categories that the agent's contract allows.
+    // Requires the contracts module (feature/transformer branch).
+    "useContractExemptions": false
+  }
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `fieldScoping.toolFields` | object | `{}` | Tool name pattern → fields to scan |
+| `fieldScoping.neverScanFields` | string[] | `[]` | Structural fields to always skip |
+| `fieldScoping.defaultScanFields` | string[] | `[]` | Default fields for unmatched tools (empty = scan all) |
+| `fieldScoping.useContractExemptions` | boolean | `false` | Use agent contract `allowedDataClasses` to exempt categories |
+
+Field scoping is hot-reloadable — changes take effect on the next prompt build without a restart. No `fieldScoping` config = current behavior (scan everything).
 
 ### Detection rules as code (hot-reload)
 
