@@ -57,6 +57,7 @@ import { VectorStore, buildNovelWorkflowEvent, buildUrlCorrelationEvent } from "
 import { IntentChain, buildDelegationDriftEvent } from "./intent-chain.js";
 import { TransformerScorer } from "./transformer/scorer.js";
 import type { AttackTrace } from "./transformer/contrastive.js";
+import { FieldScopeResolver } from "./field-scope.js";
 import { computeAdaptiveThresholds, isSignatureSuppressed } from "./adaptive-thresholds.js";
 import { createFeatureCounterRegistry } from "./feature-counters.js";
 import { ImmuneResponseEngine } from "./immune-response.js";
@@ -248,6 +249,44 @@ function walkStrings(
   return value;
 }
 
+/**
+ * Scoped variant of walkStrings — only processes string fields where
+ * `shouldScan(fieldName)` returns true. When shouldScan always returns true,
+ * behavior is identical to walkStrings.
+ */
+function walkStringsScoped(
+  value: unknown,
+  fn: (s: string) => string,
+  shouldScan: (fieldName: string) => boolean,
+  currentField?: string,
+): unknown {
+  if (typeof value === "string") {
+    if (currentField !== undefined && !shouldScan(currentField)) return value;
+    return fn(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      if (typeof item === "object" && item !== null && "text" in item && typeof (item as any).text === "string") {
+        if (!shouldScan("text")) return item;
+        return { ...item, text: fn((item as any).text) };
+      }
+      return walkStringsScoped(item, fn, shouldScan);
+    });
+  }
+  if (typeof value === "object" && value !== null) {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (typeof v === "string") {
+        out[k] = shouldScan(k) ? fn(v) : v;
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
 // ---------------------------------------------------------------------------
 // Hook registration
 // ---------------------------------------------------------------------------
@@ -308,6 +347,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // OpenClaw loads the plugin multiple times; only one instance has the mappings.
   const ob = () => getSharedObfuscator(obfuscator);
   const config = ob().config;
+  // Field scoping resolver — reconstructed on access to pick up hot-reloaded config.
+  let _fieldScopeResolver: FieldScopeResolver | undefined;
+  let _fieldScopeConfigRef: unknown;
+  function getFieldScopeResolver(): FieldScopeResolver {
+    const liveConfig = ob().config.fieldScoping;
+    if (_fieldScopeResolver && _fieldScopeConfigRef === liveConfig) return _fieldScopeResolver;
+    _fieldScopeResolver = new FieldScopeResolver(liveConfig);
+    _fieldScopeConfigRef = liveConfig;
+    return _fieldScopeResolver;
+  }
   const auditActive = config.auditEnabled || config.verboseLogging;
   const featureRegistry = (globalThis as any).__shroudFeatureRegistry
     || createFeatureCounterRegistry(config);
@@ -1338,12 +1387,20 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     let totalEntities = 0;
     const _obfCategoryCounts: Record<string, number> = {};
 
+    // Resolve per-agent category exemptions from contract
+    const _resolver = getFieldScopeResolver();
+    const _currentSession = agentTracker.getCurrentSession();
+    const _exemptCats = _resolver.resolveAgentExemptions(
+      _currentSession?.agentLabel ?? "Unknown Agent",
+      _currentSession?.classification?.role ?? "General Agent",
+    );
+
     // Obfuscate the system prompt
     const prompt = event?.prompt;
     let obfuscatedPrompt: string | undefined;
     if (typeof prompt === "string" && prompt) {
       const cleaned = stripSlackLinksForHook(prompt);
-      const result = ob().obfuscate(cleaned);
+      const result = ob().obfuscate(cleaned, undefined, _exemptCats);
       if (result.entities.length > 0 || cleaned !== prompt) {
         obfuscatedPrompt = result.entities.length > 0 ? result.obfuscated : cleaned;
         totalEntities += result.entities.length;
@@ -1363,7 +1420,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         // String content (Anthropic/OpenAI)
         if (typeof msg.content === "string") {
           const cleaned = stripSlackLinksForHook(msg.content);
-          const result = ob().obfuscate(cleaned);
+          const result = ob().obfuscate(cleaned, undefined, _exemptCats);
           totalEntities += result.entities.length;
           for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
           if (result.entities.length > 0 || cleaned !== msg.content) {
@@ -1375,7 +1432,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           for (const b of msg.content) {
             if (b?.type === "text" && typeof b.text === "string") {
               const cleaned = stripSlackLinksForHook(b.text);
-              const result = ob().obfuscate(cleaned);
+              const result = ob().obfuscate(cleaned, undefined, _exemptCats);
               totalEntities += result.entities.length;
               for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
               if (result.entities.length > 0 || cleaned !== b.text) {
@@ -1385,7 +1442,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             // tool_result blocks with string content
             if (typeof b?.content === "string") {
               const cleaned = stripSlackLinksForHook(b.content);
-              const result = ob().obfuscate(cleaned);
+              const result = ob().obfuscate(cleaned, undefined, _exemptCats);
               totalEntities += result.entities.length;
               for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
               if (result.entities.length > 0 || cleaned !== b.content) {
@@ -1398,7 +1455,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (Array.isArray(msg.tool_calls)) {
           for (const tc of msg.tool_calls) {
             if (typeof tc.function?.arguments === "string") {
-              const result = ob().obfuscate(tc.function.arguments);
+              const result = ob().obfuscate(tc.function.arguments, undefined, _exemptCats);
               totalEntities += result.entities.length;
               for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
               if (result.entities.length > 0) tc.function.arguments = result.obfuscated;
@@ -2632,14 +2689,25 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     const resultCategories = new Set<string>();
     let totalResultSize = 0;
 
-    const obfuscated = walkStrings(event.message, (s) => {
-      const result = ob().obfuscate(s);
+    // Resolve per-tool field scope and per-agent category exemptions
+    const toolName = _turnContext?.pendingToolCall?.toolName ?? event.toolName ?? "";
+    const resolver = getFieldScopeResolver();
+    const toolScope = resolver.resolveToolScope(toolName);
+    const shouldScan = (field: string) => resolver.shouldScanField(field, toolScope);
+    const agentSession = agentTracker.getCurrentSession();
+    const exemptCategories = resolver.resolveAgentExemptions(
+      agentSession?.agentLabel ?? "Unknown Agent",
+      agentSession?.classification?.role ?? "General Agent",
+    );
+
+    const obfuscated = walkStringsScoped(event.message, (s) => {
+      const result = ob().obfuscate(s, undefined, exemptCategories);
       totalResultSize += s.length;
       for (const entity of result.entities) {
         resultCategories.add(entity.category);
       }
       return result.obfuscated;
-    });
+    }, shouldScan);
 
     // Validate tool result against user intent (Heuristic 1 + 3)
     if (_turnContext?.pendingToolCall && config.injectionDetection !== "off" && securityBus) {

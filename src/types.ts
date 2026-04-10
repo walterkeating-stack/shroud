@@ -83,6 +83,35 @@ export interface FilterStats {
   docExamples: number;
   /** Entities skipped because they are already-known fakes. */
   alreadyObfuscated: number;
+  /** Entities skipped because their category is exempt (per-agent contract). */
+  exempted: number;
+}
+
+/** Per-tool field rule: which fields to scan for obfuscation. */
+export interface ToolFieldRule {
+  scanFields: string[];
+}
+
+/** Configuration for per-tool and per-agent obfuscation scoping. */
+export interface FieldScopingConfig {
+  /** Per-tool field rules. Keys are tool name patterns (supports * and ? wildcards). */
+  toolFields: Record<string, ToolFieldRule>;
+  /** Fields that are NEVER scanned regardless of tool. */
+  neverScanFields: string[];
+  /** Default fields to scan for tools not matching any pattern. Empty = scan everything. */
+  defaultScanFields: string[];
+  /** When true, use agent contract allowedDataClasses to exempt categories from obfuscation. */
+  useContractExemptions: boolean;
+}
+
+/** Result of resolving field scope for a tool. */
+export interface ScopeDecision {
+  /** "all" = scan every field; "selected" = only scan scanFields. */
+  mode: "all" | "selected";
+  /** Fields to scan (when mode is "selected"). */
+  scanFields: Set<string>;
+  /** Fields to never scan (always applied). */
+  neverScanFields: Set<string>;
 }
 
 /** Configuration for the Shroud plugin. */
@@ -280,4 +309,9 @@ export interface ShroudConfig {
   transformerTrainInterval: number;
   /** Intent attention threshold — below this triggers INTENT_HIJACK event (default: 0.05). */
   transformerIntentAttentionThreshold: number;
+
+  // --- Field scoping ---
+
+  /** Per-tool and per-agent obfuscation scoping. Undefined = scan everything (backward compatible). */
+  fieldScoping?: FieldScopingConfig;
 }
