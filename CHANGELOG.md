@@ -2,6 +2,41 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.4.0] - 2026-04-10
+
+### Added — Healthcare, Finance, Legal, Cloud & Crypto Detection
+
+9 new entity categories, 34 new detection patterns, and improved generators for 4 existing categories. All patterns are context-triggered where needed to avoid false positives. All feed into config-as-code (`~/.shroud/shroud.config.json`) — disable, tune confidence, or modify regex with hot-reload.
+
+**Phase 1 — Healthcare + Finance:**
+- `DATE_OF_BIRTH` — US/ISO/European date formats and written months (DOB, birthdate, Geburtsdatum)
+- `MEDICAL_RECORD_NUMBER` — MRN, NPI (National Provider Identifier), DEA numbers, health insurance member/policy IDs
+- `BANK_ACCOUNT_NUMBER` — US routing numbers, account numbers, UK sort codes, SWIFT/BIC codes
+- `TAX_ID` — US EIN (XX-XXXXXXX), UK UTR, generic TIN/taxpayer IDs
+
+**Phase 2 — Legal + Identity Documents:**
+- `PASSPORT_NUMBER` — generic passport, German Reisepass, travel documents
+- `DRIVERS_LICENSE` — driver's license, DL, Führerschein, license plates, vehicle registration
+- `CASE_NUMBER` — US federal court docket (1:23-cv-01234), generic case/filing numbers, patent numbers (US/EP/WO), German Aktenzeichen
+
+**Phase 3 — Cloud + Crypto:**
+- `CRYPTOCURRENCY_ADDRESS` — Ethereum (0x+40 hex), Bitcoin P2PKH/P2SH (base58), Bech32 (bc1), context-triggered wallet keywords
+- `AWS_ARN` — full ARN (with/without account ID), AWS account ID with keyword
+
+**Phase 4 — Generator Quality Improvements:**
+- `NATIONAL_ID` — format-aware per sub-type: Austrian SVNR (4+6 digits), German Personalausweis (specific char set), generic format-preserving
+- `GPS_COORDINATE` — distributes across 10 real-world anchor cities instead of clustering near null island (0,0)
+- `ICS_IDENTIFIER` — sub-type-aware: OPC UA endpoints, Modbus addresses (1-247), BACnet device IDs, IEC 61850 IED names, historian tags (dotted paths)
+- `CERTIFICATE` — structurally valid PEM blocks (BEGIN/END markers, base64 body, 64-char line wrapping) instead of `[REDACTED-CERT-XXXX]`
+
+**After upgrading:** delete `~/.shroud/shroud.config.json` and restart to regenerate with the new patterns:
+```bash
+rm ~/.shroud/shroud.config.json
+openclaw gateway restart
+```
+
+71 new tests, all existing tests unaffected.
+
 ## [2.3.1] - 2026-04-10
 
 ### Fixed — Regex flags lost on config hot-reload

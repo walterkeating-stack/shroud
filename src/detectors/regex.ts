@@ -1234,6 +1234,264 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.85,
   },
 
+  // ===================================================================
+  // Healthcare — HIPAA-relevant identifiers
+  // ===================================================================
+
+  // --- Date of birth (context-triggered) ---
+  {
+    // "DOB: 03/15/1987" or "DOB 1987-03-15" or "date of birth: 03/15/1987"
+    name: "dob_keyword",
+    pattern: /(?:DOB|date\s+of\s+birth|birthdate|born\s+on|birth\s+date|geburtsdatum)\s*[:=]?\s*(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})/gi,
+    category: Category.DATE_OF_BIRTH,
+    confidence: 0.9,
+  },
+  {
+    // ISO date after DOB keyword: "DOB: 1987-03-15"
+    name: "dob_iso",
+    pattern: /(?:DOB|date\s+of\s+birth|birthdate|birth\s+date)\s*[:=]?\s*(\d{4}-\d{2}-\d{2})/gi,
+    category: Category.DATE_OF_BIRTH,
+    confidence: 0.9,
+  },
+  {
+    // Written month: "born on March 15, 1987" or "DOB: January 3, 1990"
+    name: "dob_written",
+    pattern: /(?:DOB|date\s+of\s+birth|birthdate|born\s+on|birth\s+date)\s*[:=]?\s*((?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4})/gi,
+    category: Category.DATE_OF_BIRTH,
+    confidence: 0.9,
+  },
+
+  // --- Medical record number (MRN) ---
+  {
+    // "MRN: 12345678" or "medical record number: ABC-123456"
+    name: "mrn_keyword",
+    pattern: /(?:MRN|medical\s*record\s*(?:number|no|#)?|patient\s*(?:id|number|#))\s*[:=#]?\s*([A-Z0-9][\w\-]{3,19})/gi,
+    category: Category.MEDICAL_RECORD_NUMBER,
+    confidence: 0.9,
+  },
+  {
+    // US NPI (National Provider Identifier): 10-digit number with "NPI" context
+    name: "npi_number",
+    pattern: /(?:NPI|national\s*provider)\s*[:=#]?\s*(\d{10})\b/gi,
+    category: Category.MEDICAL_RECORD_NUMBER,
+    confidence: 0.95,
+  },
+  {
+    // US DEA number: 2 letters + 7 digits (e.g., "AB1234567")
+    name: "dea_number",
+    pattern: /(?:DEA|drug\s*enforcement)\s*[:=#]?\s*([A-Z][A-Z9]\d{7})\b/gi,
+    category: Category.MEDICAL_RECORD_NUMBER,
+    confidence: 0.95,
+  },
+  {
+    // Health insurance policy/member/subscriber ID
+    name: "health_insurance_id",
+    pattern: /(?:(?:health\s*)?(?:insurance|policy|member|subscriber|group)\s*(?:id|number|no|#))\s*[:=#]?\s*([A-Z0-9][\w\-]{3,19})/gi,
+    category: Category.MEDICAL_RECORD_NUMBER,
+    confidence: 0.85,
+  },
+
+  // ===================================================================
+  // Finance — bank accounts, routing numbers, tax IDs
+  // ===================================================================
+
+  // --- Bank account numbers (context-triggered) ---
+  {
+    // US routing number (ABA/transit): 9 digits with context
+    name: "us_routing_number",
+    pattern: /(?:routing|ABA|transit)\s*(?:number|no|#)?\s*[:=#]?\s*(\d{9})\b/gi,
+    category: Category.BANK_ACCOUNT_NUMBER,
+    confidence: 0.9,
+  },
+  {
+    // Bank account number with context keyword
+    name: "bank_account_keyword",
+    pattern: /(?:(?:bank\s*)?account|acct)\s*(?:number|no|#)\s*[:=#]?\s*(\d{4,17})\b/gi,
+    category: Category.BANK_ACCOUNT_NUMBER,
+    confidence: 0.85,
+  },
+  {
+    // UK sort code: XX-XX-XX with context
+    name: "uk_sort_code",
+    pattern: /(?:sort\s*code)\s*[:=#]?\s*(\d{2}-\d{2}-\d{2})\b/gi,
+    category: Category.BANK_ACCOUNT_NUMBER,
+    confidence: 0.9,
+  },
+  {
+    // SWIFT/BIC code: 8 or 11 alphanumeric characters (e.g., DEUTDEFF, BOFAUS3NXXX)
+    name: "swift_bic",
+    pattern: /(?:SWIFT|BIC|SWIFT\/BIC)\s*[:=#]?\s*([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/gi,
+    category: Category.BANK_ACCOUNT_NUMBER,
+    confidence: 0.9,
+  },
+  {
+    // Standalone SWIFT/BIC pattern (distinctive 8/11-char format)
+    name: "swift_bic_standalone",
+    pattern: /\b([A-Z]{4}(?:AT|DE|CH|GB|US|FR|IT|ES|NL|BE|AU|CA|JP|CN|IN|BR|MX|ZA|SE|NO|DK|FI|IE|PT|CZ|PL|HU|RO|BG|HR|SK|SI|LT|LV|EE|MT|CY|LU|GR)[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b/g,
+    category: Category.BANK_ACCOUNT_NUMBER,
+    confidence: 0.85,
+  },
+
+  // --- Tax IDs ---
+  {
+    // US EIN (Employer Identification Number): XX-XXXXXXX with context
+    name: "us_ein",
+    pattern: /(?:EIN|employer\s*(?:identification|id)\s*(?:number|no|#)?|tax\s*(?:id|identification)\s*(?:number|no|#)?)\s*[:=#]?\s*(\d{2}-\d{7})\b/gi,
+    category: Category.TAX_ID,
+    confidence: 0.9,
+  },
+  {
+    // TIN/tax number generic context-triggered
+    name: "tax_id_generic",
+    pattern: /(?:TIN|tax\s*(?:id|number|identification)|taxpayer\s*(?:id|number))\s*[:=#]?\s*(\d[\d\-]{5,12})\b/gi,
+    category: Category.TAX_ID,
+    confidence: 0.85,
+  },
+  {
+    // UK UTR (Unique Taxpayer Reference): 10 digits with context
+    name: "uk_utr",
+    pattern: /(?:UTR|unique\s*taxpayer\s*(?:reference|ref))\s*[:=#]?\s*(\d{10})\b/gi,
+    category: Category.TAX_ID,
+    confidence: 0.9,
+  },
+
+  // ===================================================================
+  // Legal / Identity Documents
+  // ===================================================================
+
+  // --- Passport numbers (context-triggered) ---
+  {
+    // Generic context: "passport no: P12345678" or "passport number: 123456789"
+    name: "passport_keyword",
+    pattern: /(?:passport)\s*(?:number|no|#)?\s*[:=#]?\s*([A-Z0-9]{6,12})\b/gi,
+    category: Category.PASSPORT_NUMBER,
+    confidence: 0.9,
+  },
+  {
+    // German Reisepass: "Reisepass: C01X00T47"
+    name: "passport_de",
+    pattern: /(?:Reisepass|Personalausweis)\s*(?:Nr|number|no|#)?\.?\s*[:=#]?\s*([CFGHJKLMNPRTVWXYZ0-9]{9})\b/gi,
+    category: Category.PASSPORT_NUMBER,
+    confidence: 0.9,
+  },
+  {
+    // Travel document context: "travel document: XX1234567"
+    name: "travel_document",
+    pattern: /(?:travel\s*document)\s*(?:number|no|#)?\s*[:=#]?\s*([A-Z0-9]{6,12})\b/gi,
+    category: Category.PASSPORT_NUMBER,
+    confidence: 0.85,
+  },
+
+  // --- Driver's license (context-triggered) ---
+  {
+    // Generic: "driver's license: A1234567" or "DL: 12345678"
+    name: "drivers_license_keyword",
+    pattern: /(?:driver'?s?\s*licen[sc]e|DL|driving\s*licen[sc]e|F[üu]hrerschein)\s*(?:number|no|#|Nr)?\.?\s*[:=#]?\s*([A-Z0-9][\w\-]{3,19})\b/gi,
+    category: Category.DRIVERS_LICENSE,
+    confidence: 0.9,
+  },
+  {
+    // US California format: letter + 7 digits with context
+    name: "dl_california",
+    pattern: /(?:driver'?s?\s*licen[sc]e|DL)\s*(?:number|no|#)?\s*[:=#]?\s*([A-Z]\d{7})\b/gi,
+    category: Category.DRIVERS_LICENSE,
+    confidence: 0.9,
+  },
+  {
+    // License plate / vehicle registration (context-triggered, requires : or = separator)
+    name: "license_plate",
+    pattern: /(?:licen[sc]e\s*plate|registration\s*(?:number|no|#|plate)|vehicle\s*(?:plate|reg|registration)|Kennzeichen|plaque)\s*[:=#]\s*([A-Z][A-Z0-9\-]{1,11}[A-Z0-9])\b/gi,
+    category: Category.DRIVERS_LICENSE,
+    confidence: 0.85,
+  },
+
+  // --- Court case / docket numbers ---
+  {
+    // US federal court: "1:23-cv-01234" or "2:24-cr-00567"
+    name: "us_federal_case",
+    pattern: /\b(\d{1,2}:\d{2}-[a-z]{2}-\d{3,6})\b/g,
+    category: Category.CASE_NUMBER,
+    confidence: 0.95,
+  },
+  {
+    // Generic case/docket number with context keyword
+    name: "case_number_keyword",
+    pattern: /(?:case|docket|cause|filing)\s*(?:number|no|#)?\s*[:=#]?\s*([A-Z0-9][\w\-\/]{3,24})\b/gi,
+    category: Category.CASE_NUMBER,
+    confidence: 0.85,
+  },
+  {
+    // Patent number: "US12345678" or "EP1234567" or "WO2024123456"
+    name: "patent_number",
+    pattern: /\b((?:US|EP|WO|JP|CN|KR|AU|CA)\s?\d{4,12}(?:\s?[AB]\d?)?)\b/g,
+    category: Category.CASE_NUMBER,
+    confidence: 0.85,
+  },
+  {
+    // Aktenzeichen (German file reference): "Az.: 1 BvR 123/45" or "Az. 12 O 456/23"
+    name: "aktenzeichen",
+    pattern: /(?:Az\.?|Aktenzeichen)\s*[:=]?\s*(\d{1,3}\s+[A-Z][a-z]*\s+\d{1,5}\/\d{2,4})\b/gi,
+    category: Category.CASE_NUMBER,
+    confidence: 0.9,
+  },
+
+  // ===================================================================
+  // Cloud / Crypto
+  // ===================================================================
+
+  // --- Cryptocurrency addresses (standalone — distinctive formats) ---
+  {
+    // Ethereum address: 0x + 40 hex chars
+    name: "crypto_ethereum",
+    pattern: /\b(0x[0-9a-fA-F]{40})\b/g,
+    category: Category.CRYPTOCURRENCY_ADDRESS,
+    confidence: 0.95,
+  },
+  {
+    // Bitcoin P2PKH: starts with 1, 25-34 base58 chars
+    name: "crypto_bitcoin_p2pkh",
+    pattern: /\b(1[a-km-zA-HJ-NP-Z1-9]{25,34})\b/g,
+    category: Category.CRYPTOCURRENCY_ADDRESS,
+    confidence: 0.9,
+  },
+  {
+    // Bitcoin P2SH: starts with 3, 25-34 base58 chars
+    name: "crypto_bitcoin_p2sh",
+    pattern: /\b(3[a-km-zA-HJ-NP-Z1-9]{25,34})\b/g,
+    category: Category.CRYPTOCURRENCY_ADDRESS,
+    confidence: 0.9,
+  },
+  {
+    // Bitcoin Bech32: bc1 + 39-59 lowercase alphanum
+    name: "crypto_bitcoin_bech32",
+    pattern: /\b(bc1[a-z0-9]{39,59})\b/g,
+    category: Category.CRYPTOCURRENCY_ADDRESS,
+    confidence: 0.95,
+  },
+  {
+    // Crypto wallet/address with context keyword
+    name: "crypto_wallet_keyword",
+    pattern: /(?:wallet|crypto|bitcoin|ethereum|eth|btc)\s*(?:address|addr|id)?\s*[:=#]?\s*([a-zA-Z0-9]{26,64})\b/gi,
+    category: Category.CRYPTOCURRENCY_ADDRESS,
+    confidence: 0.85,
+  },
+
+  // --- AWS ARN (standalone — distinctive format) ---
+  {
+    // Full ARN: arn:aws:service:region:account-id:resource (account may be empty for S3)
+    name: "aws_arn",
+    pattern: /\b(arn:aws[a-z\-]*:[a-z0-9\-]+:[a-z0-9\-]*:\d{0,12}:[^\s"']{1,128})\b/g,
+    category: Category.AWS_ARN,
+    confidence: 0.95,
+  },
+  {
+    // AWS account ID with context: 12-digit number after "account" keyword
+    name: "aws_account_id",
+    pattern: /(?:(?:aws|amazon)\s*)?account\s*(?:id|#|number)?\s*[:=#]?\s*(\d{12})\b/gi,
+    category: Category.AWS_ARN,
+    confidence: 0.85,
+  },
+
 ];
 
 /**
