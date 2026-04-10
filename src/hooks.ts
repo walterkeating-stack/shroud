@@ -542,30 +542,6 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           _immuneEngine.flush();
         }
 
-        // Red team: run adversarial stress test periodically (every N sessions)
-        // Uses seed corpus when no real attack traces exist — always has material.
-        // Tracks last-run session count per agent to avoid modulo alignment issues.
-        if (_redTeam && agentSession && agentSession.agentBuildId) {
-          const baseline = profiler?.getBaselineStore()?.load(agentSession.agentBuildId) ?? null;
-          const lastRunKey = `__shroudRedTeamLastRun_${agentSession.agentBuildId}`;
-          const lastRunCount = (globalThis as any)[lastRunKey] || 0;
-          const flushCount = ((globalThis as any).__shroudFlushCount = ((globalThis as any).__shroudFlushCount || 0) + 1);
-          if (lastRunCount === 0 || (flushCount - lastRunCount) >= config.redTeamIntervalSessions) {
-            (globalThis as any)[lastRunKey] = flushCount;
-            const traces = _transformerScorer?._attackTraceStore?.getAll() ?? [];
-            const report = _redTeam.runStressTest(
-              traces, // empty = seed corpus kicks in
-              [{ buildId: agentSession.agentBuildId, label: agentSession.agentLabel, baseline, toolProfile: baseline?.toolProfile }],
-              config,
-              _immuneEngine,
-            );
-            _redTeam.flush();
-            if (report.totalMissed > 0) {
-              api.logger?.warn(`[shroud] Red team: ${report.overallCoverage}% coverage — ${report.totalMissed} missed, ${report.patchesApplied} patches applied`);
-            }
-          }
-        }
-
         // Trigger transformer retraining if enough new data.
         // Runs async with setImmediate yields so the gateway stays responsive.
         // Fire-and-forget — _flushToDisk is sync, retraining runs in background.
@@ -647,6 +623,34 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         writeFileSync(_agentSessionFile, JSON.stringify([...merged.values()], null, 2), "utf-8");
       }
     } catch {}
+
+    // Red team: run adversarial stress test periodically.
+    // Placed outside all nested guards so it fires regardless of vectorStore/profiler state.
+    try {
+      if (_redTeam) {
+        const rtAgent = agentTracker.getCurrentSession();
+        if (rtAgent && rtAgent.agentBuildId) {
+          const lastRunKey = `__shroudRedTeamLastRun_${rtAgent.agentBuildId}`;
+          const lastRunCount = (globalThis as any)[lastRunKey] || 0;
+          const flushCount = ((globalThis as any).__shroudFlushCount = ((globalThis as any).__shroudFlushCount || 0) + 1);
+          if (lastRunCount === 0 || (flushCount - lastRunCount) >= config.redTeamIntervalSessions) {
+            (globalThis as any)[lastRunKey] = flushCount;
+            const rtBaseline = profiler?.getBaselineStore()?.load(rtAgent.agentBuildId) ?? null;
+            const traces = _transformerScorer?._attackTraceStore?.getAll() ?? [];
+            const report = _redTeam.runStressTest(
+              traces,
+              [{ buildId: rtAgent.agentBuildId, label: rtAgent.agentLabel, baseline: rtBaseline, toolProfile: rtBaseline?.toolProfile }],
+              config,
+              _immuneEngine,
+            );
+            _redTeam.flush();
+            api.logger?.info(`[shroud] Red team: ${report.overallCoverage}% coverage (${report.totalCaught}/${report.totalScenarios} caught, ${report.patchesApplied} patches)`);
+          }
+        }
+      }
+    } catch (err: any) {
+      api.logger?.warn(`[shroud] Red team error: ${err?.message}`);
+    }
   }
 
   /**
