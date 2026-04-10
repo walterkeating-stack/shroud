@@ -2,6 +2,22 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.3.1] - 2026-04-10
+
+### Fixed — Regex flags lost on config hot-reload
+
+**Critical fix.** The config-as-code system (`~/.shroud/shroud.config.json`) wrote detection rule patterns as regex source strings but dropped the flags (`i` for case-insensitive, `m` for multiline). On the first hot-reload (~7 seconds after gateway startup), approximately 40 detection patterns silently lost their flags, making them case-sensitive or single-line only.
+
+**Impact:** Entities that required case-insensitive matching (API keys, credentials, SNMP communities, connection strings, TACACS keys, etc.) were missed during obfuscation. With no mapping in the store, deobfuscation had nothing to reverse — causing fake values to leak to end users.
+
+**Fix:** The config file now stores a `"flags"` field alongside each pattern (e.g. `"flags": "i"`). The `RegexDetector` applies stored flags when constructing `RegExp` objects from config rules. Old config files without the `flags` field are backwards-compatible (default to `"g"` only). Deleting `~/.shroud/shroud.config.json` and restarting the gateway regenerates the file with correct flags.
+
+**If you are on v2.3.0:** delete `~/.shroud/shroud.config.json` and restart:
+```bash
+rm ~/.shroud/shroud.config.json
+openclaw gateway restart
+```
+
 ## [2.3.0] - 2026-04-09
 
 ### Added — Detection Rules as Code
