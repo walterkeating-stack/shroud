@@ -772,6 +772,34 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         await writeFile(_agentSessionFile, JSON.stringify([...merged.values()], null, 2), "utf-8");
       }
     } catch {}
+
+    // Red team: run adversarial stress test periodically.
+    // Must be in the async flush (called by timer + every-5-calls), not just sync flush.
+    try {
+      if (_redTeam) {
+        const rtAgent = agentTracker.getCurrentSession();
+        if (rtAgent && rtAgent.agentBuildId) {
+          const lastRunKey = `__shroudRedTeamLastRun_${rtAgent.agentBuildId}`;
+          const lastRunCount = (globalThis as any)[lastRunKey] || 0;
+          const flushCount = ((globalThis as any).__shroudFlushCount = ((globalThis as any).__shroudFlushCount || 0) + 1);
+          if (lastRunCount === 0 || (flushCount - lastRunCount) >= config.redTeamIntervalSessions) {
+            (globalThis as any)[lastRunKey] = flushCount;
+            const rtBaseline = profiler?.getBaselineStore()?.load(rtAgent.agentBuildId) ?? null;
+            const traces = _transformerScorer?._attackTraceStore?.getAll() ?? [];
+            const report = _redTeam.runStressTest(
+              traces,
+              [{ buildId: rtAgent.agentBuildId, label: rtAgent.agentLabel, baseline: rtBaseline, toolProfile: rtBaseline?.toolProfile }],
+              config,
+              _immuneEngine,
+            );
+            _redTeam.flush();
+            api.logger?.info(`[shroud] Red team: ${report.overallCoverage}% coverage (${report.totalCaught}/${report.totalScenarios} caught, ${report.patchesApplied} patches)`);
+          }
+        }
+      }
+    } catch (err: any) {
+      api.logger?.warn(`[shroud] Red team error: ${err?.message}`);
+    }
   }
 
   // Flush on gateway shutdown (sync — SIGTERM/SIGINT must complete before exit)
