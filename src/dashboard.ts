@@ -245,6 +245,11 @@ export function startDashboard(
       else if (url === "/api/stats") {
         handleStats(res, deps);
       }
+      else if (url === "/api/reset-counters") {
+        deps.obfuscator.resetCounters();
+        deps.agentTracker.resetPrivacyCounters();
+        json(res, 200, { ok: true, message: "All counters reset to zero" });
+      }
       else if (url === "/api/policy") {
         handlePolicyRead(res, deps);
       }

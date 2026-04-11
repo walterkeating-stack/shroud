@@ -1070,6 +1070,18 @@ export class Obfuscator {
       }
     }
   }
+
+  /** Reset all counters to zero. */
+  resetCounters(): void {
+    this._obfuscationEvents = 0;
+    this._deobfuscationEvents = 0;
+    this._totalEntitiesObfuscated = 0;
+    this._totalReplacementsDeobfuscated = 0;
+    this._deobBySource.clear();
+    this._ruleHits.clear();
+    this._detectionsByCategory.clear();
+    this._replacementsByCategory.clear();
+  }
 }
 
 /** Remove overlapping entities, keeping higher confidence ones. */

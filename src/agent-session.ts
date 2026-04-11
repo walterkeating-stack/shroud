@@ -709,6 +709,13 @@ export class AgentSessionTracker {
     this._sessions.clear();
     this._currentLabel = "";
   }
+
+  /** Zero out privacy counters on all sessions without clearing sessions. */
+  resetPrivacyCounters(): void {
+    for (const session of this._sessions.values()) {
+      session.privacy = { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
+    }
+  }
 }
 
 /**
