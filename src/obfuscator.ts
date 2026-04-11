@@ -732,11 +732,12 @@ export class Obfuscator {
       replacementCount += rangeCleanup.count;
     }
 
+    // Always count the deobfuscation event (pipeline ran on this text)
+    this._deobfuscationEvents++;
+    const src = source ?? "fetch";
+    this._deobBySource.set(src, (this._deobBySource.get(src) ?? 0) + 1);
     if (replacementCount > 0) {
-      this._deobfuscationEvents++;
       this._totalReplacementsDeobfuscated += replacementCount;
-      const src = source ?? "fetch";
-      this._deobBySource.set(src, (this._deobBySource.get(src) ?? 0) + replacementCount);
     }
 
     if (this._audit && replacementCount > 0) {
