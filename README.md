@@ -112,6 +112,8 @@ That's it. The plugin auto-builds on first session start (requires Node.js). All
 
 Per-tool field scoping is enabled by default, reducing false positives on structural fields (IDs, hashes, timestamps). Works with all Hermes-supported providers (OpenRouter, Anthropic, OpenAI, z.ai, local models).
 
+**Config-as-code** is supported — edit `~/.shroud/shroud.config.json` to customize detection rules, field scoping, and confidence thresholds. Changes hot-reload within 2 seconds, no restart needed. The config file is shared with OpenClaw — edits apply to both platforms.
+
 Verify after a conversation:
 ```bash
 cat ~/.hermes/shroud-stats.json | python3 -m json.tool

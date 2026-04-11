@@ -4,6 +4,11 @@ Shroud Bridge — manages the APP server lifecycle for the Hermes plugin.
 Communicates via newline-delimited JSON-RPC on stdin/stdout (APP-RFC-0001).
 Auto-detects the APP server from the plugin directory (cloned repo) or
 env var overrides.
+
+Config-as-code: watches ``~/.shroud/shroud.config.json`` (JSONC) and
+hot-reloads detection rules into the running APP server via the
+``configure`` method.  Same file format and path as OpenClaw — edits
+apply to both platforms.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -123,6 +129,10 @@ class ShroudBridge:
                 "channel": "hermes-plugin",
             })
 
+        # Start config-as-code watcher
+        self._config_watcher = ConfigWatcher(self)
+        self._config_watcher.start()
+
         logger.info(
             "Shroud APP server v%s started (pid=%d, security=%s)",
             self.version, self._proc.pid, self.has_security,
@@ -131,6 +141,8 @@ class ShroudBridge:
     def stop(self) -> None:
         if not self._started:
             return
+        if hasattr(self, "_config_watcher"):
+            self._config_watcher.stop()
         try:
             self._call("shutdown")
         except Exception:
@@ -300,3 +312,128 @@ class ShroudBridge:
 
     def __exit__(self, *exc):
         self.stop()
+
+
+# ---------------------------------------------------------------------------
+# Config-as-code watcher
+# ---------------------------------------------------------------------------
+
+_CONFIG_PATH = Path.home() / ".shroud" / "shroud.config.json"
+
+
+def _strip_jsonc_comments(text: str) -> str:
+    """Strip // and /* */ comments from JSONC, preserving strings."""
+    result = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '"':
+            start = i
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == '\\':
+                    i += 1
+                i += 1
+            i += 1
+            result.append(text[start:i])
+        elif text[i] == '/' and i + 1 < n and text[i + 1] == '/':
+            while i < n and text[i] != '\n':
+                i += 1
+        elif text[i] == '/' and i + 1 < n and text[i + 1] == '*':
+            i += 2
+            while i < n and not (text[i] == '*' and i + 1 < n and text[i + 1] == '/'):
+                i += 1
+            i += 2
+        else:
+            result.append(text[i])
+            i += 1
+    return "".join(result)
+
+
+def _load_config_file(path: Path) -> Optional[Dict]:
+    """Load and parse a JSONC config file."""
+    if not path.exists():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8")
+        stripped = _strip_jsonc_comments(raw)
+        return json.loads(stripped)
+    except Exception as e:
+        logger.debug("Failed to parse config file %s: %s", path, e)
+        return None
+
+
+class ConfigWatcher:
+    """Watches ~/.shroud/shroud.config.json and hot-reloads into the APP server.
+
+    Same file, same JSONC format as OpenClaw's config-as-code manager.
+    Changes are pushed to the running APP server via the ``configure``
+    JSON-RPC method.  Poll interval: 2 seconds (matches OpenClaw).
+    """
+
+    def __init__(self, bridge: ShroudBridge):
+        self._bridge = bridge
+        self._path = Path(os.environ.get("SHROUD_CONFIG_PATH", str(_CONFIG_PATH)))
+        self._last_mtime: float = 0
+        self._last_config: Optional[Dict] = None
+        self._running = False
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        if self._running:
+            return
+        # Load initial config
+        self._last_config = _load_config_file(self._path)
+        if self._last_config:
+            self._apply(self._last_config)
+            try:
+                self._last_mtime = self._path.stat().st_mtime
+            except OSError:
+                pass
+            logger.info("Config-as-code loaded from %s", self._path)
+
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._poll_loop, daemon=True, name="shroud-config-watcher",
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _poll_loop(self) -> None:
+        while self._running:
+            time.sleep(2)
+            try:
+                if not self._path.exists():
+                    continue
+                mtime = self._path.stat().st_mtime
+                if mtime <= self._last_mtime:
+                    continue
+                self._last_mtime = mtime
+
+                new_config = _load_config_file(self._path)
+                if new_config is None:
+                    continue
+                if new_config == self._last_config:
+                    continue
+
+                self._last_config = new_config
+                self._apply(new_config)
+                logger.info("Config-as-code reloaded from %s", self._path)
+
+            except Exception as e:
+                logger.debug("Config watcher error: %s", e)
+
+    def _apply(self, config: Dict) -> None:
+        """Push config to the APP server via the configure method."""
+        if not self._bridge.is_running:
+            return
+        try:
+            result = self._bridge._call_safe("configure", {"config": config})
+            if result and result.get("ok"):
+                keys = result.get("appliedKeys", [])
+                if keys:
+                    logger.debug("Config applied: %s", ", ".join(keys))
+        except Exception as e:
+            logger.debug("Config apply failed: %s", e)

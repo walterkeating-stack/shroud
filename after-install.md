@@ -19,12 +19,13 @@ hermes
 Check `~/.hermes/shroud-stats.json` after a conversation — `obfuscationEvents`
 should be > 0.
 
-**Configuration (optional):**
+**Config-as-code (optional):**
 
-Set `SHROUD_PLUGIN_CONFIG` in `~/.hermes/.env` with JSON overrides:
+Edit `~/.shroud/shroud.config.json` to customize detection rules, field
+scoping, and confidence thresholds. Changes hot-reload within 2 seconds —
+no restart needed. The file is JSONC (comments allowed).
 
-```
-SHROUD_PLUGIN_CONFIG={"minConfidence": 0.5, "dryRun": false}
-```
+The config file is shared with OpenClaw — edits apply to both platforms.
+If the file doesn't exist, Shroud uses built-in defaults.
 
 See https://github.com/wkeything/shroud for all config options.
