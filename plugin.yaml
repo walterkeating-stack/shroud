@@ -7,8 +7,3 @@ description: >-
   transparently.
 author: wkeything
 manifest_version: 1
-
-requires_env:
-  - name: SHROUD_PLUGIN_CONFIG
-    description: JSON config overrides for the Shroud engine (optional)
-    required: false
