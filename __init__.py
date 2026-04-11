@@ -98,12 +98,12 @@ def _on_session_start(**kwargs) -> None:
             return
 
         try:
-            from hermes.shroud_bridge import ShroudBridge
+            from shroud_hermes.shroud_bridge import ShroudBridge
             bridge = ShroudBridge(plugin_dir=_plugin_dir)
             bridge.start()
             _client = bridge
 
-            from hermes.interceptor import install_openai_interceptor
+            from shroud_hermes.interceptor import install_openai_interceptor
             _interceptor = install_openai_interceptor(bridge)
             _started = True
 
@@ -145,7 +145,7 @@ def _shutdown() -> None:
 
         try:
             if _interceptor is not None:
-                from hermes.interceptor import uninstall_openai_interceptor
+                from shroud_hermes.interceptor import uninstall_openai_interceptor
                 uninstall_openai_interceptor(_interceptor)
                 _interceptor = None
 
