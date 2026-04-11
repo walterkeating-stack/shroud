@@ -1589,6 +1589,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         Array.isArray(msg.content) ? msg.content.map((b: any) => b?.text || "").join("") : "";
       if (_raw.length < 500) api.logger?.info(`[shroud][raw-assistant] ${_raw}`);
 
+      // Feed profiler with response text so baselines accumulate even when
+      // the fetch TransformStream doesn't match the SSE format.
+      if (profiler && _raw.length > 0 && _raw !== "NO_REPLY") {
+        try { profiler.extractResponseFeatures(_raw, []); } catch {}
+      }
+
       if (typeof msg.content === "string") {
         const _dbgStoreSize = (ob() as any)._store?.allMappings?.()?.size ?? -1;
         const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content, "before_message_write");
