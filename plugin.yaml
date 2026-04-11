@@ -1,0 +1,14 @@
+name: shroud
+version: "2.4.0"
+description: >-
+  Privacy obfuscation for AI agents — detects PII, credentials, network
+  topology, and infrastructure details in LLM traffic and replaces them
+  with deterministic fakes.  Responses and tool arguments are deobfuscated
+  transparently.
+author: wkeything
+manifest_version: 1
+
+requires_env:
+  - name: SHROUD_PLUGIN_CONFIG
+    description: JSON config overrides for the Shroud engine (optional)
+    required: false
