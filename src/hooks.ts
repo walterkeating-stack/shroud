@@ -1593,9 +1593,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         const _dbgStoreSize = (ob() as any)._store?.allMappings?.()?.size ?? -1;
         const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content, "before_message_write");
         api.logger?.info(`[shroud][debug-deob] role=assistant store=${_dbgStoreSize} rc=${replacementCount} changed=${deobfuscated !== msg.content} len=${msg.content.length}`);
-        if (deobfuscated === msg.content) return;
-        api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
         agentTracker.recordDeobfuscation(replacementCount);
+        if (deobfuscated === msg.content) return;
         if (auditActive && replacementCount > 0) {
           try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount); } catch {}
         }
@@ -1650,8 +1649,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
           return block;
         });
-        if (!changed) return;
         agentTracker.recordDeobfuscation(_deobCount);
+        if (!changed) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
         dumpStatsFile(obfuscator);
         return { message: { ...msg, content: newContent } };
