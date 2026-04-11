@@ -20,8 +20,9 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import { STATS_FILE } from "./config.js";
 import type { SecurityEventBus, SecurityEvent } from "./security-event.js";
 import type { AgentSessionTracker } from "./agent-session.js";
 import { getBehaviorWarmupState } from "./agent-session.js";
@@ -248,6 +249,18 @@ export function startDashboard(
       else if (url === "/api/reset-counters") {
         deps.obfuscator.resetCounters();
         deps.agentTracker.resetPrivacyCounters();
+        // Persist zeros to disk so Math.max merge doesn't restore old values
+        if (deps.agentSessionFile) {
+          try {
+            const raw = readFileSync(deps.agentSessionFile, "utf-8");
+            const sessions = JSON.parse(raw) as any[];
+            for (const s of sessions) {
+              if (s.privacy) s.privacy = { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
+            }
+            writeFileSync(deps.agentSessionFile, JSON.stringify(sessions, null, 2));
+          } catch {}
+        }
+        try { writeFileSync(STATS_FILE, "{}\n"); } catch {}
         json(res, 200, { ok: true, message: "All counters reset to zero" });
       }
       else if (url === "/api/policy") {
