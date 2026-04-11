@@ -229,64 +229,30 @@ class _DeobfuscatingStream:
     def _wrap_iter(self) -> Iterator:
         """Yield chunks with deobfuscated content deltas.
 
-        Uses a holdback buffer: we only emit content that is at least
-        HOLDBACK chars behind the buffer head.  This ensures fake values
-        that span chunk boundaries are fully accumulated before we try
-        to deobfuscate them.  On stream end, flush the remaining buffer.
+        Each delta is deobfuscated immediately — no holdback buffer.
+        This ensures the gateway stream consumer (which progressively
+        edits Slack/Telegram messages) never shows fake values to users.
+
+        Trade-off: if a fake value is split across two chunks (rare with
+        real LLM tokenizers), the split fake won't be deobfuscated.
+        In practice, fake emails/IPs/SSNs are single tokens.
         """
-        HOLDBACK = 60  # covers longest Shroud fake (emails ~30, IPs ~15, UUIDs ~36)
-
-        content_buffer = ""      # raw accumulated obfuscated content
-        emitted_raw = 0          # chars consumed from content_buffer so far
-        emitted_deob = 0         # chars emitted as deobfuscated output so far
-
-        # Tool arg buffers per slot (no holdback needed — args arrive as full JSON)
-        tool_arg_buffers: dict = {}
-        tool_arg_deob_lens: dict = {}
-
-        pending_flush = False
-
         for chunk in self._stream:
             if not chunk.choices:
                 yield chunk
                 continue
 
             delta = chunk.choices[0].delta
-            finish_reason = getattr(chunk.choices[0], "finish_reason", None)
 
-            # --- Content delta with holdback ---
             content_delta = getattr(delta, "content", None)
             if content_delta:
-                content_buffer += content_delta
-
-            # Decide how much of the buffer is safe to emit
-            if finish_reason:
-                # Stream ending — flush everything
-                safe_raw_len = len(content_buffer)
-            else:
-                # Hold back HOLDBACK chars from the end
-                safe_raw_len = max(0, len(content_buffer) - HOLDBACK)
-
-            if safe_raw_len > emitted_raw and content_buffer:
-                safe_portion = content_buffer[:safe_raw_len]
-                deob = self._bridge.deobfuscate(safe_portion)
-                deob_text = deob["text"]
-                new_delta = deob_text[emitted_deob:]
-                emitted_deob = len(deob_text)
-                emitted_raw = safe_raw_len
-
-                # Emit deobfuscated delta — set on current chunk's delta
-                _setattr_safe(delta, "content", new_delta if new_delta else "")
-            elif content_delta is not None:
-                # Not enough buffer yet — suppress this delta (held back)
-                _setattr_safe(delta, "content", "")
+                deob = self._bridge.deobfuscate(content_delta)
+                if deob.get("modified"):
+                    _setattr_safe(delta, "content", deob["text"])
 
             # Tool call argument deltas are NOT deobfuscated in the stream.
-            # Reason: the incremental approach corrupts values when a fake
-            # spans two arg deltas (same split-fake problem as content, but
-            # holdback would break JSON framing).  Instead, fake args flow
-            # through to Hermes unchanged.  The pre_tool_call hook
-            # deobfuscates the full parsed dict before tool execution.
+            # The pre_tool_call hook deobfuscates the full parsed dict
+            # before tool execution.
 
             yield chunk
 
