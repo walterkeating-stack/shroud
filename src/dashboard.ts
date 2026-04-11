@@ -2356,7 +2356,7 @@ async function refresh() {
       html += '<div class="stat-mini"><span class="num">' + a.llmCallCount + '</span><span class="lbl">calls</span></div>';
       html += '<div class="stat-mini"><span class="num">' + (p.sessionCount||0) + '</span><span class="lbl">sessions</span></div>';
       html += '<div class="stat-mini"><span class="num green">' + (priv.entitiesObfuscated||0) + '</span><span class="lbl">obfuscated</span></div>';
-      html += '<div class="stat-mini"><span class="num">' + (priv.replacementsDeobfuscated||0) + '</span><span class="lbl">deobfuscated</span></div>';
+      html += '<div class="stat-mini"><span class="num">' + (priv.deobfuscationCalls||0) + '</span><span class="lbl">deobfuscated</span></div>';
       const evtN = a.securityEventCount;
       const evtLabel = evtN >= 10000 ? (evtN/1000).toFixed(1).replace(/\.0$/,'') + 'k' : evtN >= 1000 ? (evtN/1000).toFixed(1).replace(/\.0$/,'') + 'k' : evtN;
       html += '<div class="stat-mini"><span class="pill ' + eventPill + '" style="white-space:nowrap">' + evtLabel + ' evt</span></div>';
