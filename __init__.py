@@ -43,6 +43,11 @@ def register(ctx) -> None:
     # Auto-build dist/ if not present
     _ensure_built()
 
+    # Start Shroud immediately at registration — don't wait for
+    # on_session_start which only fires on new sessions. Gateway
+    # restarts would leave the interceptor uninstalled otherwise.
+    _on_session_start(session_id="init", model="", platform="")
+
     ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_hook("on_session_end", _on_session_end)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
