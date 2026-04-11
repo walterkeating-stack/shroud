@@ -17,7 +17,7 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-> Apache 2.0 &middot; Zero runtime dependencies &middot; Anthropic + OpenAI + Google supported &middot; Prompt-caching friendly &middot; Works with [OpenClaw](https://openclaw.ai) or any agent via [APP](#agent-privacy-protocol-app)
+> Apache 2.0 &middot; Zero runtime dependencies &middot; Anthropic + OpenAI + Google supported &middot; Prompt-caching friendly &middot; Works with [OpenClaw](https://openclaw.ai), [Hermes Agent](https://github.com/nousresearch/hermes-agent), or any agent via [APP](#agent-privacy-protocol-app)
 
 ---
 
@@ -101,6 +101,21 @@ openclaw plugins install shroud-privacy
 ```
 
 Configure in `~/.openclaw/openclaw.json` under `plugins.entries."shroud-privacy".config`. No OpenClaw file modifications needed — Shroud uses runtime interception only.
+
+### Hermes Agent
+
+```bash
+hermes plugins install wkeything/shroud
+```
+
+That's it. The plugin auto-builds on first session start (requires Node.js). All LLM traffic is obfuscated transparently — no Hermes configuration changes needed.
+
+Per-tool field scoping is enabled by default, reducing false positives on structural fields (IDs, hashes, timestamps). Works with all Hermes-supported providers (OpenRouter, Anthropic, OpenAI, z.ai, local models).
+
+Verify after a conversation:
+```bash
+cat ~/.hermes/shroud-stats.json | python3 -m json.tool
+```
 
 ### Any agent (via APP)
 
