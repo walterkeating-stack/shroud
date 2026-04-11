@@ -578,8 +578,9 @@ export class Obfuscator {
    */
   deobfuscate(text: string): string {
     const startTime = Date.now();
+    let totalReplacements = 0;
 
-    // Strip canary tokens
+    // Strip canary tokens — count as deobfuscation
     if (this._canary) {
       const prefix = this.config.canaryPrefix.replace(
         /[.*+?^${}()|[\]\\]/g,
@@ -589,11 +590,19 @@ export class Obfuscator {
         `\\n?<!-- ${prefix}-[a-f0-9]+ -->`,
         "g",
       );
+      const before = text;
       text = text.replace(canaryRe, "");
+      if (text !== before) totalReplacements++;
     }
 
     const allMappings = this._store.allMappings();
-    if (allMappings.size === 0) return text;
+    if (allMappings.size === 0) {
+      if (totalReplacements > 0) {
+        this._deobfuscationEvents++;
+        this._totalReplacementsDeobfuscated += totalReplacements;
+      }
+      return text;
+    }
 
     // Build reverse map: fake -> real, sorted by length descending
     const reverse = new Map<string, string>();
@@ -614,7 +623,7 @@ export class Obfuscator {
     const MAX_PASSES = 3;
     const deobResult = multiPassDeobfuscate(text, combinedRe, reverse, knownFakeSet, MAX_PASSES);
     let result = deobResult.text;
-    let totalReplacements = deobResult.replacements;
+    totalReplacements += deobResult.replacements;
 
     // Subnet-aware deobfuscation: reverse-map CGNAT IPs the LLM derived
     const residual = this._deobfuscateResidualCgnat(result, knownFakeSet);
@@ -659,8 +668,9 @@ export class Obfuscator {
    */
   deobfuscateWithStats(text: string, source?: string): { text: string; replacementCount: number } {
     const startTime = Date.now();
+    let replacementCount = 0;
 
-    // Strip canary tokens
+    // Strip canary tokens — count as deobfuscation events
     if (this._canary) {
       const prefix = this.config.canaryPrefix.replace(
         /[.*+?^${}()|[\]\\]/g,
@@ -670,11 +680,21 @@ export class Obfuscator {
         `\\n?<!-- ${prefix}-[a-f0-9]+ -->`,
         "g",
       );
+      const before = text;
       text = text.replace(canaryRe, "");
+      if (text !== before) replacementCount++;
     }
 
     const allMappings = this._store.allMappings();
-    if (allMappings.size === 0) return { text, replacementCount: 0 };
+    if (allMappings.size === 0) {
+      if (replacementCount > 0) {
+        this._deobfuscationEvents++;
+        this._totalReplacementsDeobfuscated += replacementCount;
+        const src = source ?? "fetch";
+        this._deobBySource.set(src, (this._deobBySource.get(src) ?? 0) + replacementCount);
+      }
+      return { text, replacementCount };
+    }
 
     const reverse = new Map<string, string>();
     for (const [real, fake] of allMappings) {
@@ -689,7 +709,7 @@ export class Obfuscator {
     const MAX_PASSES = 3;
     const deobResult = multiPassDeobfuscate(text, combinedRe, reverse, knownFakeSet, MAX_PASSES);
     let result = deobResult.text;
-    let replacementCount = deobResult.replacements;
+    replacementCount += deobResult.replacements;
 
     // Subnet-aware deobfuscation for LLM-derived CGNAT IPs
     const residual = this._deobfuscateResidualCgnat(result, knownFakeSet);

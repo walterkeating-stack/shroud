@@ -545,7 +545,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
   function _flushToDisk(): void {
     try {
-      if (profiler) profiler.finalizeSession();
+      if (profiler) {
+        profiler.finalizeSession();
+        // BaselineStore.save() schedules via setImmediate which won't
+        // run during SIGTERM — flush synchronously to persist baselines.
+        profiler.getBaselineStore()?.flushSync();
+      }
 
       // --- Vector store: record completed workflow + persist ---
       if (_vectorStore && _sessionToolSequence.length > 0) {
@@ -722,7 +727,12 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
    */
   async function _flushToDiskAsync(): Promise<void> {
     try {
-      if (profiler) profiler.finalizeSession();
+      if (profiler) {
+        profiler.finalizeSession();
+        // Ensure baseline writes reach disk — setImmediate from save()
+        // may not run before the next flush overwrites dirty state.
+        profiler.getBaselineStore()?.flushSync();
+      }
 
       if (_vectorStore && _sessionToolSequence.length > 0) {
         const agentSession = agentTracker.getCurrentSession();
@@ -2700,12 +2710,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }
 
     const serialized = JSON.stringify(event.params);
-    const deobfuscated = ob().deobfuscate(serialized);
+    const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(serialized, "before_tool_call");
 
     if (serialized === deobfuscated) return;
 
+    if (replacementCount > 0) agentTracker.recordDeobfuscation(replacementCount);
     api.logger?.info(
-      `[shroud] before_tool_call(${event.toolName ?? "?"}): deobfuscated params`,
+      `[shroud] before_tool_call(${event.toolName ?? "?"}): deobfuscated params (${replacementCount} replacements)`,
     );
 
     try {
