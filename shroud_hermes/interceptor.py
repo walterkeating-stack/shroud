@@ -70,9 +70,12 @@ def install_openai_interceptor(bridge) -> _InterceptorState:
             kwargs["messages"] = _obfuscate_messages(bridge, messages)
 
         is_stream = kwargs.get("stream", False)
+        logger.info("Shroud interceptor: create() called, stream=%s, messages=%d",
+                     is_stream, len(messages) if messages else 0)
 
         if is_stream:
             raw_stream = state.original_create(self_sdk, *args, **kwargs)
+            logger.info("Shroud interceptor: wrapping stream (raw type=%s)", type(raw_stream).__name__)
             return _DeobfuscatingStream(raw_stream, bridge)
         else:
             response = state.original_create(self_sdk, *args, **kwargs)
@@ -237,18 +240,37 @@ class _DeobfuscatingStream:
         real LLM tokenizers), the split fake won't be deobfuscated.
         In practice, fake emails/IPs/SSNs are single tokens.
         """
+        HOLDBACK = 80
+
+        content_buffer = ""
+        emitted_len = 0
+
         for chunk in self._stream:
             if not chunk.choices:
                 yield chunk
                 continue
 
             delta = chunk.choices[0].delta
+            finish_reason = getattr(chunk.choices[0], "finish_reason", None)
 
             content_delta = getattr(delta, "content", None)
             if content_delta:
-                deob = self._bridge.deobfuscate(content_delta)
-                if deob.get("modified"):
-                    _setattr_safe(delta, "content", deob["text"])
+                content_buffer += content_delta
+
+            # How much of the buffer is safe to deob and emit?
+            if finish_reason:
+                safe_len = len(content_buffer)
+            else:
+                safe_len = max(0, len(content_buffer) - HOLDBACK)
+
+            if safe_len > emitted_len:
+                deob = self._bridge.deobfuscate(content_buffer[:safe_len])
+                emit_text = deob["text"][emitted_len:]
+                emitted_len = len(deob["text"])
+                _setattr_safe(delta, "content", emit_text if emit_text else None)
+            elif content_delta is not None:
+                # Held back — set to None so Hermes and Slack skip it
+                _setattr_safe(delta, "content", None)
 
             # Tool call argument deltas are NOT deobfuscated in the stream.
             # The pre_tool_call hook deobfuscates the full parsed dict
