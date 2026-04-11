@@ -1011,6 +1011,44 @@ export class Obfuscator {
 
     return stats;
   }
+
+  /**
+   * Restore counters from a persisted stats snapshot (e.g. /tmp/shroud-stats.json).
+   * Uses Math.max so in-memory values are never decreased — only raised to
+   * match the persisted baseline. Called once at startup.
+   */
+  restoreStats(persisted: Record<string, unknown>): void {
+    if (!persisted || typeof persisted !== "object") return;
+    const n = (v: unknown) => (typeof v === "number" && v > 0 ? v : 0);
+    this._obfuscationEvents = Math.max(this._obfuscationEvents, n(persisted.obfuscationEvents));
+    this._deobfuscationEvents = Math.max(this._deobfuscationEvents, n(persisted.deobfuscationEvents));
+    this._totalEntitiesObfuscated = Math.max(this._totalEntitiesObfuscated, n(persisted.totalEntitiesObfuscated));
+    this._totalReplacementsDeobfuscated = Math.max(this._totalReplacementsDeobfuscated, n(persisted.totalReplacementsDeobfuscated));
+    if (persisted.deobBySource && typeof persisted.deobBySource === "object") {
+      for (const [src, count] of Object.entries(persisted.deobBySource as Record<string, number>)) {
+        const existing = this._deobBySource.get(src) ?? 0;
+        this._deobBySource.set(src, Math.max(existing, n(count)));
+      }
+    }
+    if (persisted.ruleHits && typeof persisted.ruleHits === "object") {
+      for (const [rule, count] of Object.entries(persisted.ruleHits as Record<string, number>)) {
+        const existing = this._ruleHits.get(rule) ?? 0;
+        this._ruleHits.set(rule, Math.max(existing, n(count)));
+      }
+    }
+    if (persisted.detectionsByCategory && typeof persisted.detectionsByCategory === "object") {
+      for (const [cat, count] of Object.entries(persisted.detectionsByCategory as Record<string, number>)) {
+        const existing = this._detectionsByCategory.get(cat) ?? 0;
+        this._detectionsByCategory.set(cat, Math.max(existing, n(count)));
+      }
+    }
+    if (persisted.replacementsByCategory && typeof persisted.replacementsByCategory === "object") {
+      for (const [cat, count] of Object.entries(persisted.replacementsByCategory as Record<string, number>)) {
+        const existing = this._replacementsByCategory.get(cat) ?? 0;
+        this._replacementsByCategory.set(cat, Math.max(existing, n(count)));
+      }
+    }
+  }
 }
 
 /** Remove overlapping entities, keeping higher confidence ones. */

@@ -620,8 +620,21 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
       } catch { /* file may not exist */ }
 
-      // In-memory sessions overwrite on-disk entries (fresher data)
+      // In-memory sessions merge into on-disk entries.
+      // Privacy counters use Math.max to survive process restarts —
+      // in-memory starts at 0 after reload, so we must not overwrite
+      // higher disk values.
       for (const s of inMemory) {
+        const diskEntry = merged.get(normalizeLabel(s.agentLabel));
+        const dp = diskEntry?.privacy || {};
+        const sp = s.privacy || {};
+        const mergedPrivacy = {
+          obfuscationCalls: Math.max(dp.obfuscationCalls || 0, sp.obfuscationCalls || 0),
+          deobfuscationCalls: Math.max(dp.deobfuscationCalls || 0, sp.deobfuscationCalls || 0),
+          entitiesObfuscated: Math.max(dp.entitiesObfuscated || 0, sp.entitiesObfuscated || 0),
+          replacementsDeobfuscated: Math.max(dp.replacementsDeobfuscated || 0, sp.replacementsDeobfuscated || 0),
+          categoryCounts: { ...(dp.categoryCounts || {}), ...(sp.categoryCounts || {}) },
+        };
         merged.set(normalizeLabel(s.agentLabel), {
           agentLabel: s.agentLabel, agentBuildId: s.agentBuildId,
           sessionId: s.sessionId, llmCallCount: s.llmCallCount,
@@ -630,7 +643,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           channels: s.channels, classification: s.classification,
           toolInventory: s.toolInventory, startedAt: s.startedAt,
           lastCallAt: s.lastCallAt, soulExtract: s.soulExtract,
-          behavior: s.behavior, privacy: s.privacy,
+          behavior: s.behavior, privacy: mergedPrivacy,
         });
       }
 
@@ -766,7 +779,18 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
       } catch { /* file may not exist */ }
 
+      // Privacy counters use Math.max to survive process restarts
       for (const s of inMemory) {
+        const diskEntry = merged.get(normalizeLabel(s.agentLabel));
+        const dp = diskEntry?.privacy || {};
+        const sp = s.privacy || {};
+        const mergedPrivacy = {
+          obfuscationCalls: Math.max(dp.obfuscationCalls || 0, sp.obfuscationCalls || 0),
+          deobfuscationCalls: Math.max(dp.deobfuscationCalls || 0, sp.deobfuscationCalls || 0),
+          entitiesObfuscated: Math.max(dp.entitiesObfuscated || 0, sp.entitiesObfuscated || 0),
+          replacementsDeobfuscated: Math.max(dp.replacementsDeobfuscated || 0, sp.replacementsDeobfuscated || 0),
+          categoryCounts: { ...(dp.categoryCounts || {}), ...(sp.categoryCounts || {}) },
+        };
         merged.set(normalizeLabel(s.agentLabel), {
           agentLabel: s.agentLabel, agentBuildId: s.agentBuildId,
           sessionId: s.sessionId, llmCallCount: s.llmCallCount,
@@ -775,7 +799,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           channels: s.channels, classification: s.classification,
           toolInventory: s.toolInventory, startedAt: s.startedAt,
           lastCallAt: s.lastCallAt, soulExtract: s.soulExtract,
-          behavior: s.behavior, privacy: s.privacy,
+          behavior: s.behavior, privacy: mergedPrivacy,
         });
       }
 
@@ -866,6 +890,16 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   try {
     if (existsSync(_agentSessionFile)) {
       agentTracker.loadFromFile(_agentSessionFile);
+    }
+  } catch {}
+
+  // Restore obfuscator counters from persisted stats file so deob counts
+  // survive process restarts (the stats file is written on every deob event).
+  try {
+    if (existsSync(STATS_FILE)) {
+      const raw = readFileSync(STATS_FILE, "utf-8");
+      const persisted = JSON.parse(raw);
+      ob().restoreStats(persisted);
     }
   } catch {}
 
@@ -1546,7 +1580,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (_raw.length < 500) api.logger?.info(`[shroud][raw-assistant] ${_raw}`);
 
       if (typeof msg.content === "string") {
+        const _dbgStoreSize = (ob() as any)._store?.allMappings?.()?.size ?? -1;
         const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content, "before_message_write");
+        api.logger?.info(`[shroud][debug-deob] role=assistant store=${_dbgStoreSize} rc=${replacementCount} changed=${deobfuscated !== msg.content} len=${msg.content.length}`);
         if (deobfuscated === msg.content) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
         if (replacementCount > 0) agentTracker.recordDeobfuscation(replacementCount);
@@ -1557,6 +1593,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         return { message: { ...msg, content: deobfuscated } };
       }
       if (Array.isArray(msg.content)) {
+        const _dbgStoreSize2 = (ob() as any)._store?.allMappings?.()?.size ?? -1;
+        api.logger?.info(`[shroud][debug-deob] role=assistant ARRAY path blocks=${msg.content.length} store=${_dbgStoreSize2}`);
         let changed = false;
         let _deobCount = 0;
         const newContent = msg.content.map((block: any) => {
@@ -1564,6 +1602,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             // Handle blocks with .text (text content blocks)
             if (typeof block.text === "string") {
               const { text: deobfuscated, replacementCount: rc } = ob().deobfuscateWithStats(block.text, "before_message_write");
+              api.logger?.info(`[shroud][debug-deob] block.text rc=${rc} changed=${deobfuscated !== block.text} len=${block.text.length} sample="${block.text.slice(0,60)}"`);
               if (deobfuscated !== block.text) {
                 changed = true;
                 _deobCount += rc;
