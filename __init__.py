@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -31,6 +32,10 @@ _interceptor: Optional[Any] = None
 _lock = threading.Lock()
 _started = False
 _plugin_dir = Path(__file__).parent
+
+# Ensure shroud_hermes subpackage is importable
+if str(_plugin_dir) not in sys.path:
+    sys.path.insert(0, str(_plugin_dir))
 
 
 def register(ctx) -> None:
