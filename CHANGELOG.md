@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.0] - 2026-04-12
+
+### Added — Hermes Agent Plugin + Config Hot-Reload
+
+- **Hermes Agent plugin** — native privacy obfuscation for Hermes Agent via `shroud_hermes/` Python subpackage. Obfuscates outbound prompts and deobfuscates inbound deltas at the plugin level.
+- **Config-as-code hot-reload for Hermes** — Hermes plugin watches `shroud.config.json` and applies config changes without gateway restart.
+- **Plugin dir added to `sys.path`** — ensures `shroud_hermes` subpackage is importable regardless of working directory.
+- **Plugin starts at registration** — Shroud now initializes at plugin registration, not just on `on_session_start`, fixing cases where early messages were unprotected.
+
+### Fixed
+
+- **Holdback deobfuscation** — `None` deltas from Slack streaming no longer break deobfuscation.
+- **Holdback buffer removed** — each delta is deobfuscated immediately instead of being buffered, reducing latency.
+- **`requires_env` removed from `plugin.yaml`** — Shroud works with default settings, no env vars required.
+- **Import conflict resolved** — renamed `hermes/` to `shroud_hermes/` to avoid collision with Hermes Agent's own `hermes` package.
+- **Auto-enable field scoping** — generated config now includes field scoping section by default.
+
 ## [2.4.1] - 2026-04-10
 
 ### Added — Per-Tool Field Scoping
