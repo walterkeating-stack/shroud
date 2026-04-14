@@ -16,6 +16,8 @@ import type { RedactionLevel } from "./redaction.js";
  * Priority: env vars > pluginConfig > defaults.
  */
 export const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
+export const STORE_FILE = process.env.SHROUD_STORE_FILE
+  || ((process.env.HOME || "/root") + "/.openclaw/shroud-store.json");
 export const IS_TEST = process.env.NODE_ENV === "test";
 
 export function resolveConfig(pluginConfig?: unknown): ShroudConfig {

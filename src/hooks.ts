@@ -22,16 +22,67 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
-import { STATS_FILE, IS_TEST } from "./config.js";
+import { STATS_FILE, STORE_FILE, IS_TEST } from "./config.js";
 import { DnsCache } from "./dns-cache.js";
 import { FieldScopeResolver } from "./field-scope.js";
+import { dirname } from "node:path";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
+}
+
+const storeSyncMtime = new WeakMap<Obfuscator, number>();
+const SHROUD_REPLY_DISPATCHER_PATCH_MARK = Symbol.for("shroud.replyDispatcherPatched");
+
+function shouldUseDiskStoreSync(): boolean {
+  return !IS_TEST || (globalThis as any).__shroudEnableDiskStoreSync === true;
+}
+
+function persistStore(ob: Obfuscator): void {
+  try {
+    if ((ob.getStats() as any).storeMappings === 0) return;
+    const data = ob.exportStore();
+    mkdirSync(dirname(STORE_FILE), { recursive: true });
+    writeFileSync(STORE_FILE, JSON.stringify(data) + "\n");
+    try {
+      storeSyncMtime.set(ob, statSync(STORE_FILE).mtimeMs);
+    } catch {
+      storeSyncMtime.delete(ob);
+    }
+  } catch {
+    // best-effort
+  }
+}
+
+function restoreStore(
+  ob: Obfuscator,
+  logger?: { info: (msg: string) => void },
+  options?: { force?: boolean },
+): number {
+  try {
+    if (!shouldUseDiskStoreSync()) return 0;
+    const stat = statSync(STORE_FILE);
+    const lastSync = storeSyncMtime.get(ob);
+    if (!options?.force && lastSync === stat.mtimeMs) return 0;
+    const raw = readFileSync(STORE_FILE, "utf-8");
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.mappings)) {
+      storeSyncMtime.set(ob, stat.mtimeMs);
+      return 0;
+    }
+    const imported = ob.importStore(data);
+    storeSyncMtime.set(ob, stat.mtimeMs);
+    if (imported > 0 && logger) {
+      logger.info(`[shroud] Restored ${imported} mappings from disk (${STORE_FILE})`);
+    }
+    return imported;
+  } catch {
+    return 0;
+  }
 }
 
 function dumpStatsFile(fallback: Obfuscator): void {
@@ -62,6 +113,62 @@ export interface PluginApi {
     warn(...args: any[]): void;
     error(...args: any[]): void;
   };
+}
+
+function deobfuscateVisibleReplyPayload(
+  value: unknown,
+  deobfuscate: (text: string) => string,
+): unknown {
+  if (typeof value === "string") return deobfuscate(value);
+  if (Array.isArray(value)) return value.map((item) => deobfuscateVisibleReplyPayload(item, deobfuscate));
+  if (!value || typeof value !== "object") return value;
+
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = deobfuscateVisibleReplyPayload(entry, deobfuscate);
+  }
+  return out;
+}
+
+function wrapReplyDispatcherMethod(
+  method: unknown,
+  deobfuscate: (text: string) => string,
+): unknown {
+  if (typeof method !== "function") return method;
+  if ((method as any)[SHROUD_REPLY_DISPATCHER_PATCH_MARK]) return method;
+
+  const wrapped = function shroudPatchedReplyDispatcher(this: unknown, payload: unknown, ...args: unknown[]) {
+    return (method as any).call(
+      this,
+      deobfuscateVisibleReplyPayload(payload, deobfuscate),
+      ...args,
+    );
+  };
+
+  Object.defineProperty(wrapped, SHROUD_REPLY_DISPATCHER_PATCH_MARK, { value: true });
+  return wrapped;
+}
+
+function patchReplyDispatcher(
+  dispatcher: unknown,
+  deobfuscate: (text: string) => string,
+): boolean {
+  if (!dispatcher || typeof dispatcher !== "object") return false;
+
+  let patched = false;
+  for (const key of ["sendBlockReply", "sendFinalReply", "sendToolResult"] as const) {
+    const method = (dispatcher as Record<string, unknown>)[key];
+    const wrapped = wrapReplyDispatcherMethod(method, deobfuscate);
+    if (wrapped !== method) {
+      (dispatcher as Record<string, unknown>)[key] = wrapped;
+      patched = true;
+    }
+  }
+
+  return patched;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +381,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     } else {
       g.__shroudObfuscator = obfuscator;
     }
+    if (isFirstLoad) {
+      restoreStore(obfuscator, api.logger, { force: true });
+    }
     // DNS cache for public URL detection — shared across plugin instances
     if (!g.__shroudDnsCache) {
       const cache = new DnsCache();
@@ -309,6 +419,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // OpenClaw loads the plugin multiple times; only one instance has the mappings.
   const ob = () => getSharedObfuscator(obfuscator);
   const sessionScope = (globalThis as any);
+  const syncStore = (force = false, logger?: { info: (msg: string) => void }) => {
+    restoreStore(ob(), logger, { force });
+  };
   const config = ob().config;
   let _fieldScopeResolver: FieldScopeResolver | undefined;
   let _fieldScopeConfigRef: unknown;
@@ -414,55 +527,75 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
     }
 
-    // Obfuscate ALL messages in-place — seeds the mapping store AND mutates
-    // the message array so PII is replaced before OpenClaw builds the request.
-    // This is critical when the LLM SDK (e.g. OpenAI v6) captures fetch at
-    // construction time, bypassing Shroud's globalThis.fetch intercept.
-    // The fetch intercept is still the primary path for SDKs that use
-    // globalThis.fetch (Anthropic) — double-obfuscation is safe because
-    // already-obfuscated text has no detectable PII entities.
+    // Obfuscate ALL messages via copies so delivery code never sees partially
+    // mutated objects that OpenClaw may still reference elsewhere.
     if (Array.isArray(event?.messages)) {
-      for (const msg of event.messages) {
+      for (let i = 0; i < event.messages.length; i++) {
+        const msg = event.messages[i];
+        let msgCopy: any = null;
+
         // String content (Anthropic/OpenAI)
         if (typeof msg.content === "string") {
           const cleaned = stripSlackLinksForHook(msg.content);
           const result = ob().obfuscate(cleaned, undefined, _exemptCats);
           totalEntities += result.entities.length;
           if (result.entities.length > 0 || cleaned !== msg.content) {
-            msg.content = result.entities.length > 0 ? result.obfuscated : cleaned;
+            msgCopy = { ...msg, content: result.entities.length > 0 ? result.obfuscated : cleaned };
           }
         }
         // Array content blocks
         else if (Array.isArray(msg.content)) {
-          for (const b of msg.content) {
-            if (b?.type === "text" && typeof b.text === "string") {
+          let blockChanged = false;
+          const newBlocks = msg.content.map((b: any) => {
+            if (!b || typeof b !== "object") return b;
+            let newBlock = b;
+
+            if (b.type === "text" && typeof b.text === "string") {
               const cleaned = stripSlackLinksForHook(b.text);
               const result = ob().obfuscate(cleaned, undefined, _exemptCats);
               totalEntities += result.entities.length;
               if (result.entities.length > 0 || cleaned !== b.text) {
-                b.text = result.entities.length > 0 ? result.obfuscated : cleaned;
+                newBlock = { ...newBlock, text: result.entities.length > 0 ? result.obfuscated : cleaned };
+                blockChanged = true;
               }
             }
             // tool_result blocks with string content
-            if (typeof b?.content === "string") {
+            if (typeof b.content === "string") {
               const cleaned = stripSlackLinksForHook(b.content);
               const result = ob().obfuscate(cleaned, undefined, _exemptCats);
               totalEntities += result.entities.length;
               if (result.entities.length > 0 || cleaned !== b.content) {
-                b.content = result.entities.length > 0 ? result.obfuscated : cleaned;
+                newBlock = { ...newBlock, content: result.entities.length > 0 ? result.obfuscated : cleaned };
+                blockChanged = true;
               }
             }
+            return newBlock;
+          });
+          if (blockChanged) {
+            msgCopy = { ...msg, content: newBlocks };
           }
         }
         // OpenAI tool_calls in assistant messages
         if (Array.isArray(msg.tool_calls)) {
-          for (const tc of msg.tool_calls) {
+          let tcChanged = false;
+          const newToolCalls = msg.tool_calls.map((tc: any) => {
             if (typeof tc.function?.arguments === "string") {
               const result = ob().obfuscate(tc.function.arguments, undefined, _exemptCats);
               totalEntities += result.entities.length;
-              if (result.entities.length > 0) tc.function.arguments = result.obfuscated;
+              if (result.entities.length > 0) {
+                tcChanged = true;
+                return { ...tc, function: { ...tc.function, arguments: result.obfuscated } };
+              }
             }
+            return tc;
+          });
+          if (tcChanged) {
+            msgCopy = msgCopy ? { ...msgCopy, tool_calls: newToolCalls } : { ...msg, tool_calls: newToolCalls };
           }
+        }
+
+        if (msgCopy) {
+          event.messages[i] = msgCopy;
         }
       }
     }
@@ -470,6 +603,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     if (totalEntities === 0) return;
 
     dumpStatsFile(obfuscator);
+    persistStore(ob());
     api.logger?.info(
       `[shroud] before_prompt_build: obfuscated ${totalEntities} entities (mappings synced)`,
     );
@@ -496,37 +630,42 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     // --- Assistant messages: DEOBFUSCATE (fakes → real values) ---
     if (role === "assistant") {
+      syncStore();
       const _raw = typeof msg.content === "string" ? msg.content :
         Array.isArray(msg.content) ? msg.content.map((b: any) => b?.text || "").join("") : "";
       if (_raw.length < 500) api.logger?.info(`[shroud][raw-assistant] ${_raw}`);
 
       if (typeof msg.content === "string") {
         const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(msg.content);
-        if (deobfuscated === msg.content) return;
-        api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
-        if (auditActive && replacementCount > 0) {
-          try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount); } catch {}
+        if (replacementCount > 0) {
+          api.logger?.info("[shroud] before_message_write: deobfuscated assistant message");
+          if (auditActive) {
+            try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount); } catch {}
+          }
+          dumpStatsFile(obfuscator);
         }
-        dumpStatsFile(obfuscator);
         return { message: { ...msg, content: deobfuscated } };
       }
       if (Array.isArray(msg.content)) {
         let changed = false;
+        let deobCount = 0;
         const newContent = msg.content.map((block: any) => {
           if (block && typeof block === "object") {
             // Handle blocks with .text (text content blocks)
             if (typeof block.text === "string") {
-              const deobfuscated = ob().deobfuscate(block.text);
+              const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(block.text);
               if (deobfuscated !== block.text) {
                 changed = true;
+                deobCount += replacementCount;
                 return { ...block, text: deobfuscated };
               }
             }
             // Handle blocks with .content as string (tool_result blocks)
             if (typeof block.content === "string") {
-              const deobfuscated = ob().deobfuscate(block.content);
+              const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(block.content);
               if (deobfuscated !== block.content) {
                 changed = true;
+                deobCount += replacementCount;
                 return { ...block, content: deobfuscated };
               }
             }
@@ -535,9 +674,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               let innerChanged = false;
               const newInner = block.content.map((inner: any) => {
                 if (inner && typeof inner === "object" && typeof inner.text === "string") {
-                  const deobfuscated = ob().deobfuscate(inner.text);
+                  const { text: deobfuscated, replacementCount } = ob().deobfuscateWithStats(inner.text);
                   if (deobfuscated !== inner.text) {
                     innerChanged = true;
+                    deobCount += replacementCount;
                     return { ...inner, text: deobfuscated };
                   }
                 }
@@ -551,12 +691,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           }
           return block;
         });
-        if (!changed) return;
-        api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
-        dumpStatsFile(obfuscator);
-        return { message: { ...msg, content: newContent } };
+        if (deobCount > 0) {
+          api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
+          dumpStatsFile(obfuscator);
+        }
+        return { message: { ...msg, content: changed ? newContent : msg.content.map((b: any) => ({ ...b })) } };
       }
-      return;
+      return { message: { ...msg } };
     }
 
     // --- Non-assistant messages: OBFUSCATE (real values → fakes) ---
@@ -564,6 +705,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const result = ob().obfuscate(msg.content);
       if (result.entities.length === 0) return;
       dumpStatsFile(obfuscator);
+      persistStore(ob());
       if (auditActive) {
         try {
           emitObfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), result, msg.content, result.obfuscated);
@@ -622,6 +764,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       });
       if (!changed) return;
       dumpStatsFile(obfuscator);
+      persistStore(ob());
       if (auditActive) {
         for (const result of allResults) {
           try {
@@ -638,6 +781,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // 3. before_tool_call (async): deobfuscate tool params + track depth
   // -----------------------------------------------------------------------
   api.on("before_tool_call", async (event: any) => {
+    syncStore();
     if (!event?.params || typeof event.params !== "object") return;
 
     // Block the message tool for send actions. The gateway auto-delivers
@@ -702,6 +846,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     }, shouldScan);
 
     dumpStatsFile(obfuscator);
+    persistStore(ob());
     return { message: obfuscated };
   });
 
@@ -711,6 +856,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   //    sends blocks in the first call, text in the second).
   // -----------------------------------------------------------------------
   api.on("message_sending", async (event: any) => {
+    syncStore();
     if (!event?.content) return;
 
     // String content — direct deobfuscation.
@@ -753,6 +899,11 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       });
       return { content: newContent };
     }
+  });
+
+  api.on("reply_dispatch", (_event: any, ctx: any) => {
+    syncStore();
+    patchReplyDispatcher(ctx?.dispatcher, (text) => ob().deobfuscate(text));
   });
 
   // -----------------------------------------------------------------------
@@ -817,25 +968,65 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // overflow chunks. Partial fakes may briefly appear during streaming
   // but the final message will be correct.
   const SHROUD_BUF = Symbol("shroudStreamBuf");
+  const deobfuscateStreamTarget = (target: any): void => {
+    if (!target || typeof target !== "object") return;
+
+    if (typeof target.content === "string") {
+      const { text: deob } = ob().deobfuscateWithStats(target.content);
+      target.content = deob;
+      return;
+    }
+
+    if (!Array.isArray(target.content)) return;
+
+    for (const block of target.content) {
+      if (!block || typeof block !== "object") continue;
+
+      if (typeof block.text === "string") {
+        const { text: deob } = ob().deobfuscateWithStats(block.text);
+        block.text = deob;
+      }
+
+      if (typeof block.content === "string") {
+        const { text: deob } = ob().deobfuscateWithStats(block.content);
+        block.content = deob;
+      }
+
+      if (Array.isArray(block.content)) {
+        for (const inner of block.content) {
+          if (!inner || typeof inner !== "object" || typeof inner.text !== "string") continue;
+          const { text: deob } = ob().deobfuscateWithStats(inner.text);
+          inner.text = deob;
+        }
+      }
+    }
+  };
 
   (globalThis as any).__shroudStreamDeobfuscate = (stream: any, event: any) => {
-    // Streaming event hook — called by patched EventStream.prototype.push().
-    // Text deltas pass through unchanged (deobfuscation happens at the fetch
-    // response level via per-block SSE flushing). The message_end handler
-    // deobfuscates content blocks as a defense-in-depth measure.
-    const isTextDelta = event.type === "text_delta";
-    const isMessageUpdateTextDelta = event.type === "message_update" &&
-      event.assistantMessageEvent?.type === "text_delta";
+    const eventTextType = event.type === "message_update"
+      ? event.assistantMessageEvent?.type
+      : event.type;
+    const isTextPhaseUpdate =
+      eventTextType === "text_start" ||
+      eventTextType === "text_delta" ||
+      eventTextType === "text_end";
 
-    if (isTextDelta || isMessageUpdateTextDelta) {
-      // Pass through text_delta events unchanged.
+    if (isTextPhaseUpdate) {
       let buf = stream[SHROUD_BUF];
       if (!buf) { buf = { raw: "", deobCount: 0 }; stream[SHROUD_BUF] = buf; }
 
-      const src = isMessageUpdateTextDelta ? event.assistantMessageEvent : event;
+      const src = event.type === "message_update" ? event.assistantMessageEvent : event;
       const chunk = typeof src.delta === "string" ? src.delta
         : typeof src.text === "string" ? src.text : "";
       if (chunk) buf.raw += chunk;
+
+      const targets = [
+        event.partial, event.message,
+        event.assistantMessageEvent?.partial,
+        event.assistantMessageEvent?.message,
+      ];
+      for (const target of targets) deobfuscateStreamTarget(target);
+
       return event;
     }
 
@@ -851,23 +1042,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       ));
 
     if (isEnd) {
+      syncStore();
       const targets = [
         event.message, event.partial,
         event.assistantMessageEvent?.partial,
         event.assistantMessageEvent?.message,
       ];
-      for (const target of targets) {
-        if (target?.content && Array.isArray(target.content)) {
-          for (const block of target.content) {
-            if (block?.type === "text" && typeof block.text === "string") {
-              const deob = ob().deobfuscate(block.text);
-              if (deob !== block.text) {
-                block.text = deob;
-              }
-            }
-          }
-        }
-      }
+      for (const target of targets) deobfuscateStreamTarget(target);
 
       dumpStatsFile(obfuscator);
       delete stream[SHROUD_BUF];
@@ -883,6 +1064,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   //    globalThis.__shroudDeobfuscate(text) directly.
   // -----------------------------------------------------------------------
   (globalThis as any).__shroudDeobfuscate = (text: string): string => {
+    syncStore();
     if (typeof text !== "string") return text;
     return ob().deobfuscate(text);
   };
@@ -1006,6 +1188,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
         if (!messageArray) {
           if (modified) {
+            persistStore(ob());
             const newBody = JSON.stringify(body);
             return originalFetch.call(globalThis, input, { ...init, body: newBody });
           }
@@ -1116,6 +1299,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
 
         if (modified) {
+          persistStore(ob());
           const newBody = JSON.stringify(body);
           const newInit = { ...init, body: newBody };
           // Update content-length if present

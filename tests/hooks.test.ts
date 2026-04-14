@@ -1,8 +1,10 @@
 import { describe, test, expect, vi } from "vitest";
+import { rmSync } from "node:fs";
 
 import { ShroudConfig } from "../src/types.js";
 import { Obfuscator } from "../src/obfuscator.js";
 import { registerHooks } from "../src/hooks.js";
+import { STORE_FILE } from "../src/config.js";
 
 const testConfig: ShroudConfig = {
   secretKey: "test-secret-key-1234567890abcdef",
@@ -266,6 +268,38 @@ describe("hooks - message_sending", () => {
     expect(result).toBeDefined();
     expect(result.content).toBe("Hello world");
   });
+
+  test("refreshes persisted mappings for a separate delivery-side instance", async () => {
+    rmSync(STORE_FILE, { force: true });
+    (globalThis as any).__shroudEnableDiskStoreSync = true;
+
+    try {
+      const obfWriter = new Obfuscator(testConfig);
+      const { api: apiWriter, handlers: writerHandlers } = createMockApi();
+      registerHooks(apiWriter, obfWriter);
+
+      await writerHandlers["before_prompt_build"]({
+        prompt: "Contact john@acme.com",
+        messages: [],
+      });
+      const fakeEmail = obfWriter.obfuscate("john@acme.com").mappingsUsed["john@acme.com"];
+
+      const obfDelivery = new Obfuscator(testConfig);
+      const { api: apiDelivery, handlers: deliveryHandlers } = createMockApi();
+      registerHooks(apiDelivery, obfDelivery);
+
+      const result = await deliveryHandlers["message_sending"]({
+        content: `The contact is ${fakeEmail}`,
+      });
+
+      expect(result).toBeDefined();
+      expect(result.content).toContain("john@acme.com");
+      expect(result.content).not.toContain(fakeEmail);
+    } finally {
+      delete (globalThis as any).__shroudEnableDiskStoreSync;
+      rmSync(STORE_FILE, { force: true });
+    }
+  });
 });
 
 describe("hooks - full flow", () => {
@@ -421,7 +455,7 @@ describe("hooks - before_message_write assistant deobfuscation", () => {
 // =========================================================================
 
 describe("hooks - streaming deobfuscation (__shroudStreamDeobfuscate)", () => {
-  test("deobfuscates text_delta events via buffer", () => {
+  test("deobfuscates cumulative partial text during text_delta streaming", () => {
     const obf = new Obfuscator(testConfig);
     const { api } = createMockApi();
     registerHooks(api, obf);
@@ -433,13 +467,46 @@ describe("hooks - streaming deobfuscation (__shroudStreamDeobfuscate)", () => {
     const obResult = obf.obfuscate("Contact john@acme.com");
     const fakeEmail = obResult.mappingsUsed["john@acme.com"];
 
-    // text_delta with fake should be deobfuscated
     const stream: any = {};
-    hook(stream, { type: "text_delta", delta: `Email: ${fakeEmail}` });
+    const firstChunk = fakeEmail.slice(0, 4);
+    const firstEvt = hook(stream, {
+      type: "text_delta",
+      delta: firstChunk,
+      partial: { role: "assistant", content: [{ type: "text", text: firstChunk }] },
+    });
+    expect(firstEvt.partial.content[0].text).toBe(firstChunk);
+
+    const secondEvt = hook(stream, {
+      type: "text_delta",
+      delta: fakeEmail.slice(4),
+      partial: { role: "assistant", content: [{ type: "text", text: fakeEmail }] },
+    });
+    expect(secondEvt.partial.content[0].text).toContain("john@acme.com");
+    expect(secondEvt.partial.content[0].text).not.toContain(fakeEmail);
 
     // Buffer should be created
     const bufSymbols = Object.getOwnPropertySymbols(stream);
     expect(bufSymbols.length).toBe(1);
+  });
+
+  test("deobfuscates nested message_update partial text during streaming", () => {
+    const obf = new Obfuscator(testConfig);
+    const { api } = createMockApi();
+    registerHooks(api, obf);
+
+    const hook = (globalThis as any).__shroudStreamDeobfuscate;
+    const fakeEmail = obf.obfuscate("Email john@acme.com").mappingsUsed["john@acme.com"];
+
+    const evt = hook({}, {
+      type: "message_update",
+      assistantMessageEvent: {
+        type: "text_delta",
+        delta: fakeEmail,
+        partial: { role: "assistant", content: [{ type: "text", text: `Result: ${fakeEmail}` }] },
+      },
+    });
+
+    expect(evt.assistantMessageEvent.partial.content[0].text).toBe("Result: john@acme.com");
   });
 
   test("streaming buffer resets after message_end", () => {
@@ -483,6 +550,48 @@ describe("hooks - streaming deobfuscation (__shroudStreamDeobfuscate)", () => {
     // message_end deobfuscates content blocks (used by streaming delivery)
     expect(endEvt.message.content[0].text).toContain("10.42.88.7");
     expect(endEvt.message.content[0].text).not.toContain(fakeIp);
+  });
+});
+
+describe("hooks - reply_dispatch", () => {
+  test("wraps dispatcher methods so nested Slack blocks are deobfuscated before send", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const fakeEmail = obf.obfuscate("john@acme.com").mappingsUsed["john@acme.com"];
+    const sendFinalReply = vi.fn();
+    const dispatcher = { sendFinalReply };
+
+    await handlers["reply_dispatch"]({}, { dispatcher });
+
+    dispatcher.sendFinalReply({
+      text: fakeEmail,
+      channelData: {
+        slack: {
+          blocks: [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: `Email: ${fakeEmail}` },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(sendFinalReply).toHaveBeenCalledWith({
+      text: "john@acme.com",
+      channelData: {
+        slack: {
+          blocks: [
+            {
+              type: "section",
+              text: { type: "mrkdwn", text: "Email: john@acme.com" },
+            },
+          ],
+        },
+      },
+    });
   });
 });
 
