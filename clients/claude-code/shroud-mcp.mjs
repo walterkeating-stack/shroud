@@ -54,7 +54,13 @@ function spawnAppServer(socketPath) {
   const child = spawn(process.execPath, [appServer, distPath, "--listen", socketPath], {
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      // Write to a Claude-Code-specific session file so we don't overwrite
+      // the main APP server's session file (which causes appear/disappear
+      // on the dashboard as the two processes race on the same file).
+      SHROUD_APP_SESSIONS_FILE: "/tmp/shroud-mcp-sessions.json",
+    },
   });
 
   // Pipe stderr for diagnostics but don't block
