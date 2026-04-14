@@ -2,15 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.5.2] - 2026-04-14
+## [2.5.3] - 2026-04-14
 
-### Added — Claude Code Integration
+### Added — Claude Code Integration + Dashboard Visibility
 
 - **Zero-config Claude Code install** — `npm install shroud-privacy` + add MCP config, no manual server management
 - MCP server auto-spawns the APP privacy engine on first tool call, reuses if already running
 - Auto-reconnect if APP server crashes mid-session
 - Simplified `.mcp.json` — no `SHROUD_SOCKET` env var required
 - Claude Code install documented in README
+- Every MCP tool call reports `tool_call`/`tool_result` to the security pipeline — Claude Code appears as a tracked agent on the Agent Command Center dashboard
+- Dedicated socket (`/tmp/shroud-mcp.sock`) prevents identity collisions with other agents
 
 ### Fixed
 
