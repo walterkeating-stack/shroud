@@ -2,7 +2,7 @@
  * SocketClient — connects to a running Shroud APP server via Unix socket.
  *
  * Shared by shroud-bridge.mjs and shroud-mcp.mjs so both use the same
- * APP server instance (same mapping store, same security pipeline).
+ * request/response transport when talking to an APP server instance.
  *
  * The APP server must be started with --listen <socket-path> before
  * any client connects.

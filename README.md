@@ -141,7 +141,18 @@ Add to your project's `.mcp.json` or `~/.claude/.mcp.json`:
 }
 ```
 
-That's it — the MCP server auto-starts the privacy engine. Claude gains six tools: `shroud_obfuscate`, `shroud_deobfuscate`, `shroud_status`, `shroud_scan_tool`, `shroud_configure`, and `shroud_reset`.
+That's it — the MCP server auto-starts a dedicated APP daemon on `/tmp/shroud-claude-mcp.sock` and writes Claude MCP session state under `OPENCLAW_STATE_DIR` (or `~/.openclaw`) as `shroud-claude-mcp-sessions.json`. Claude gains six tools: `shroud_obfuscate`, `shroud_deobfuscate`, `shroud_status`, `shroud_scan_tool`, `shroud_configure`, and `shroud_reset`.
+
+If you want automatic tool-boundary obfuscation/deobfuscation instead of explicit MCP tools, use the shipped Claude hooks bridge in `clients/claude-code/shroud-bridge.mjs` together with `clients/claude-code/hooks.json`.
+
+### Codex
+
+```bash
+npm install shroud-privacy
+codex mcp add shroud -- node node_modules/shroud-privacy/clients/codex/shroud-mcp.mjs
+```
+
+Codex uses the same six MCP tools as Claude, but on a separate APP daemon and socket: `/tmp/shroud-codex-mcp.sock`. Its APP session file defaults to `shroud-codex-mcp-sessions.json` under `OPENCLAW_STATE_DIR` or `~/.openclaw`.
 
 ### Any agent (via APP)
 
@@ -167,6 +178,8 @@ with ShroudClient() as shroud:
 ```
 
 Copy `clients/python/shroud_client.py` into your project, or import it directly from the npm install path. Requires Node.js on the PATH.
+
+For direct APP clients such as NCG, call `identify` first if you want per-agent session counters, then `obfuscate` / `deobfuscate`, and optionally wrap tool execution with `tool_call` / `tool_result` for telemetry.
 
 **Any language:**
 

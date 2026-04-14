@@ -6,10 +6,12 @@ It focuses on the actual integration surfaces shipped in this branch:
 - OpenClaw plugin integration
 - APP server integration over stdio and Unix sockets
 - Python APP client integration
+- Existing APP clients such as NCG
 - Claude Code MCP integration
 - Claude Code hooks bridge integration
+- Codex MCP integration
 
-This branch is the privacy-core line. It ships the obfuscation/deobfuscation engine, runtime hooks, config-as-code, APP transport, and Claude-facing clients. It does not implement the richer APP security RPCs that exist on `feature/transformer`.
+This branch is the privacy-core line. It ships the obfuscation/deobfuscation engine, runtime hooks, config-as-code, APP transport, and coding-agent clients. It now exposes `identify`, `security`, `tool_call`, and `tool_result` for client parity with `feature/transformer`, but keeps them telemetry-only: `security()` reports `enabled: false`, and tool RPCs never enforce policy.
 
 ## Integration Map
 
@@ -18,8 +20,10 @@ This branch is the privacy-core line. It ships the obfuscation/deobfuscation eng
 | OpenClaw plugin | `openclaw.plugin.json`, `src/index.ts`, `src/hooks.ts` | OpenClaw plugin API + runtime patching | Inline obfuscation/deobfuscation inside OpenClaw |
 | APP server | `app-server.mjs` | Newline-delimited JSON-RPC on stdio or Unix socket | Generic agent integration in any language |
 | Python client | `clients/python/shroud_client.py` | Spawns APP server on stdio | Python agents that want a local wrapper |
+| Existing APP clients | external clients such as `/home/ka/ncg/agent.py` | stdio or Unix socket APP JSON-RPC | Non-OpenClaw agents that want stable privacy RPCs plus agent/session telemetry |
 | Claude MCP | `clients/claude-code/shroud-mcp.mjs`, `clients/claude-code/socket-client.mjs`, `clients/claude-code/mcp.json` | MCP on stdio, APP on Unix socket | Claude Code tool-based access to Shroud |
 | Claude hooks bridge | `clients/claude-code/shroud-bridge.mjs`, `clients/claude-code/hooks.json` | HTTP hooks to bridge, Unix socket to APP | Automatic tool input deobfuscation and tool output obfuscation |
+| Codex MCP | `clients/codex/shroud-mcp.mjs`, `clients/claude-code/shroud-mcp.mjs` | MCP on stdio, APP on Unix socket | Codex CLI tool-based access to the same Shroud MCP surface |
 
 ## OpenClaw Integration
 
@@ -107,15 +111,20 @@ When the APP server starts it emits a single handshake object before any RPC res
   "engine": "shroud",
   "version": "2.5.5",
   "capabilities": [
+    "identify",
     "obfuscate",
     "deobfuscate",
     "batch",
     "stats",
     "health",
     "configure",
+    "security",
+    "tool_call",
+    "tool_result",
     "audit",
     "partitions"
-  ]
+  ],
+  "security": null
 }
 ```
 
@@ -127,30 +136,38 @@ This branch implements the following RPC methods:
 
 | Method | Params | Returns | Notes |
 |---|---|---|---|
+| `identify` | `{ agent, version, channel? }` | `{ ok, agent, buildId, security }` | Optional for privacy-only callers, recommended for coding-agent integrations |
 | `obfuscate` | `{ text, partition? }` | `{ text, entityCount, categories, modified, audit }` | Core privacy entrypoint |
 | `deobfuscate` | `{ text, partition? }` | `{ text, replacementCount, replacementsByCategory, modified, storeSize, audit }` | Restores real values |
 | `batch` | `{ operations, partition? }` | `{ results }` | Mixed obfuscate/deobfuscate batches |
 | `reset` | `{ partition? }` | `{ ok, summary }` | Clears a single partition or all state |
 | `stats` | `{}` | engine counters and rule/category stats | Includes uptime and memory |
 | `health` | `{}` | liveness payload | Includes request count and latency |
+| `security` | `{}` | `{ enabled: false, ... }` | Present for parity; no security engine in this branch |
+| `tool_call` | `{ tool, args? }` | `{ blocked: false, sequenceLength, events: [] }` | Telemetry-only tool sequencing |
+| `tool_result` | `{ tool, result }` | `{ ok, recorded }` | Telemetry-only completion record |
 | `configure` | `{ config }` | `{ ok, appliedKeys }` | Rebuilds obfuscators with merged config |
 | `shutdown` | `{}` | `{ ok, flushed }` | Flushes stats and exits |
 | `setPartition` | `{ id }` | `{ ok, partition, storeSize }` | Sets default active partition |
 
 ### Core request flow
 
-The APP contract in `main` is simple:
+The APP contract in `main` stays simple for privacy-only callers, but coding-agent clients should still identify themselves:
 
 1. Read the handshake.
-2. Call `obfuscate` before sending content to an LLM or external service.
-3. Call `deobfuscate` on the way back to restore real values.
-4. Call `reset` when starting a clean session if you do not want mappings reused.
+2. Call `identify` if you want per-agent session files and request counters.
+3. Call `obfuscate` before sending content to an LLM or external service.
+4. Optionally call `tool_call` / `tool_result` around tool execution to populate telemetry.
+5. Call `deobfuscate` on the way back to restore real values.
+6. Call `reset` when starting a clean session if you do not want mappings reused.
 
 Minimal example:
 
 ```json
-{"id":1,"method":"obfuscate","params":{"text":"Contact admin@acme.com about 10.1.0.1"}}
-{"id":2,"method":"deobfuscate","params":{"text":"Contact user@example.net about 100.64.0.12"}}
+{"id":1,"method":"identify","params":{"agent":"ncg","version":"1.0.0","channel":"enterprise-agent"}}
+{"id":2,"method":"obfuscate","params":{"text":"Contact admin@acme.com about 10.1.0.1"}}
+{"id":3,"method":"tool_call","params":{"tool":"Read","args":{"file_path":"/tmp/device.txt"}}}
+{"id":4,"method":"deobfuscate","params":{"text":"Contact user@example.net about 100.64.0.12"}}
 ```
 
 Partitioned example:
@@ -194,6 +211,21 @@ Socket mode keeps the same dispatch logic as stdio mode, but:
 - emits the handshake to each connecting socket client
 - still serves stdio for backward compatibility
 - cleans up the socket file on shutdown
+
+When `identify` has been called, the APP server also writes a session summary to:
+
+- `SHROUD_APP_SESSIONS_FILE`, default `/tmp/shroud-app-sessions.json`
+
+The summary includes:
+
+- `agentLabel`
+- `agentBuildId`
+- `channel`
+- `requestCount`
+- `toolSequence`
+- `privacy` counters
+
+This is what lets direct APP clients such as NCG, Claude, and Codex surface stable per-agent counters even though this branch has no transformer security engine.
 
 ## Python Integration
 
@@ -277,7 +309,7 @@ The MCP server:
 1. Speaks MCP on stdio to Claude Code.
 2. Lazily connects to APP on a Unix socket.
 3. Auto-spawns an APP server on first use if one is not running.
-4. Uses a dedicated default socket: `/tmp/shroud-mcp.sock`.
+4. Uses a dedicated default socket: `/tmp/shroud-claude-mcp.sock`.
 
 That means Claude sessions can share one Shroud daemon while keeping the MCP boundary simple.
 
@@ -290,26 +322,57 @@ That means Claude sessions can share one Shroud daemon while keeping the MCP bou
 | `shroud_obfuscate` | Yes | Calls APP `obfuscate` |
 | `shroud_deobfuscate` | Yes | Calls APP `deobfuscate` |
 | `shroud_status` | Yes | Combines APP `stats` and `health` |
-| `shroud_scan_tool` | Not fully | Calls APP `tool_call`, which this branch does not implement |
+| `shroud_scan_tool` | Yes, telemetry-only | Calls APP `tool_call`, which always returns allow/no-events on this branch |
 | `shroud_configure` | Yes | Calls APP `configure` |
 | `shroud_reset` | Yes | Calls APP `reset` |
 
+### Default artifact behavior
+
+When the wrapper auto-spawns APP, it uses:
+
+- socket: `/tmp/shroud-claude-mcp.sock`
+- session file: `${STATE_DIR}/shroud-claude-mcp-sessions.json`
+- events file env: `${STATE_DIR}/shroud-claude-mcp-events.jsonl` (reserved for parity; core `main` does not emit APP security events)
+- APP identity: `claude-code-mcp` on channel `mcp`
+
+`STATE_DIR` resolves from `OPENCLAW_STATE_DIR`, or `HOME` with the `~/.openclaw` fallback.
+
 ### Important caveat on `main`
 
-The Claude client bundle is shared with richer builds. `socket-client.mjs` exposes convenience methods such as:
+The Claude client bundle is shared with richer builds, so it still calls `identify`, `tool_call`, `tool_result`, and `security`. On `main`, those methods exist, but they are privacy-core only:
 
-- `identify()`
-- `toolCall()`
-- `toolResult()`
-- `security()`
+- `identify` records the agent label/build/channel in the session file
+- `tool_call` and `tool_result` record telemetry only and never block
+- `security` always reports `enabled: false`
 
-but the `main` APP server does not implement those RPC methods.
+That means Claude MCP gets consistent counters and identity on both branches, but only `feature/transformer` performs real APP-side tool security enforcement.
 
-Implications:
+## Codex MCP Integration
 
-- `shroud_obfuscate`, `shroud_deobfuscate`, `shroud_status`, `shroud_configure`, and `shroud_reset` work normally.
-- `shroud_scan_tool` will surface a method-not-found error against the core APP server.
-- The MCP server attempts an `identify()` call on connect, but only logs a warning if the method is unavailable.
+### Files
+
+- `clients/codex/shroud-mcp.mjs`
+- `clients/claude-code/shroud-mcp.mjs`
+- `clients/shared/agent-config.mjs`
+
+### Runtime design
+
+Codex uses the same MCP implementation as Claude, but the wrapper sets:
+
+- label `codex`
+- channel `codex-cli`
+- slug `codex-mcp`
+- socket `/tmp/shroud-codex-mcp.sock`
+
+Its default session file is `${STATE_DIR}/shroud-codex-mcp-sessions.json`.
+
+### Codex installation shape
+
+```bash
+codex mcp add shroud -- node node_modules/shroud-privacy/clients/codex/shroud-mcp.mjs
+```
+
+Codex sees the same six Shroud tools as Claude. On this branch they are privacy-first and telemetry-aware, but not APP-side security-enforcing.
 
 ## Claude Code Hooks Bridge Integration
 
@@ -381,25 +444,20 @@ The bridge hard-codes two sets:
 | read tools | `Read`, `Bash`, `Grep`, `Glob`, `WebFetch`, `WebSearch` | obfuscate output before Claude sees it |
 | write tools | `Write`, `Edit`, `Bash`, `NotebookEdit` | deobfuscate input before execution |
 
-### `main` branch caveat
+### `main` branch behavior
 
-Unlike `shroud-mcp.mjs`, the bridge in this branch does not auto-spawn APP. It creates `new SocketClient()` directly and expects a running APP server on:
+The bridge now auto-spawns its own APP daemon and uses dedicated defaults:
 
-- `SHROUD_SOCKET`, or
-- `/tmp/shroud-app.sock`
+- socket: `/tmp/shroud-claude-cli.sock`
+- session file: `${STATE_DIR}/shroud-claude-cli-sessions.json`
+- events file env: `${STATE_DIR}/shroud-claude-cli-events.jsonl` (reserved for parity; core `main` does not emit APP security events)
+- APP identity: `claude-code` on channel `claude-cli`
 
-The bridge also tries to use richer RPCs:
+Input deobfuscation and output obfuscation work normally. The APP-side security methods still remain telemetry-only here:
 
-- `identify`
-- `tool_call`
-- `tool_result`
-- `security`
-
-but every one of those is wrapped in fail-open behavior. On `main`:
-
-- input deobfuscation still works
-- output obfuscation still works
-- security scans and identity registration are best-effort only
+- `tool_call` never blocks
+- `tool_result` records completion only
+- `security` returns `enabled: false`
 
 ## Environment Variables and Integration Controls
 
@@ -419,14 +477,19 @@ but every one of those is wrapped in fail-open behavior. On `main`:
 | `SHROUD_BRIDGE_PORT` | bridge | HTTP bind port, default `17380` |
 | `SHROUD_MCP_LOG` | MCP server | verbose logging toggle |
 | `SHROUD_BRIDGE_LOG` | bridge | verbose bridge logging toggle |
+| `OPENCLAW_STATE_DIR` | Claude/Codex wrappers | base directory for per-agent session files |
+| `SHROUD_AGENT_LABEL` | Claude/Codex wrappers | override APP agent label |
+| `SHROUD_AGENT_CHANNEL` | Claude/Codex wrappers | override APP channel |
+| `SHROUD_AGENT_VERSION` | Claude/Codex wrappers | override APP version |
+| `SHROUD_AGENT_SLUG` | Claude/Codex wrappers | override socket/session basename |
 
 ## Integration Differences From `feature/transformer`
 
 If you need the richer APP security protocol, use `feature/transformer`. The differences matter:
 
-- `main` APP handshake advertises only the core privacy methods.
-- `main` does not implement `identify`, `security`, `tool_call`, or `tool_result`.
+- `main` implements `identify`, `security`, `tool_call`, and `tool_result` for coding-agent parity, but they remain telemetry-only.
+- `main` has no APP-side injection scanning, threat events, or blocking behavior.
 - `main` OpenClaw registers privacy tools only.
-- `main` Claude integrations degrade gracefully around missing security RPCs instead of depending on them.
+- `main` persists APP session counters for Claude/Codex/NCG, but does not ship the dashboard/event bridge stack from `feature/transformer`.
 
 If your goal is privacy-only integration, `main` is the simpler branch to embed.
