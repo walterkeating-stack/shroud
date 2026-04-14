@@ -217,109 +217,138 @@ const TOOLS = [
 // MCP Tool Handlers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tracked tool call — wraps every MCP tool with tool_call/tool_result
+// so the APP server tracks it in the agent session (dashboard visibility).
+// ---------------------------------------------------------------------------
+
+async function trackedToolCall(app, mcpToolName, fn) {
+  // Report tool_call to the security pipeline (fire-and-forget on error)
+  await app.toolCall(mcpToolName, {}).catch(() => {});
+
+  const result = await fn();
+
+  // Report tool_result so the dashboard sees completion
+  await app.toolResult(mcpToolName, typeof result === "string" ? result.slice(0, 500) : "").catch(() => {});
+
+  return result;
+}
+
 async function handleToolCall(name, args, app) {
   switch (name) {
     case "shroud_obfuscate": {
       if (!args.text) throw new Error("'text' parameter is required");
-      const r = await app.obfuscate(args.text);
-      const lines = [`**Obfuscated** (${r.entityCount} entities detected)`];
-      if (r.entityCount > 0) {
-        const cats = Object.entries(r.categories || {})
-          .map(([k, v]) => `${k}: ${v}`)
-          .join(", ");
-        lines.push(`Categories: ${cats}`);
-      }
-      lines.push("", r.text);
-      return lines.join("\n");
+      return trackedToolCall(app, "obfuscate", async () => {
+        const r = await app.obfuscate(args.text);
+        const lines = [`**Obfuscated** (${r.entityCount} entities detected)`];
+        if (r.entityCount > 0) {
+          const cats = Object.entries(r.categories || {})
+            .map(([k, v]) => `${k}: ${v}`)
+            .join(", ");
+          lines.push(`Categories: ${cats}`);
+        }
+        lines.push("", r.text);
+        return lines.join("\n");
+      });
     }
 
     case "shroud_deobfuscate": {
       if (!args.text) throw new Error("'text' parameter is required");
-      const r = await app.deobfuscate(args.text);
-      const lines = [`**Deobfuscated** (${r.replacementCount} values restored)`];
-      lines.push("", r.text);
-      return lines.join("\n");
+      return trackedToolCall(app, "deobfuscate", async () => {
+        const r = await app.deobfuscate(args.text);
+        const lines = [`**Deobfuscated** (${r.replacementCount} values restored)`];
+        lines.push("", r.text);
+        return lines.join("\n");
+      });
     }
 
     case "shroud_status": {
-      const [stats, health] = await Promise.all([
-        app.stats().catch(() => null),
-        app.health().catch(() => null),
-      ]);
-      let securityInfo;
-      try { securityInfo = await app.security(); } catch {}
+      return trackedToolCall(app, "status", async () => {
+        const [stats, health] = await Promise.all([
+          app.stats().catch(() => null),
+          app.health().catch(() => null),
+        ]);
+        let securityInfo;
+        try { securityInfo = await app.security(); } catch {}
 
-      const lines = ["## Shroud Status"];
+        const lines = ["## Shroud Status"];
 
-      if (health) {
-        lines.push(
-          "",
-          `**Engine**: v${stats?.engine?.version || "?"} | ` +
-          `uptime ${health.uptime}s | ${health.requests} requests | ` +
-          `${health.avgLatencyMs}ms avg | ${health.memoryMB}MB`
-        );
-      }
+        if (health) {
+          lines.push(
+            "",
+            `**Engine**: v${stats?.engine?.version || "?"} | ` +
+            `uptime ${health.uptime}s | ${health.requests} requests | ` +
+            `${health.avgLatencyMs}ms avg | ${health.memoryMB}MB`
+          );
+        }
 
-      if (stats) {
-        lines.push("", `**Mappings**: ${stats.storeMappings} active`);
-        const dets = Object.entries(stats.detectionsByCategory || {});
-        if (dets.length > 0) {
-          lines.push("", "**Detections by category**:");
-          for (const [cat, count] of dets.sort((a, b) => b[1] - a[1])) {
-            lines.push(`  ${cat}: ${count}`);
+        if (stats) {
+          lines.push("", `**Mappings**: ${stats.storeMappings} active`);
+          const dets = Object.entries(stats.detectionsByCategory || {});
+          if (dets.length > 0) {
+            lines.push("", "**Detections by category**:");
+            for (const [cat, count] of dets.sort((a, b) => b[1] - a[1])) {
+              lines.push(`  ${cat}: ${count}`);
+            }
           }
         }
-      }
 
-      if (securityInfo?.enabled) {
-        lines.push(
-          "",
-          `**Security**: ${securityInfo.mode} mode | ${securityInfo.events} events`
-        );
-        const byClass = Object.entries(securityInfo.byThreatClass || {});
-        if (byClass.length > 0) {
-          lines.push("", "**Threats by class**:");
-          for (const [cls, count] of byClass.sort((a, b) => b[1] - a[1])) {
-            lines.push(`  ${cls}: ${count}`);
+        if (securityInfo?.enabled) {
+          lines.push(
+            "",
+            `**Security**: ${securityInfo.mode} mode | ${securityInfo.events} events`
+          );
+          const byClass = Object.entries(securityInfo.byThreatClass || {});
+          if (byClass.length > 0) {
+            lines.push("", "**Threats by class**:");
+            for (const [cls, count] of byClass.sort((a, b) => b[1] - a[1])) {
+              lines.push(`  ${cls}: ${count}`);
+            }
           }
         }
-      }
 
-      return lines.join("\n");
+        return lines.join("\n");
+      });
     }
 
     case "shroud_scan_tool": {
       if (!args.tool) throw new Error("'tool' parameter is required");
-      const r = await app.toolCall(args.tool, args.args || {});
-      const lines = [
-        r.blocked
-          ? `**BLOCKED**: ${r.reason || "security policy"}`
-          : `**ALLOWED**: ${args.tool} (sequence length: ${r.sequenceLength})`,
-      ];
-      if (r.events?.length > 0) {
-        lines.push("", "Events:");
-        for (const evt of r.events) {
-          lines.push(`  [${evt.severity}] ${evt.threatClass}: ${evt.action}`);
+      return trackedToolCall(app, "scan_tool", async () => {
+        const r = await app.toolCall(args.tool, args.args || {});
+        const lines = [
+          r.blocked
+            ? `**BLOCKED**: ${r.reason || "security policy"}`
+            : `**ALLOWED**: ${args.tool} (sequence length: ${r.sequenceLength})`,
+        ];
+        if (r.events?.length > 0) {
+          lines.push("", "Events:");
+          for (const evt of r.events) {
+            lines.push(`  [${evt.severity}] ${evt.threatClass}: ${evt.action}`);
+          }
         }
-      }
-      return lines.join("\n");
+        return lines.join("\n");
+      });
     }
 
     case "shroud_configure": {
       if (!args.config) throw new Error("'config' parameter is required");
-      const r = await app.configure(args.config);
-      return `Configuration updated. Applied keys: ${(r.appliedKeys || []).join(", ") || "none"}`;
+      return trackedToolCall(app, "configure", async () => {
+        const r = await app.configure(args.config);
+        return `Configuration updated. Applied keys: ${(r.appliedKeys || []).join(", ") || "none"}`;
+      });
     }
 
     case "shroud_reset": {
-      const r = await app.reset();
-      const summary = r.summary || {};
-      return (
-        `Mappings cleared.\n` +
-        `  Duration: ${summary.durationMs || 0}ms\n` +
-        `  Mappings cleared: ${summary.storeMappings || 0}\n` +
-        `  Total detections: ${JSON.stringify(summary.detectionsByCategory || {})}`
-      );
+      return trackedToolCall(app, "reset", async () => {
+        const r = await app.reset();
+        const summary = r.summary || {};
+        return (
+          `Mappings cleared.\n` +
+          `  Duration: ${summary.durationMs || 0}ms\n` +
+          `  Mappings cleared: ${summary.storeMappings || 0}\n` +
+          `  Total detections: ${JSON.stringify(summary.detectionsByCategory || {})}`
+        );
+      });
     }
 
     default:
@@ -461,7 +490,12 @@ async function handleMessage(msg, conn) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const socketPath = process.env.SHROUD_SOCKET || "/tmp/shroud-app.sock";
+  // Claude Code gets its own APP server on a dedicated socket, separate from
+  // OpenClaw/Hermes agents. This prevents identity collisions where different
+  // agents re-identify on the same APP server, causing appear/disappear on
+  // the dashboard. Multiple Claude Code sessions share this socket safely
+  // since they all identify as the same agent.
+  const socketPath = process.env.SHROUD_SOCKET || "/tmp/shroud-mcp.sock";
   const conn = new AppConnection(socketPath);
 
   log(`ready — lazy connect to ${socketPath}`);
@@ -481,14 +515,18 @@ async function main() {
     }
   });
 
-  rl.on("close", () => {
-    log("stdin closed, shutting down");
+  function cleanup() {
     conn.close();
     process.exit(0);
+  }
+
+  rl.on("close", () => {
+    log("stdin closed, shutting down");
+    cleanup();
   });
 
-  process.on("SIGINT", () => { conn.close(); process.exit(0); });
-  process.on("SIGTERM", () => { conn.close(); process.exit(0); });
+  process.on("SIGINT", cleanup);
+  process.on("SIGTERM", cleanup);
 }
 
 main();
