@@ -13,11 +13,14 @@
   <a href="#install">Install</a> &middot;
   <a href="#why-shroud">Why Shroud</a> &middot;
   <a href="#configure">Configure</a> &middot;
+  <a href="docs/integrations.md">Integrations</a> &middot;
   <a href="#agent-privacy-protocol-app">APP Protocol</a> &middot;
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
 > Apache 2.0 &middot; Zero runtime dependencies &middot; Anthropic + OpenAI + Google supported &middot; Prompt-caching friendly &middot; Works with [OpenClaw](https://openclaw.ai), [Hermes Agent](https://github.com/nousresearch/hermes-agent), or any agent via [APP](#agent-privacy-protocol-app)
+
+**Detailed integration reference:** [`docs/integrations.md`](docs/integrations.md)
 
 ---
 
