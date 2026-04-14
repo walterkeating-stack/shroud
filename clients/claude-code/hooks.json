@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.anthropic.com/schemas/claude-code-hooks.json",
+  "_comment": "Add this 'hooks' block to your .claude/settings.json or .claude/settings.local.json",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Bash|Grep|Glob|Write|Edit|NotebookEdit|WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:17380/pre-tool-use",
+            "timeout": 5000,
+            "statusMessage": "Shroud: scanning tool call"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Read|Bash|Grep|Glob|WebFetch|WebSearch",
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://127.0.0.1:17380/post-tool-use",
+            "timeout": 5000,
+            "statusMessage": "Shroud: obfuscating output"
+          }
+        ]
+      }
+    ]
+  }
+}
