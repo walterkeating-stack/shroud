@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.5] - 2026-04-14
+
+### Fixed — OpenClaw Compat Cold Builds + Core Shroud Deobfuscation
+
+- **Core Shroud ob/deob fixes ported to `main`.** Includes persisted mapping store sync across plugin instances, copy-based obfuscation in `before_prompt_build`, streaming partial/message deobfuscation, and deep deobfuscation of structured outbound reply payloads.
+- **Latest OpenClaw compat cold-builds fixed.** The compat base image now uses `node:22-bookworm-slim`, installs the system packages needed by current OpenClaw releases, and installs OpenClaw with `--omit=optional --ignore-scripts` so clean rebuilds no longer disappear into slow dependency script hooks.
+- **Release metadata cleaned up.** README, CI state, compat matrix, and plugin/package version surfaces now agree on formal minimum support (`2026.3.24`) and the validated matrix for this release.
+- **Compatibility matrix:** OpenClaw `2026.3.28` baseline (WhatsApp E2E) and `2026.4.14` latest-at-release (Slack E2E) both pass on `main`.
+
 ## [2.5.4] - 2026-04-14
 
 ### Added — Claude Code Integration + Dashboard Visibility
