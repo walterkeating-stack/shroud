@@ -1,11 +1,11 @@
 {
-  "minimum": "2026.3.22",
+  "minimum": "2026.3.24",
   "versions": [
     {
       "version": "2026.3.22",
-      "status": "supported",
+      "status": "retired",
       "shroudMinVersion": "2.0.0",
-      "notes": "Earliest stable with plugin API. No WhatsApp channel support.",
+      "notes": "Supported only by legacy Shroud 2.0.x. Current releases require OpenClaw 2026.3.24 or later.",
       "knownIssues": ["WhatsApp channel not available (added in 2026.3.23)"]
     },
     {
@@ -31,11 +31,18 @@
     },
     {
       "version": "2026.4.9",
+      "status": "supported",
+      "shroudMinVersion": "2.2.0",
+      "notes": "Prior latest-at-release validation target.",
+      "knownIssues": []
+    },
+    {
+      "version": "2026.4.14",
       "status": "current",
       "shroudMinVersion": "2.2.0",
-      "notes": "Latest release. Full 192-scenario E2E pass.",
+      "notes": "Latest release. Slack E2E pass on a clean cold-build compat image.",
       "knownIssues": []
     }
   ],
-  "lastChecked": "2026-04-09T00:00:00Z"
+  "lastChecked": "2026-04-14T00:00:00Z"
 }

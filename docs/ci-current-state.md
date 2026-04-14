@@ -1,6 +1,6 @@
 # CI Current State
 
-Last updated: 2026-04-09
+Last updated: 2026-04-14
 
 ## Shroud (`wkeything/shroud`)
 
@@ -31,11 +31,15 @@ Last updated: 2026-04-09
   - `SHROUD_SCENARIO='WhatsApp E2E' bash compat/run-compat.sh 2026.3.28`
   - `SHROUD_SCENARIO='Slack E2E' bash compat/run-compat.sh latest --rebuild-base`
 - Latest-channel compatibility handling:
-  - OpenClaw `2026.4.9` was explicitly validated on the Slack E2E path for release `2.2.18`.
+  - OpenClaw `2026.4.14` was explicitly validated on the Slack E2E path for release `2.5.5`.
   - harness auto-skips WhatsApp E2E only when channel provisioning is unavailable.
 - Base image hardening for latest OpenClaw lazy deps:
-  - installs optional deps used by bundled channels (`@slack/web-api`, `@slack/bolt`,
-    `@aws-sdk/client-bedrock`, `@buape/carbon`, `@larksuiteoapi/node-sdk`, `grammy`).
+  - uses `node:22-bookworm-slim` with `build-essential`, `ca-certificates`, `cmake`,
+    `curl`, `git`, `iptables`, `pkg-config`, and `python3`.
+  - installs OpenClaw with `--omit=optional --ignore-scripts` and then adds only the
+    bundled channel/provider packages the compat harness actually exercises
+    (`@slack/web-api`, `@slack/bolt`, `@aws-sdk/client-bedrock`, `@buape/carbon`,
+    `@larksuiteoapi/node-sdk`, `grammy`).
 
 ## Branch Rules
 
@@ -49,4 +53,4 @@ Last updated: 2026-04-09
 ## Quick Verification
 1. `npm ci && npm run lint && npm run test:unit && npm run test:integration && npm run build`
 2. `SHROUD_SCENARIO='WhatsApp E2E' bash compat/run-compat.sh 2026.3.28`
-3. `SHROUD_SCENARIO='Slack E2E' bash compat/run-compat.sh 2026.4.9 --rebuild-base`
+3. `SHROUD_SCENARIO='Slack E2E' bash compat/run-compat.sh 2026.4.14 --rebuild-base`
