@@ -19,8 +19,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { resolve, dirname } from "node:path";
-import { writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createServer as createNetServer } from "node:net";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const shroudDist = process.argv[2] || resolve(__dirname, "dist");
@@ -424,21 +425,22 @@ const METHODS = {
   setPartition: handleSetPartition,
 };
 
-function dispatch(line) {
+function dispatch(line, writeFn) {
   if (!line.trim()) return;
+  const write = writeFn || ((s) => process.stdout.write(s));
 
   let req;
   try {
     req = JSON.parse(line);
   } catch (e) {
-    process.stdout.write(jsonError(null, ERR_PARSE, `Parse error: ${e.message}`) + "\n");
+    write(jsonError(null, ERR_PARSE, `Parse error: ${e.message}`) + "\n");
     return;
   }
 
   const { id, method, params } = req;
 
   if (id === undefined || id === null || !method) {
-    process.stdout.write(
+    write(
       jsonError(id ?? null, ERR_INVALID_REQ, "Missing required field: id and method") + "\n"
     );
     return;
@@ -446,7 +448,7 @@ function dispatch(line) {
 
   const handler = METHODS[method];
   if (!handler) {
-    process.stdout.write(
+    write(
       jsonError(id, ERR_NO_METHOD, `Method not found: ${method}`) + "\n"
     );
     return;
@@ -459,10 +461,10 @@ function dispatch(line) {
     const response = handler(id, params);
     // shutdown writes its own response and exits
     if (method !== "shutdown") {
-      process.stdout.write(response + "\n");
+      write(response + "\n");
     }
   } catch (e) {
-    process.stdout.write(
+    write(
       jsonError(id, ERR_ENGINE, `Engine error: ${e.message}`) + "\n"
     );
   }
@@ -519,16 +521,83 @@ const handshake = {
 };
 
 process.stderr.write(`[app-server] Starting APP server v${engineVersion}\n`);
-process.stdout.write(JSON.stringify(handshake) + "\n");
 
 // ---------------------------------------------------------------------------
-// Main loop
+// Socket listener mode (--listen <path>)
 // ---------------------------------------------------------------------------
 
-const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on("line", dispatch);
-rl.on("close", () => {
-  clearInterval(heartbeatInterval);
-  dumpStats();
-  process.exit(0);
-});
+const listenFlag = process.argv.indexOf("--listen");
+const SOCKET_PATH = listenFlag !== -1 ? (process.argv[listenFlag + 1] || "/tmp/shroud-app.sock") : null;
+
+if (SOCKET_PATH) {
+  // Remove stale socket file
+  try { unlinkSync(SOCKET_PATH); } catch {}
+
+  let socketClients = 0;
+  const socketServer = createNetServer((conn) => {
+    socketClients++;
+    const clientId = socketClients;
+    process.stderr.write(`[app-server] Socket client #${clientId} connected\n`);
+
+    // Send handshake to this client
+    conn.write(JSON.stringify(handshake) + "\n");
+
+    let connected = true;
+    const connRl = createInterface({ input: conn, crlfDelay: Infinity });
+    const connWrite = (s) => { if (connected) try { conn.write(s); } catch {} };
+
+    connRl.on("line", (line) => dispatch(line, connWrite));
+    connRl.on("error", () => {});
+    conn.on("error", () => { connected = false; });
+    conn.on("close", () => {
+      connected = false;
+      process.stderr.write(`[app-server] Socket client #${clientId} disconnected\n`);
+    });
+  });
+
+  socketServer.listen(SOCKET_PATH, () => {
+    process.stderr.write(`[app-server] Listening on socket: ${SOCKET_PATH}\n`);
+  });
+
+  socketServer.on("error", (err) => {
+    process.stderr.write(`[app-server] Socket error: ${err.message}\n`);
+    process.exit(1);
+  });
+
+  // Also still serve stdin for backwards compat
+  process.stdout.write(JSON.stringify(handshake) + "\n");
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  rl.on("line", (line) => dispatch(line));
+  rl.on("close", () => {
+    try { unlinkSync(SOCKET_PATH); } catch {}
+    socketServer.close();
+    clearInterval(heartbeatInterval);
+    dumpStats();
+    process.exit(0);
+  });
+
+  // Cleanup socket on exit
+  for (const sig of ["SIGINT", "SIGTERM"]) {
+    process.on(sig, () => {
+      try { unlinkSync(SOCKET_PATH); } catch {}
+      socketServer.close();
+      clearInterval(heartbeatInterval);
+      dumpStats();
+      process.exit(0);
+    });
+  }
+} else {
+  // ---------------------------------------------------------------------------
+  // Default: stdin/stdout mode
+  // ---------------------------------------------------------------------------
+
+  process.stdout.write(JSON.stringify(handshake) + "\n");
+
+  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  rl.on("line", (line) => dispatch(line));
+  rl.on("close", () => {
+    clearInterval(heartbeatInterval);
+    dumpStats();
+    process.exit(0);
+  });
+}
