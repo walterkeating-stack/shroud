@@ -2,14 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.5.1] - 2026-04-14
+## [2.5.2] - 2026-04-14
 
 ### Added — Claude Code Integration
 
 - **Zero-config Claude Code install** — `npm install shroud-privacy` + add MCP config, no manual server management
-- MCP server auto-spawns the APP privacy engine on first connect, reuses if already running, cleans up on exit
+- MCP server auto-spawns the APP privacy engine on first tool call, reuses if already running
+- Auto-reconnect if APP server crashes mid-session
 - Simplified `.mcp.json` — no `SHROUD_SOCKET` env var required
 - Claude Code install documented in README
+
+### Fixed
+
+- MCP server starts instantly (lazy connect) — never blocks Claude Code initialization
+- APP server shared across sessions — no kill on disconnect
 
 ## [2.5.0] - 2026-04-12
 

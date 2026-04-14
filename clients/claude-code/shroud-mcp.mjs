@@ -343,7 +343,67 @@ function sendError(id, code, message) {
   send({ jsonrpc: "2.0", id, error: { code, message } });
 }
 
-async function handleMessage(msg, app) {
+// ---------------------------------------------------------------------------
+// Lazy connection manager — connects on first tool call, auto-reconnects
+// ---------------------------------------------------------------------------
+
+class AppConnection {
+  #socketPath;
+  #client = null;
+  #connecting = null;
+
+  constructor(socketPath) {
+    this.#socketPath = socketPath;
+  }
+
+  async get() {
+    if (this.#client?.ready) return this.#client;
+
+    // Avoid concurrent connection attempts
+    if (this.#connecting) return this.#connecting;
+
+    this.#connecting = this.#connect();
+    try {
+      return await this.#connecting;
+    } finally {
+      this.#connecting = null;
+    }
+  }
+
+  async #connect() {
+    // Close stale client
+    if (this.#client) {
+      try { this.#client.close(); } catch {}
+      this.#client = null;
+    }
+
+    const { client } = await ensureAppServer(this.#socketPath);
+    log(`connected: v${client.handshake.version}`);
+
+    try {
+      await client.identify("claude-code-mcp", "1.0.0", "mcp");
+      log("identified as claude-code-mcp");
+    } catch (err) {
+      log(`identify warning: ${err.message}`);
+    }
+
+    this.#client = client;
+    return client;
+  }
+
+  get version() {
+    return this.#client?.handshake?.version || "unknown";
+  }
+
+  close() {
+    if (this.#client) {
+      try { this.#client.close(); } catch {}
+      this.#client = null;
+    }
+  }
+}
+
+async function handleMessage(msg, conn) {
   const { id, method, params } = msg;
 
   // Notifications (no id) — acknowledge silently
@@ -360,7 +420,7 @@ async function handleMessage(msg, app) {
         },
         serverInfo: {
           name: "shroud",
-          version: app.handshake?.version || "2.4.0",
+          version: conn.version,
         },
       });
       break;
@@ -373,13 +433,14 @@ async function handleMessage(msg, app) {
       const toolName = params?.name;
       const toolArgs = params?.arguments || {};
       try {
+        const app = await conn.get();
         const text = await handleToolCall(toolName, toolArgs, app);
         sendResult(id, {
           content: [{ type: "text", text }],
         });
       } catch (err) {
         sendResult(id, {
-          content: [{ type: "text", text: `Error: ${err.message}` }],
+          content: [{ type: "text", text: `Shroud unavailable: ${err.message}` }],
           isError: true,
         });
       }
@@ -401,26 +462,9 @@ async function handleMessage(msg, app) {
 
 async function main() {
   const socketPath = process.env.SHROUD_SOCKET || "/tmp/shroud-app.sock";
-  log(`ensuring APP server at ${socketPath}`);
+  const conn = new AppConnection(socketPath);
 
-  const { client: app, child } = await ensureAppServer(socketPath);
-  log(`connected: v${app.handshake.version}`);
-
-  try {
-    await app.identify("claude-code-mcp", "1.0.0", "mcp");
-    log("identified as claude-code-mcp");
-  } catch (err) {
-    log(`identify warning: ${err.message}`);
-  }
-
-  function cleanup() {
-    app.close();
-    if (child) {
-      log("stopping APP server");
-      child.kill("SIGTERM");
-    }
-    process.exit(0);
-  }
+  log(`ready — lazy connect to ${socketPath}`);
 
   // Read MCP messages from stdin
   const rl = createInterface({ input: process.stdin, terminal: false });
@@ -430,7 +474,7 @@ async function main() {
     if (!line) return;
     try {
       const msg = JSON.parse(line);
-      await handleMessage(msg, app);
+      await handleMessage(msg, conn);
     } catch (err) {
       log(`parse error: ${err.message}`);
       sendError(null, -32700, "Parse error");
@@ -439,16 +483,12 @@ async function main() {
 
   rl.on("close", () => {
     log("stdin closed, shutting down");
-    cleanup();
+    conn.close();
+    process.exit(0);
   });
 
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
-
-  log("ready — waiting for MCP messages on stdin");
+  process.on("SIGINT", () => { conn.close(); process.exit(0); });
+  process.on("SIGTERM", () => { conn.close(); process.exit(0); });
 }
 
-main().catch((err) => {
-  log(`FATAL: ${err.message}`);
-  process.exit(1);
-});
+main();
