@@ -12,7 +12,7 @@ import {
   ObfuscationResult,
   ShroudConfig,
 } from "./types.js";
-import { MemoryStore, MappingStore } from "./store.js";
+import { MemoryStore, MappingStore, SerializedStore } from "./store.js";
 import { MappingEngine } from "./mapping.js";
 import { SubnetMapper, CGNAT_BASE, CGNAT_MASK_10, ipToInt, intToIp } from "./generators/network.js";
 import { CanaryInjector } from "./canary.js";
@@ -989,6 +989,18 @@ export class Obfuscator {
     };
 
     return stats;
+  }
+
+  /** Export the mapping store for persistence across restarts. */
+  exportStore(): SerializedStore {
+    return (this._store as MemoryStore).export(this._mapping.salt);
+  }
+
+  /** Import mappings from a persisted store. Returns count of new mappings added. */
+  importStore(data: SerializedStore): number {
+    const before = this._store.size();
+    (this._store as MemoryStore).import(data);
+    return this._store.size() - before;
   }
 }
 
