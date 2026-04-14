@@ -119,6 +119,27 @@ Verify after a conversation:
 cat ~/.hermes/shroud-stats.json | python3 -m json.tool
 ```
 
+### Claude Code
+
+```bash
+npm install shroud-privacy
+```
+
+Add to your project's `.mcp.json` or `~/.claude/.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "shroud": {
+      "command": "node",
+      "args": ["node_modules/shroud-privacy/clients/claude-code/shroud-mcp.mjs"]
+    }
+  }
+}
+```
+
+That's it — the MCP server auto-starts the privacy engine. Claude gains six tools: `shroud_obfuscate`, `shroud_deobfuscate`, `shroud_status`, `shroud_scan_tool`, `shroud_configure`, and `shroud_reset`.
+
 ### Any agent (via APP)
 
 The **Agent Privacy Protocol** (APP) lets any AI agent add privacy and infrastructure protection — no OpenClaw required. Shroud ships with an APP server and a Python client.

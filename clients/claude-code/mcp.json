@@ -1,0 +1,9 @@
+{
+  "_comment": "Copy this into your project's .mcp.json or ~/.claude/.mcp.json",
+  "mcpServers": {
+    "shroud": {
+      "command": "node",
+      "args": ["node_modules/shroud-privacy/clients/claude-code/shroud-mcp.mjs"]
+    }
+  }
+}
