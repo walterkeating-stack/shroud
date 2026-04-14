@@ -2,31 +2,44 @@
 /**
  * Shroud Bridge — HTTP bridge between Claude Code hooks and Shroud APP server.
  *
- * Connects to a running APP server via Unix socket and exposes HTTP endpoints
+ * Connects to a Shroud APP server via Unix socket and exposes HTTP endpoints
  * that Claude Code hooks call on every tool use. Obfuscates tool outputs
  * (so Claude never sees real PII/infra) and deobfuscates tool inputs
  * (so real values reach disk/shell).
  *
- * Requires: APP server running with --listen flag
- *   node app-server.mjs dist --listen /tmp/shroud-app.sock
+ * Auto-spawns a dedicated APP server if one is not already listening.
  *
  * Usage:
  *   node shroud-bridge.mjs
  *
  * Environment:
  *   SHROUD_BRIDGE_PORT  HTTP port (default: 17380)
- *   SHROUD_SOCKET       Unix socket path (default: /tmp/shroud-app.sock)
+ *   SHROUD_SOCKET       Unix socket path (default: /tmp/shroud-claude-cli.sock)
  *   SHROUD_BRIDGE_LOG   Set to "verbose" for debug logging
  */
 
 import { createServer } from "node:http";
+import { spawn } from "node:child_process";
+import { existsSync, statSync, unlinkSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { SocketClient } from "./socket-client.mjs";
+import { resolveExternalAgentConfig } from "../shared/agent-config.mjs";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
 const PORT = parseInt(process.env.SHROUD_BRIDGE_PORT || "17380", 10);
+const AGENT = resolveExternalAgentConfig({
+  agentLabel: "claude-code",
+  agentVersion: "1.0.0",
+  agentChannel: "claude-cli",
+  agentSlug: "claude-cli",
+  socketPath: "/tmp/shroud-claude-cli.sock",
+});
 
 // Tools whose OUTPUT should be obfuscated before Claude sees it
 const READ_TOOLS = new Set([
@@ -172,6 +185,76 @@ function log(msg) {
   process.stderr.write(`[shroud-bridge ${ts}] ${msg}\n`);
 }
 
+function isSocketAlive(socketPath) {
+  try {
+    return statSync(socketPath).isSocket();
+  } catch {
+    return false;
+  }
+}
+
+function spawnAppServer(socketPath) {
+  const appServer = resolve(__dirname, "../../app-server.mjs");
+  const distPath = resolve(__dirname, "../../dist");
+
+  if (!existsSync(appServer)) {
+    throw new Error(`APP server not found at ${appServer}`);
+  }
+
+  log(`spawning APP server: ${appServer} ${distPath} --listen ${socketPath}`);
+
+  const child = spawn(process.execPath, [appServer, distPath, "--listen", socketPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: true,
+    env: {
+      ...process.env,
+      SHROUD_APP_SESSIONS_FILE: AGENT.sessionFile,
+      SHROUD_APP_EVENTS_FILE: AGENT.eventsFile,
+    },
+  });
+
+  child.stderr.on("data", (chunk) => {
+    for (const line of chunk.toString().split("\n").filter(Boolean)) {
+      log(`[app] ${line}`);
+    }
+  });
+  child.on("error", (err) => log(`APP server error: ${err.message}`));
+  child.on("exit", (code) => log(`APP server exited with code ${code}`));
+  child.unref();
+  return child;
+}
+
+async function ensureAppServer(socketPath, maxWaitMs = 8000) {
+  try {
+    const probe = new SocketClient(socketPath);
+    await probe.connect();
+    return probe;
+  } catch {
+    // Spawn dedicated Claude APP server below.
+  }
+
+  if (isSocketAlive(socketPath)) {
+    try { unlinkSync(socketPath); } catch {}
+  }
+
+  spawnAppServer(socketPath);
+
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    await new Promise((r) => setTimeout(r, 200));
+    try {
+      const client = new SocketClient(socketPath);
+      await client.connect();
+      log("APP server ready");
+      return client;
+    } catch {
+      // Not ready yet
+    }
+  }
+
+  throw new Error(`APP server failed to start within ${maxWaitMs}ms`);
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -279,15 +362,16 @@ function createBridgeServer(app) {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const app = new SocketClient();
-  log(`connecting to APP server at ${app.socketPath}`);
+  const socketPath = AGENT.socketPath;
+  log(`connecting to APP server at ${socketPath}`);
+  const app = await ensureAppServer(socketPath);
 
-  const handshake = await app.connect();
+  const handshake = app.handshake;
   log(`connected: engine=${handshake.engine} v${handshake.version}`);
 
   // Identify as Claude Code
   try {
-    const id = await app.identify("claude-code", "1.0.0", "claude-cli");
+    const id = await app.identify(AGENT.agentLabel, AGENT.agentVersion, AGENT.agentChannel);
     log(`identified: agent=${id.agent} buildId=${id.buildId} security=${id.security}`);
   } catch (err) {
     log(`identify warning: ${err.message}`);

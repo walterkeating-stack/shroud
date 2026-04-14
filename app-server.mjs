@@ -13,6 +13,8 @@
  *   SHROUD_PLUGIN_CONFIG   JSON config for the engine
  *   SHROUD_STORE_FILE      Persistent store file path
  *   SHROUD_STATS_FILE      Stats dump file path
+ *   SHROUD_APP_EVENTS_FILE JSONL file for APP-side event export
+ *   SHROUD_APP_SESSIONS_FILE JSON file for APP-side agent session state
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -62,6 +64,8 @@ let obfuscator = new Obfuscator(config);
 
 const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
 const STORE_FILE = process.env.SHROUD_STORE_FILE || "";
+const APP_EVENTS_FILE = process.env.SHROUD_APP_EVENTS_FILE || "/tmp/shroud-app-events.jsonl";
+const APP_SESSIONS_FILE = process.env.SHROUD_APP_SESSIONS_FILE || "/tmp/shroud-app-sessions.json";
 
 // ---------------------------------------------------------------------------
 // Audit chain
@@ -117,6 +121,20 @@ function resolvePartition(params) {
 const startTime = Date.now();
 let requestCount = 0;
 let totalProcessingMs = 0;
+const toolSequence = [];
+const privacy = {
+  obfuscationCalls: 0,
+  deobfuscationCalls: 0,
+  entitiesObfuscated: 0,
+  replacementsDeobfuscated: 0,
+  categoryCounts: {},
+};
+
+let agentIdentified = false;
+let agentLabel = null;
+let agentBuildId = null;
+let agentVersion = null;
+let agentChannel = null;
 
 // ---------------------------------------------------------------------------
 // Stats dump helper
@@ -128,6 +146,36 @@ function dumpStats() {
     stats.updatedAt = new Date().toISOString();
     stats.pid = process.pid;
     writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + "\n");
+  } catch { /* best-effort */ }
+}
+
+function dumpSessionFile() {
+  if (!agentIdentified) return;
+  try {
+    const session = {
+      agentLabel,
+      agentBuildId,
+      agentVersion,
+      channel: agentChannel,
+      source: "app-server",
+      pid: process.pid,
+      requestCount,
+      uptimeMs: Date.now() - startTime,
+      securityEvents: 0,
+      storeSize: getObfuscator().getStats().storeMappings ?? 0,
+      classification: {
+        role: "APP Agent",
+        confidencePct: 100,
+        confidence: "high",
+        colour: "#06b6d4",
+        signals: ["app-server"],
+      },
+      toolSequence: toolSequence.slice(-20),
+      privacy,
+      eventsFile: APP_EVENTS_FILE,
+      updatedAt: new Date().toISOString(),
+    };
+    writeFileSync(APP_SESSIONS_FILE, JSON.stringify(session, null, 2) + "\n");
   } catch { /* best-effort */ }
 }
 
@@ -153,6 +201,37 @@ function jsonResult(id, result) {
 // ---------------------------------------------------------------------------
 // APP method handlers
 // ---------------------------------------------------------------------------
+
+function handleIdentify(id, params) {
+  if (!params || typeof params.agent !== "string" || !params.agent.trim()) {
+    return jsonError(id, ERR_BAD_PARAMS, 'Missing required param: agent (string)');
+  }
+  if (typeof params.version !== "string" || !params.version.trim()) {
+    return jsonError(id, ERR_BAD_PARAMS, 'Missing required param: version (string)');
+  }
+
+  agentLabel = params.agent.trim();
+  agentVersion = params.version.trim();
+  agentChannel = typeof params.channel === "string" && params.channel.trim() ? params.channel.trim() : "app";
+  agentBuildId = createHash("sha256")
+    .update(agentLabel + ":" + agentVersion)
+    .digest("hex")
+    .slice(0, 16);
+  agentIdentified = true;
+
+  process.stderr.write(
+    `[app-server] Agent identified: ${agentLabel} v${agentVersion} (${agentChannel}) buildId=${agentBuildId}\n`
+  );
+
+  dumpSessionFile();
+
+  return jsonResult(id, {
+    ok: true,
+    agent: agentLabel,
+    buildId: agentBuildId,
+    security: false,
+  });
+}
 
 function handleObfuscate(id, params) {
   if (!params || typeof params.text !== "string") {
@@ -194,6 +273,12 @@ function handleObfuscate(id, params) {
   audit.fakesSample = Object.values(out.mappingsUsed || {}).slice(0, maxFakes);
   result.audit = audit;
 
+  privacy.obfuscationCalls++;
+  privacy.entitiesObfuscated += out.entities.length;
+  for (const [cat, count] of Object.entries(categories)) {
+    privacy.categoryCounts[cat] = (privacy.categoryCounts[cat] || 0) + count;
+  }
+
   dumpStats();
   return jsonResult(id, result);
 }
@@ -231,6 +316,11 @@ function handleDeobfuscate(id, params) {
     }),
   };
   result.audit = audit;
+
+  if ((deobResult.replacementCount || 0) > 0) {
+    privacy.deobfuscationCalls++;
+    privacy.replacementsDeobfuscated += deobResult.replacementCount || 0;
+  }
 
   dumpStats();
   return jsonResult(id, result);
@@ -382,8 +472,53 @@ function handleConfigure(id, params) {
   return jsonResult(id, { ok: true, appliedKeys });
 }
 
+function handleSecurity(id) {
+  return jsonResult(id, {
+    enabled: false,
+    mode: "off",
+    events: 0,
+    byThreatClass: {},
+    agent: agentIdentified ? {
+      label: agentLabel,
+      buildId: agentBuildId,
+      version: agentVersion,
+      channel: agentChannel,
+      requestCount,
+    } : null,
+    recentEvents: [],
+  });
+}
+
+function handleToolCall(id, params) {
+  if (!params || typeof params.tool !== "string" || !params.tool.trim()) {
+    return jsonError(id, ERR_BAD_PARAMS, "Missing required param: tool (string)");
+  }
+
+  toolSequence.push(params.tool.trim());
+
+  return jsonResult(id, {
+    blocked: false,
+    reason: null,
+    sequenceLength: toolSequence.length,
+    events: [],
+    securityEnabled: false,
+  });
+}
+
+function handleToolResult(id, params) {
+  if (!params || typeof params.tool !== "string" || !params.tool.trim()) {
+    return jsonError(id, ERR_BAD_PARAMS, "Missing required param: tool (string)");
+  }
+
+  return jsonResult(id, {
+    ok: true,
+    recorded: true,
+  });
+}
+
 function handleShutdown(id) {
   dumpStats();
+  dumpSessionFile();
   const response = jsonResult(id, { ok: true, flushed: true });
   process.stdout.write(response + "\n");
   process.exit(0);
@@ -414,12 +549,16 @@ function handleSetPartition(id, params) {
 // ---------------------------------------------------------------------------
 
 const METHODS = {
+  identify: handleIdentify,
   obfuscate: handleObfuscate,
   deobfuscate: handleDeobfuscate,
   batch: handleBatch,
   reset: handleReset,
   stats: handleStats,
   health: handleHealth,
+  security: handleSecurity,
+  tool_call: handleToolCall,
+  tool_result: handleToolResult,
   configure: handleConfigure,
   shutdown: handleShutdown,
   setPartition: handleSetPartition,
@@ -462,6 +601,7 @@ function dispatch(line, writeFn) {
     // shutdown writes its own response and exits
     if (method !== "shutdown") {
       write(response + "\n");
+      dumpSessionFile();
     }
   } catch (e) {
     write(
@@ -509,15 +649,20 @@ const handshake = {
   engine: "shroud",
   version: engineVersion,
   capabilities: [
+    "identify",
     "obfuscate",
     "deobfuscate",
     "batch",
     "stats",
     "health",
     "configure",
+    "security",
+    "tool_call",
+    "tool_result",
     "audit",
     "partitions",
   ],
+  security: null,
 };
 
 process.stderr.write(`[app-server] Starting APP server v${engineVersion}\n`);
@@ -573,6 +718,7 @@ if (SOCKET_PATH) {
     socketServer.close();
     clearInterval(heartbeatInterval);
     dumpStats();
+    dumpSessionFile();
     process.exit(0);
   });
 
@@ -583,6 +729,7 @@ if (SOCKET_PATH) {
       socketServer.close();
       clearInterval(heartbeatInterval);
       dumpStats();
+      dumpSessionFile();
       process.exit(0);
     });
   }
@@ -598,6 +745,7 @@ if (SOCKET_PATH) {
   rl.on("close", () => {
     clearInterval(heartbeatInterval);
     dumpStats();
+    dumpSessionFile();
     process.exit(0);
   });
 }

@@ -2,17 +2,16 @@
 /**
  * Shroud MCP Server — Model Context Protocol server for Claude Code.
  *
- * Connects to a running APP server via Unix socket and exposes Shroud's
+ * Connects to a Shroud APP server via Unix socket and exposes Shroud's
  * privacy engine as MCP tools that Claude can call on demand.
  *
- * Requires: APP server running with --listen flag
- *   node app-server.mjs dist --listen /tmp/shroud-app.sock
+ * Auto-spawns a dedicated APP server if one is not already listening.
  *
  * Transport: stdio (JSON-RPC 2.0, newline-delimited)
  * Protocol: MCP 2024-11-05
  *
  * Environment:
- *   SHROUD_SOCKET   Unix socket path (default: /tmp/shroud-app.sock)
+ *   SHROUD_SOCKET   Unix socket path (default: /tmp/shroud-claude-mcp.sock)
  *   SHROUD_MCP_LOG  Set to "verbose" for debug logging
  */
 
@@ -22,8 +21,16 @@ import { existsSync, statSync, unlinkSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { SocketClient } from "./socket-client.mjs";
+import { resolveExternalAgentConfig } from "../shared/agent-config.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const AGENT = resolveExternalAgentConfig({
+  agentLabel: "claude-code-mcp",
+  agentVersion: "1.0.0",
+  agentChannel: "mcp",
+  agentSlug: "claude-mcp",
+  socketPath: "/tmp/shroud-claude-mcp.sock",
+});
 
 function log(msg) {
   process.stderr.write(`[shroud-mcp] ${msg}\n`);
@@ -59,7 +66,8 @@ function spawnAppServer(socketPath) {
       // Write to a Claude-Code-specific session file so we don't overwrite
       // the main APP server's session file (which causes appear/disappear
       // on the dashboard as the two processes race on the same file).
-      SHROUD_APP_SESSIONS_FILE: "/tmp/shroud-mcp-sessions.json",
+      SHROUD_APP_SESSIONS_FILE: AGENT.sessionFile,
+      SHROUD_APP_EVENTS_FILE: AGENT.eventsFile,
     },
   });
 
@@ -384,11 +392,13 @@ function sendError(id, code, message) {
 
 class AppConnection {
   #socketPath;
+  #agent;
   #client = null;
   #connecting = null;
 
-  constructor(socketPath) {
+  constructor(socketPath, agent) {
     this.#socketPath = socketPath;
+    this.#agent = agent;
   }
 
   async get() {
@@ -416,8 +426,8 @@ class AppConnection {
     log(`connected: v${client.handshake.version}`);
 
     try {
-      await client.identify("claude-code-mcp", "1.0.0", "mcp");
-      log("identified as claude-code-mcp");
+      await client.identify(this.#agent.agentLabel, this.#agent.agentVersion, this.#agent.agentChannel);
+      log(`identified as ${this.#agent.agentLabel}`);
     } catch (err) {
       log(`identify warning: ${err.message}`);
     }
@@ -501,8 +511,8 @@ async function main() {
   // agents re-identify on the same APP server, causing appear/disappear on
   // the dashboard. Multiple Claude Code sessions share this socket safely
   // since they all identify as the same agent.
-  const socketPath = process.env.SHROUD_SOCKET || "/tmp/shroud-mcp.sock";
-  const conn = new AppConnection(socketPath);
+  const socketPath = AGENT.socketPath;
+  const conn = new AppConnection(socketPath, AGENT);
 
   log(`ready — lazy connect to ${socketPath}`);
 
