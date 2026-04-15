@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.6] - 2026-04-15
+
+### Added — Codex Telemetry Bridge + Coding-Agent APP Parity
+
+- **Package-level Codex telemetry bridge.** The shipped Codex MCP wrapper now auto-starts a singleton Codex history bridge, so users on `main` get live Codex call/session counters without separate host-specific service setup.
+- **Codex bridge hardening.** Bridge startup now forces `codex-cli` identity and its own session artifacts, avoiding collisions with the Codex MCP session file and preserving privacy counters cleanly.
+- **Coding-agent APP parity on `main`.** `identify`, `security`, `tool_call`, and `tool_result` are present for client parity, keeping Claude Code, Codex, and other APP clients consistent with the documented integration surface.
+- **Integration docs refreshed.** README and integration references now document Claude Code, Codex, NCG, APP artifacts, and the branch-level behavior more explicitly.
+- **Compatibility validated.** OpenClaw `2026.4.14` latest sandbox validation passed with the packaged Claude and Codex APP integrations for this release.
+
 ## [2.5.5] - 2026-04-14
 
 ### Fixed — OpenClaw Compat Cold Builds + Core Shroud Deobfuscation

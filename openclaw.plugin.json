@@ -1,7 +1,7 @@
 {
   "id": "shroud-privacy",
   "name": "Shroud",
-  "version": "2.5.5",
+  "version": "2.5.6",
   "description": "Privacy obfuscation with deterministic fake values and deobfuscation — PII never reaches the LLM, tool calls still work",
   "configSchema": {
     "type": "object",
