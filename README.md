@@ -154,6 +154,8 @@ codex mcp add shroud -- node node_modules/shroud-privacy/clients/codex/shroud-mc
 
 Codex uses the same six MCP tools as Claude, but on a separate APP daemon and socket: `/tmp/shroud-codex-mcp.sock`. Its APP session file defaults to `shroud-codex-mcp-sessions.json` under `OPENCLAW_STATE_DIR` or `~/.openclaw`.
 
+The Codex MCP wrapper also auto-starts `clients/codex/shroud-bridge.mjs` on the host. That bridge watches Codex's local `~/.codex/history.jsonl` and writes `shroud-codex-cli-sessions.json` into the shared OpenClaw state dir, so Codex call/session counters stay current even when Codex is not actively invoking Shroud MCP tools. Set `SHROUD_CODEX_BRIDGE=0` only if you explicitly want to disable that behavior.
+
 ### Any agent (via APP)
 
 The **Agent Privacy Protocol** (APP) lets any AI agent add privacy and infrastructure protection — no OpenClaw required. Shroud ships with an APP server and a Python client.
