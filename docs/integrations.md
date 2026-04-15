@@ -352,6 +352,7 @@ That means Claude MCP gets consistent counters and identity on both branches, bu
 ### Files
 
 - `clients/codex/shroud-mcp.mjs`
+- `clients/codex/shroud-bridge.mjs`
 - `clients/claude-code/shroud-mcp.mjs`
 - `clients/shared/agent-config.mjs`
 
@@ -373,6 +374,20 @@ codex mcp add shroud -- node node_modules/shroud-privacy/clients/codex/shroud-mc
 ```
 
 Codex sees the same six Shroud tools as Claude. On this branch they are privacy-first and telemetry-aware, but not APP-side security-enforcing.
+
+### Codex dashboard bridge
+
+`clients/codex/shroud-mcp.mjs` now auto-starts `clients/codex/shroud-bridge.mjs` in the background unless `SHROUD_CODEX_BRIDGE=0`.
+
+The bridge:
+
+1. reads `${CODEX_HOME:-~/.codex}/history.jsonl`
+2. counts non-control prompts (`quit`, `exit`, `logout`, `$` are ignored)
+3. counts unique Codex session ids
+4. merges those counts with the MCP privacy/session snapshot if `shroud-codex-mcp-sessions.json` already exists
+5. writes `${STATE_DIR}/shroud-codex-cli-sessions.json`
+
+This keeps Codex session/call counters moving even when Codex is not actively invoking Shroud MCP tools. The bridge self-singletons via `${STATE_DIR}/shroud-codex-bridge.pid`.
 
 ## Claude Code Hooks Bridge Integration
 
