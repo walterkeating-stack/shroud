@@ -96,6 +96,24 @@ describe("hooks - before_prompt_build", () => {
     const result = await handlers["before_prompt_build"]({ prompt: "" });
     expect(result).toBeUndefined();
   });
+
+  test("obfuscates text-bearing message blocks even when block type is input_text", async () => {
+    const obf = new Obfuscator(testConfig);
+    const { api, handlers } = createMockApi();
+    registerHooks(api, obf);
+
+    const event = {
+      messages: [{
+        role: "user",
+        content: [{ type: "input_text", text: "IP 192.168.1.101" }],
+      }],
+    } as any;
+
+    await handlers["before_prompt_build"](event);
+
+    expect(event.messages[0].content[0].text).not.toContain("192.168.1.101");
+    expect(event.messages[0].content[0].text).toMatch(/\b100\./);
+  });
 });
 
 describe("hooks - before_message_write", () => {

@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.5.7] - 2026-04-17
+
+### Fixed — OpenAI Responses / Codex Text-Bearing Content Blocks
+
+- **Private IPs and other PII no longer bypass `/responses` obfuscation.** Shroud now treats OpenAI Responses / Codex `input_text` blocks as text-bearing content anywhere the fetch intercept or `before_prompt_build` traverses message content, so literals like RFC1918 IPv4 addresses are obfuscated before they reach the model.
+- **Structured response deobfuscation matches request handling.** OpenAI Responses `output_text` blocks are now deobfuscated anywhere Shroud walks text-bearing response blocks, keeping APP/channel delivery consistent with plain `text` content.
+- **Regression coverage added.** New tests pin the `input_text` outbound obfuscation path in both the hook layer and the `/responses` fetch path.
+- **README updated for operators on `main`.** The main-branch docs now call out Responses/Codex text-bearing block support and document the local Docker-backed `./deploy-local.sh` workflow for `openclaw-primary-gateway`.
+
 ## [2.5.6] - 2026-04-15
 
 ### Added — Codex Telemetry Bridge + Coding-Agent APP Parity
