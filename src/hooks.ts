@@ -488,7 +488,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           if (typeof msg.content === "string") texts.push(msg.content);
           else if (Array.isArray(msg.content)) {
             for (const b of msg.content) {
-              if (b?.type === "text" && typeof b.text === "string") texts.push(b.text);
+              if (typeof b?.text === "string") texts.push(b.text);
             }
           }
           for (const text of texts) {
@@ -550,7 +550,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             if (!b || typeof b !== "object") return b;
             let newBlock = b;
 
-            if (b.type === "text" && typeof b.text === "string") {
+            if (typeof b.text === "string") {
               const cleaned = stripSlackLinksForHook(b.text);
               const result = ob().obfuscate(cleaned, undefined, _exemptCats);
               totalEntities += result.entities.length;
@@ -1257,7 +1257,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           else if (Array.isArray(msg.content)) {
             const isAssistant = msg.role === "assistant" || msg.role === "model";
             for (const block of msg.content) {
-              if (block?.type === "text" && typeof block.text === "string") {
+              if (typeof block?.text === "string") {
                 const r = obfuscateText(block.text);
                 if (r.modified) { block.text = r.text; modified = true; }
                 else if (isAssistant) {
@@ -1538,7 +1538,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
               // Deobfuscate content blocks in message events (message_start etc)
               if (Array.isArray(json.message?.content)) {
                 for (const block of json.message.content) {
-                  if (block?.type === "text" && typeof block.text === "string") {
+                  if (typeof block?.text === "string") {
                     block.text = ob().deobfuscate(block.text);
                   }
                 }
@@ -1670,7 +1670,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           const json = JSON.parse(text);
           if (Array.isArray(json.content)) {
             for (const block of json.content) {
-              if (block?.type === "text" && typeof block.text === "string") {
+              if (typeof block?.text === "string") {
                 block.text = ob().deobfuscate(block.text);
               }
             }

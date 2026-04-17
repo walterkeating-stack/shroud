@@ -862,4 +862,53 @@ describe("Fetch response deobfuscation — OpenAI format", () => {
       await new Promise((r) => captureServer.close(r));
     }
   });
+
+  test("OpenAI Responses outbound: input_text blocks are obfuscated", async () => {
+    const { obf, handlers } = freshInstall(savedFetch);
+
+    const fakeIp = obf.obfuscate("192.168.1.101").mappingsUsed["192.168.1.101"];
+    expect(fakeIp).toBeDefined();
+
+    let capturedBody = "";
+    const captureServer = createServer(async (req, res) => {
+      capturedBody = await collectBody(req);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        id: "resp_123",
+        output: [{
+          id: "msg_123",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "ok" }],
+        }],
+      }));
+    });
+    const capturePort = await new Promise<number>((r) => {
+      captureServer.listen(0, "127.0.0.1", () => r((captureServer.address() as any).port));
+    });
+
+    try {
+      await handlers["before_prompt_build"]({ prompt: "test", messages: [] });
+      await fetch(`http://127.0.0.1:${capturePort}/responses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5",
+          input: [{
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "sorry my ip address is actuall 192.168.1.101" }],
+          }],
+        }),
+      });
+
+      const parsed = JSON.parse(capturedBody);
+      const inputText = parsed.input[0].content[0].text;
+
+      expect(inputText).not.toContain("192.168.1.101");
+      expect(inputText).toContain(fakeIp);
+    } finally {
+      await new Promise((r) => captureServer.close(r));
+    }
+  });
 });

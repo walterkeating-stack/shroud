@@ -79,7 +79,7 @@ Shroud does not guarantee compliance — regex-based detection has limitations (
 | `globalThis.__shroudStreamDeobfuscate` | LLM → Agent | Streaming event deobfuscation hook |
 | `globalThis.__shroudDeobfuscate` | Agent → Channel | Global deobfuscation hook — called by OpenClaw before ANY channel send |
 
-> **How it works:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates detected entities in every message — including assistant history and Slack `<mailto:>` markup — before it leaves the process. On the response side, SSE streaming is deobfuscated per content block with buffered flushing. Every delivery path (Slack, WhatsApp, TUI, Telegram, Discord, Signal, web) gets real text automatically. Zero host patches required.
+> **How it works:** Shroud intercepts ALL outbound LLM API calls (Anthropic, OpenAI, Google, any provider) at the `fetch` level and obfuscates detected entities in every message — including assistant history, Slack `<mailto:>` markup, and OpenAI Responses / Codex `input_text` blocks — before it leaves the process. On the response side, SSE streaming is deobfuscated per content block with buffered flushing, and OpenAI Responses `output_text` blocks are treated the same as plain `text` blocks. Every delivery path (Slack, WhatsApp, TUI, Telegram, Discord, Signal, web) gets real text automatically. Zero host patches required.
 
 > **Requires OpenClaw 2026.3.24 or later.**
 
@@ -218,6 +218,15 @@ cd shroud
 npm install && npm run build
 openclaw plugins install --path .
 openclaw gateway restart
+```
+
+For a local Docker-backed OpenClaw install, use the repo deploy script instead. It builds the checkout, runs the key regression tests, syncs the packaged plugin into `~/.openclaw/extensions/shroud-privacy`, clears the Node compile cache, and recreates `openclaw-primary-gateway` when `~/.openclaw/compose/docker-compose.primary.yml` is present:
+
+```bash
+git clone https://github.com/wkeything/shroud.git
+cd shroud
+npm install
+./deploy-local.sh
 ```
 
 ## Updating
