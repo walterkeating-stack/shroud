@@ -106,3 +106,46 @@ describe("LRU eviction (QW10)", () => {
     expect(store.size()).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Collision handling: two real values mapped to the same fake
+// ---------------------------------------------------------------------------
+
+describe("collision eviction", () => {
+  test("collision evicts the old real value to keep store consistent", () => {
+    const store = new MemoryStore();
+    store.put("Morgan", "PREVIEW", Category.PERSON_NAME);
+    store.put("Freeman", "PREVIEW", Category.PERSON_NAME);
+    // "Morgan" should have been evicted — its fake was reassigned
+    expect(store.getFake("Morgan")).toBeUndefined();
+    expect(store.getCategory("Morgan")).toBeUndefined();
+    // "Freeman" owns the fake now
+    expect(store.getFake("Freeman")).toBe("PREVIEW");
+    expect(store.getReal("PREVIEW")).toBe("Freeman");
+    expect(store.size()).toBe(1);
+  });
+
+  test("update-in-place cleans up old fake reverse entry", () => {
+    const store = new MemoryStore();
+    store.put("alice@test.com", "fake1@test.com", Category.EMAIL);
+    expect(store.getReal("fake1@test.com")).toBe("alice@test.com");
+    // Remap alice to a different fake
+    store.put("alice@test.com", "fake2@test.com", Category.EMAIL);
+    expect(store.getFake("alice@test.com")).toBe("fake2@test.com");
+    expect(store.getReal("fake2@test.com")).toBe("alice@test.com");
+    // Old fake should no longer reverse-map
+    expect(store.getReal("fake1@test.com")).toBeUndefined();
+    expect(store.size()).toBe(1);
+  });
+
+  test("allMappings excludes evicted collision entries", () => {
+    const store = new MemoryStore();
+    store.put("real1", "samefake", Category.EMAIL);
+    store.put("real2", "samefake", Category.PHONE);
+    const mappings = store.allMappings();
+    // Only real2 should remain — real1 was evicted by collision
+    expect(mappings.size).toBe(1);
+    expect(mappings.get("real2")).toBe("samefake");
+    expect(mappings.has("real1")).toBe(false);
+  });
+});
