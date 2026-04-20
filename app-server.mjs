@@ -40,6 +40,9 @@ const { Obfuscator } = await import(
 const { resolveConfig } = await import(
   pathToFileURL(resolve(shroudDist, "config.js")).href
 );
+const { DnsCache } = await import(
+  pathToFileURL(resolve(shroudDist, "dns-cache.js")).href
+);
 const { resolveRuntimePaths, resolveAppSessionOutputPath, resolveAppStatsOutputPath } = await import(
   pathToFileURL(resolve(shroudDist, "runtime.js")).href
 );
@@ -70,6 +73,24 @@ const runtime = resolveRuntimePaths(config, process.env);
 const STATS_FILE = process.env.SHROUD_STATS_FILE || resolveAppStatsOutputPath(runtime, { pid: process.pid });
 const APP_EVENTS_FILE = process.env.SHROUD_APP_EVENTS_FILE || runtime.appEventsFile;
 let appSessionFile = process.env.SHROUD_APP_SESSIONS_FILE || null;
+const PUBLIC_DOMAINS = [
+  "youtube.com", "youtu.be", "m.youtube.com",
+  "google.com", "google.co.uk", "google.de", "google.fr",
+  "github.com", "gitlab.com", "bitbucket.org",
+  "stackoverflow.com", "stackexchange.com",
+  "wikipedia.org", "wikimedia.org",
+  "twitter.com", "x.com",
+  "reddit.com",
+  "linkedin.com",
+  "medium.com",
+  "npmjs.com", "www.npmjs.com", "pypi.org", "crates.io",
+  "docker.com", "hub.docker.com",
+  "microsoft.com", "apple.com",
+  "mozilla.org",
+  "w3.org",
+  "archive.org",
+];
+const URL_RE = /https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?]/g;
 
 function ensureParentDir(filePath) {
   try {
@@ -92,6 +113,41 @@ function getSessionFilePath() {
 
 ensureParentDir(STATS_FILE);
 ensureParentDir(APP_EVENTS_FILE);
+
+function getDnsCache() {
+  const g = globalThis;
+  if (!g.__shroudDnsCache) {
+    const cache = new DnsCache();
+    for (const domain of PUBLIC_DOMAINS) {
+      cache.seed(domain, "0.0.0.1", true);
+      if (!domain.startsWith("www.")) {
+        cache.seed("www." + domain, "0.0.0.1", true);
+      }
+    }
+    g.__shroudDnsCache = cache;
+  }
+  return g.__shroudDnsCache;
+}
+
+function stripSlackForDns(text) {
+  return text
+    .replace(/<mailto:[^|>]+\|([^>]*)>/g, "$1")
+    .replace(/<(https?:\/\/[^|>]+)\|[^>]*>/g, "$1")
+    .replace(/<(https?:\/\/[^>]+)>/g, "$1");
+}
+
+async function warmPublicUrlCache(text) {
+  if (typeof text !== "string" || text.length === 0) return;
+  const cache = getDnsCache();
+  const cleaned = stripSlackForDns(text);
+  const urls = [...new Set([...cleaned.matchAll(URL_RE)].map((m) => m[0]))];
+  if (urls.length === 0) return;
+  try {
+    await cache.warmCache(urls);
+  } catch {
+    // DNS failures are non-fatal; unknown URLs will still obfuscate.
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Security modules (optional — degrade gracefully if not built)
@@ -435,7 +491,7 @@ function handleIdentify(id, params) {
   });
 }
 
-function handleObfuscate(id, params) {
+async function handleObfuscate(id, params) {
   const gate = requireIdentified(id);
   if (gate) return gate;
 
@@ -459,6 +515,7 @@ function handleObfuscate(id, params) {
       `Request blocked: injection detected (${injectionEvents[0].threatClass})`);
   }
 
+  await warmPublicUrlCache(text);
   const out = obf.obfuscate(text);
 
   const categories = {};
@@ -556,7 +613,7 @@ function handleDeobfuscate(id, params) {
   return jsonResult(id, result);
 }
 
-function handleBatch(id, params) {
+async function handleBatch(id, params) {
   const gate = requireIdentified(id);
   if (gate) return gate;
 
@@ -575,6 +632,7 @@ function handleBatch(id, params) {
         results.push({ error: `Blocked: injection detected (${injEvents[0].threatClass})` });
         continue;
       }
+      await warmPublicUrlCache(op.text || "");
       const out = obf.obfuscate(op.text || "");
       const categories = {};
       for (const e of out.entities) {
@@ -885,7 +943,7 @@ const METHODS = {
   tool_result: handleToolResult,
 };
 
-function dispatch(line) {
+async function dispatch(line) {
   if (!line.trim()) return;
 
   let req;
@@ -917,7 +975,7 @@ function dispatch(line) {
   requestCount++;
 
   try {
-    const response = handler(id, params);
+    const response = await handler(id, params);
     // shutdown writes its own response and exits
     if (method !== "shutdown") {
       process.stdout.write(response + "\n");
@@ -1003,7 +1061,16 @@ process.stdout.write(JSON.stringify(handshake) + "\n");
 // ---------------------------------------------------------------------------
 
 const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-rl.on("line", dispatch);
+let dispatchQueue = Promise.resolve();
+rl.on("line", (line) => {
+  dispatchQueue = dispatchQueue
+    .then(() => dispatch(line))
+    .catch((e) => {
+      process.stdout.write(
+        jsonError(null, ERR_ENGINE, `Engine error: ${e.message}`) + "\n"
+      );
+    });
+});
 rl.on("close", () => {
   clearInterval(heartbeatInterval);
   dumpStats();
