@@ -242,6 +242,8 @@ export interface ShroudConfig {
   dashboardEnabled: boolean;
   /** Dashboard port (default: 9380). Binds to 127.0.0.1 only. */
   dashboardPort: number;
+  /** Dashboard bind address (default: 0.0.0.0). */
+  dashboardBind: string;
 
   // --- Causal coherence tracking ---
 

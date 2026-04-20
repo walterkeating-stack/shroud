@@ -42,4 +42,15 @@ describe("Config validation (QW7)", () => {
     expect(issues.some((i) => i.field === "dryRun" && i.severity === "info")).toBe(true);
   });
 
+  test("dashboard alias and bind are respected", () => {
+    const config = resolveConfig({ dashboard: true, dashboardBind: "127.0.0.2" });
+    expect(config.dashboardEnabled).toBe(true);
+    expect(config.dashboardBind).toBe("127.0.0.2");
+  });
+
+  test("profilingMode enforcing alias maps to active", () => {
+    const config = resolveConfig({ profilingMode: "enforcing" });
+    expect(config.profilingMode).toBe("active");
+  });
+
 });

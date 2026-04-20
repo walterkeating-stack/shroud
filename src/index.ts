@@ -18,6 +18,7 @@ import type { AgentSessionTracker } from "./agent-session.js";
 import { PolicyEngine } from "./policy.js";
 import { SiemShipper } from "./siem.js";
 import { ConfigManager } from "./config-manager.js";
+import { resolveRuntimePaths } from "./runtime.js";
 
 // ---------------------------------------------------------------------------
 // Runtime prototype patch: wrap EventStream.prototype.push() with the
@@ -125,16 +126,14 @@ export default {
     patchEventStreamPrototype(api.logger);
 
     const config = resolveConfig(api.pluginConfig);
+    const runtime = resolveRuntimePaths(config);
     const obfuscator = new Obfuscator(config);
 
     // Config-as-code: watch ~/.shroud/shroud.config.json for hot-reload.
     // Defer startWatching so watchFile doesn't block plugin install (which
     // loads the plugin to verify it, then expects the process to exit).
     // Resolve config path: prefer OPENCLAW_STATE_DIR, then HOME/.shroud
-    const configDir = process.env.OPENCLAW_STATE_DIR
-      ? join(process.env.OPENCLAW_STATE_DIR, ".shroud")
-      : join(process.env.HOME || "/root", ".shroud");
-    const configPath = join(configDir, "shroud.config.json");
+    const configPath = runtime.configPath;
     const configManager = new ConfigManager(configPath, config);
     configManager.onReload((newConfig) => {
       obfuscator.updateConfig(newConfig);
@@ -324,14 +323,12 @@ export default {
           obfuscator,
           profiler: (globalThis as any).__shroudProfiler ?? null,
           config,
+          runtime,
           policyEngine,
           agentSessionFile: `${profileDir}/agent-sessions.json`,
           driftDetector: (globalThis as any).__shroudDriftDetector ?? null,
-          appEventsFile: process.env.SHROUD_APP_EVENTS_FILE || "/tmp/shroud-app-events.jsonl",
-          appSessionsFile: process.env.SHROUD_APP_SESSIONS_FILE
-            || (existsSync(`${process.env.HOME}/shroud-app-sessions.json`) ? `${process.env.HOME}/shroud-app-sessions.json` : "/tmp/shroud-app-sessions.json"),
         });
-        api.logger?.info(`[shroud] Security dashboard started on http://127.0.0.1:${config.dashboardPort}`);
+        api.logger?.info(`[shroud] Security dashboard started on http://${runtime.dashboardBind}:${config.dashboardPort}`);
       } catch (err: any) {
         api.logger?.info(`[shroud] Dashboard failed to start: ${err.message}`);
       }

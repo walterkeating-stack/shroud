@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { Obfuscator } from "./obfuscator.js";
 import { ObfuscationResult } from "./types.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
-import { STATS_FILE, IS_TEST } from "./config.js";
+import { IS_TEST } from "./config.js";
 import { DnsCache } from "./dns-cache.js";
 import { InjectionDetector } from "./detectors/injection.js";
 import { SecurityEventBus, ThreatClass } from "./security-event.js";
@@ -62,19 +62,20 @@ import { computeAdaptiveThresholds, isSignatureSuppressed } from "./adaptive-thr
 import { createFeatureCounterRegistry } from "./feature-counters.js";
 import { ImmuneResponseEngine } from "./immune-response.js";
 import { AdversarialStressTest } from "./red-team.js";
+import { loadAppSessions, resolveRuntimePaths, type AppSessionRecord } from "./runtime.js";
 
 function getSharedObfuscator(fallback: Obfuscator): Obfuscator {
   return (globalThis as any).__shroudObfuscator || fallback;
 }
 
-function dumpStatsFile(fallback: Obfuscator): void {
+function dumpStatsFile(fallback: Obfuscator, statsFile: string): void {
   try {
     const ob = getSharedObfuscator(fallback);
     const stats = ob.getStats() as Record<string, unknown>;
     stats.updatedAt = new Date().toISOString();
     stats.source = "openclaw";
     stats.pid = process.pid;
-    writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + "\n");
+    writeFileSync(statsFile, JSON.stringify(stats, null, 2) + "\n");
   } catch {
     // best-effort
   }
@@ -347,6 +348,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // OpenClaw loads the plugin multiple times; only one instance has the mappings.
   const ob = () => getSharedObfuscator(obfuscator);
   const config = ob().config;
+  const runtime = resolveRuntimePaths(config);
+  const persistStats = () => dumpStatsFile(obfuscator, runtime.statsFile);
   // Field scoping resolver — reconstructed on access to pick up hot-reloaded config.
   let _fieldScopeResolver: FieldScopeResolver | undefined;
   let _fieldScopeConfigRef: unknown;
@@ -543,6 +546,73 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     !s.agentLabel.endsWith(":") && !s.agentLabel.includes("(") &&
     !/^(conversation|session|sender|channel|message|rules|metadata)/i.test(s.agentLabel);
 
+  function mergeAppSessionIntoRegistry(merged: Map<string, any>, appSession: AppSessionRecord): void {
+    const app = appSession as any;
+    if (!app.agentLabel || !_isValidAgentLabel(app.agentLabel)) return;
+
+    const appKey = normalizeLabel(app.agentLabel);
+    const existing = merged.get(appKey);
+    const appPrivacy = app.privacy || {};
+    const channels = [app.channel || "app"];
+    const classification = app.classification || {
+      role: "APP Agent",
+      confidencePct: 100,
+      confidence: "high",
+      colour: "#06b6d4",
+      signals: ["app-server"],
+    };
+
+    if (existing) {
+      const existingPrivacy = existing.privacy || {};
+      existing.privacy = {
+        obfuscationCalls: Math.max(existingPrivacy.obfuscationCalls || 0, appPrivacy.obfuscationCalls || 0),
+        deobfuscationCalls: Math.max(existingPrivacy.deobfuscationCalls || 0, appPrivacy.deobfuscationCalls || 0),
+        entitiesObfuscated: Math.max(existingPrivacy.entitiesObfuscated || 0, appPrivacy.entitiesObfuscated || 0),
+        replacementsDeobfuscated: Math.max(existingPrivacy.replacementsDeobfuscated || 0, appPrivacy.replacementsDeobfuscated || 0),
+        categoryCounts: { ...existingPrivacy.categoryCounts, ...appPrivacy.categoryCounts },
+      };
+      existing.llmCallCount = Math.max(existing.llmCallCount || 0, app.requestCount || 0);
+      existing.securityEventCount = Math.max(existing.securityEventCount || 0, app.securityEvents || 0);
+      if ((!existing.channels || existing.channels.length === 0) && channels.length > 0) existing.channels = channels;
+      if (app.classification) existing.classification = classification;
+      if ((!existing.toolInventory || existing.toolInventory.length === 0) && Array.isArray(app.toolSequence)) {
+        existing.toolInventory = app.toolSequence;
+      }
+      return;
+    }
+
+    merged.set(appKey, {
+      agentLabel: app.agentLabel,
+      agentBuildId: app.agentBuildId || "",
+      sessionId: "",
+      llmCallCount: app.requestCount || 0,
+      securityEventCount: app.securityEvents || 0,
+      detectedModel: "app-server",
+      channels,
+      classification,
+      toolInventory: Array.isArray(app.toolSequence) ? app.toolSequence : [],
+      startedAt: typeof app.uptimeMs === "number" ? Date.now() - app.uptimeMs : Date.now(),
+      lastCallAt: Date.now(),
+      soulExtract: "",
+      behavior: {
+        toolFrequency: {},
+        totalToolCalls: 0,
+        avgSimilarity: 0,
+        driftCheckCount: 0,
+        recentSimilarities: [],
+        archetype: "Unknown",
+        archetypeConfidence: 0,
+      },
+      privacy: appPrivacy,
+    });
+  }
+
+  function mergeRuntimeAppSessions(merged: Map<string, any>): void {
+    for (const appSession of loadAppSessions(runtime)) {
+      mergeAppSessionIntoRegistry(merged, appSession);
+    }
+  }
+
   function _flushToDisk(): void {
     try {
       if (profiler) {
@@ -652,38 +722,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         });
       }
 
-      // Merge APP server agent data (NCG etc.)
-      try {
-        const appSession = JSON.parse(readFileSync("/tmp/shroud-app-sessions.json", "utf-8"));
-        if (appSession && appSession.agentLabel) {
-          const appKey = normalizeLabel(appSession.agentLabel);
-          const existing = merged.get(appKey);
-          if (existing) {
-            const ep = existing.privacy || {};
-            const ap = appSession.privacy || {};
-            existing.privacy = {
-              obfuscationCalls: Math.max(ep.obfuscationCalls || 0, ap.obfuscationCalls || 0),
-              deobfuscationCalls: Math.max(ep.deobfuscationCalls || 0, ap.deobfuscationCalls || 0),
-              entitiesObfuscated: Math.max(ep.entitiesObfuscated || 0, ap.entitiesObfuscated || 0),
-              replacementsDeobfuscated: Math.max(ep.replacementsDeobfuscated || 0, ap.replacementsDeobfuscated || 0),
-              categoryCounts: { ...ep.categoryCounts, ...ap.categoryCounts },
-            };
-            existing.llmCallCount = Math.max(existing.llmCallCount || 0, appSession.requestCount || 0);
-            if (appSession.classification) existing.classification = appSession.classification;
-          } else {
-            merged.set(appKey, {
-              agentLabel: appSession.agentLabel, agentBuildId: appSession.agentBuildId || "",
-              sessionId: "", llmCallCount: appSession.requestCount || 0,
-              securityEventCount: appSession.securityEvents || 0, detectedModel: "app-server",
-              channels: [appSession.channel || "enterprise-agent"],
-              classification: appSession.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
-              toolInventory: [], startedAt: Date.now(), lastCallAt: Date.now(), soulExtract: "",
-              behavior: { toolFrequency: {}, totalToolCalls: 0, avgSimilarity: 0, driftCheckCount: 0, recentSimilarities: [], archetype: "Unknown", archetypeConfidence: 0 },
-              privacy: appSession.privacy || {},
-            });
-          }
-        }
-      } catch { /* APP session file may not exist */ }
+      mergeRuntimeAppSessions(merged);
 
       if (merged.size > 0) {
         mkdirSync(_persistDir, { recursive: true });
@@ -813,42 +852,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         });
       }
 
-      // Merge APP server agent data (NCG etc.) from session file
-      try {
-        const appSessionRaw = await readFile("/tmp/shroud-app-sessions.json", "utf-8");
-        const appSession = JSON.parse(appSessionRaw);
-        if (appSession && appSession.agentLabel) {
-          const appKey = normalizeLabel(appSession.agentLabel);
-          const existing = merged.get(appKey);
-          // Merge: keep higher counters (across restarts)
-          if (existing) {
-            const ep = existing.privacy || {};
-            const ap = appSession.privacy || {};
-            existing.privacy = {
-              obfuscationCalls: Math.max(ep.obfuscationCalls || 0, ap.obfuscationCalls || 0),
-              deobfuscationCalls: Math.max(ep.deobfuscationCalls || 0, ap.deobfuscationCalls || 0),
-              entitiesObfuscated: Math.max(ep.entitiesObfuscated || 0, ap.entitiesObfuscated || 0),
-              replacementsDeobfuscated: Math.max(ep.replacementsDeobfuscated || 0, ap.replacementsDeobfuscated || 0),
-              categoryCounts: { ...ep.categoryCounts, ...ap.categoryCounts },
-            };
-            existing.llmCallCount = Math.max(existing.llmCallCount || 0, appSession.requestCount || 0);
-            if (appSession.classification) existing.classification = appSession.classification;
-          } else {
-            merged.set(appKey, {
-              agentLabel: appSession.agentLabel,
-              agentBuildId: appSession.agentBuildId || "",
-              sessionId: "", llmCallCount: appSession.requestCount || 0,
-              securityEventCount: appSession.securityEvents || 0,
-              detectedModel: "app-server",
-              channels: [appSession.channel || "enterprise-agent"],
-              classification: appSession.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
-              toolInventory: [], startedAt: Date.now(), lastCallAt: Date.now(),
-              soulExtract: "", behavior: { toolFrequency: {}, totalToolCalls: 0, avgSimilarity: 0, driftCheckCount: 0, recentSimilarities: [], archetype: "Unknown", archetypeConfidence: 0 },
-              privacy: appSession.privacy || {},
-            });
-          }
-        }
-      } catch { /* APP session file may not exist */ }
+      mergeRuntimeAppSessions(merged);
 
       if (merged.size > 0) {
         await mkdir(_persistDir, { recursive: true });
@@ -906,8 +910,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // Restore obfuscator counters from persisted stats file so deob counts
   // survive process restarts (the stats file is written on every deob event).
   try {
-    if (existsSync(STATS_FILE)) {
-      const raw = readFileSync(STATS_FILE, "utf-8");
+    if (existsSync(runtime.statsFile)) {
+      const raw = readFileSync(runtime.statsFile, "utf-8");
       const persisted = JSON.parse(raw);
       ob().restoreStats(persisted);
     }
@@ -1558,7 +1562,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       // They look like normal Shroud fakes — invisible to the LLM.
     }
 
-    dumpStatsFile(obfuscator);
+    persistStats();
     api.logger?.info(
       `[shroud] before_prompt_build: obfuscated ${totalEntities} entities (mappings synced)`,
     );
@@ -1604,7 +1608,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         if (auditActive && replacementCount > 0) {
           try { emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), replacementCount); } catch {}
         }
-        dumpStatsFile(obfuscator);
+        persistStats();
         return { message: { ...msg, content: deobfuscated } };
       }
       if (Array.isArray(msg.content)) {
@@ -1658,7 +1662,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         agentTracker.recordDeobfuscation(_deobCount);
         if (!changed) return;
         api.logger?.info("[shroud] before_message_write: deobfuscated assistant blocks");
-        dumpStatsFile(obfuscator);
+        persistStats();
         return { message: { ...msg, content: newContent } };
       }
       return;
@@ -1717,7 +1721,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         explanation: `Obfuscated ${result.entities.length} entities in outbound message content.`,
         thresholds: { categories: _cats },
       });
-      dumpStatsFile(obfuscator);
+      persistStats();
       if (auditActive) {
         try {
           emitObfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), result, msg.content, result.obfuscated);
@@ -1791,7 +1795,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           });
         }
       }
-      dumpStatsFile(obfuscator);
+      persistStats();
       if (auditActive) {
         for (const result of allResults) {
           try {
@@ -2804,7 +2808,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       _turnContext.pendingToolCall = null;
     }
 
-    dumpStatsFile(obfuscator);
+    persistStats();
     return { message: obfuscated };
   });
 
@@ -2832,7 +2836,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             emitDeobfuscationAudit(api.logger, config, randomBytes(8).toString("hex"), _msRc);
           } catch { /* best-effort */ }
         }
-        dumpStatsFile(obfuscator);
+        persistStats();
       }
       // Always return content to override the original payload
       return { content: deobfuscated };
@@ -2975,7 +2979,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
         }
       }
 
-      dumpStatsFile(obfuscator);
+      persistStats();
       delete stream[SHROUD_BUF];
     }
 

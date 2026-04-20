@@ -5,17 +5,12 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { join } from "node:path";
 
 import { Category, ShroudConfig, FieldScopingConfig } from "./types.js";
 import type { RedactionLevel } from "./redaction.js";
+import { resolveRuntimePaths } from "./runtime.js";
 
-/**
- * Resolve a fully populated ShroudConfig from optional plugin config
- * and environment variables.
- *
- * Priority: env vars > pluginConfig > defaults.
- */
-export const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
 export const IS_TEST = process.env.NODE_ENV === "test";
 
 export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
@@ -23,10 +18,17 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     pluginConfig != null && typeof pluginConfig === "object"
       ? (pluginConfig as Record<string, unknown>)
       : {};
+  const runtime = resolveRuntimePaths(undefined, process.env);
 
   // Env var overrides
   const envSecretKey = process.env.SHROUD_SECRET_KEY;
   const envSalt = process.env.SHROUD_PERSISTENT_SALT;
+  const dashboardFlag =
+    typeof raw.dashboardEnabled === "boolean"
+      ? raw.dashboardEnabled
+      : typeof raw.dashboard === "boolean"
+        ? raw.dashboard
+        : false;
 
   let secretKey =
     envSecretKey ??
@@ -177,8 +179,10 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
     profilingMode: (() => {
       const env = process.env.SHROUD_PROFILING_MODE;
       if (env === "learning" || env === "active" || env === "strict") return env;
+      if (env === "enforcing") return "active";
       const val = raw.profilingMode;
       if (val === "learning" || val === "active" || val === "strict") return val as "learning" | "active" | "strict";
+      if (val === "enforcing") return "active";
       return "learning";
     })(),
     profilingSigma:
@@ -190,7 +194,7 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (env) return env;
       return typeof raw.profilingProfileDir === "string"
         ? raw.profilingProfileDir
-        : "~/.shroud/profiles";
+        : join(runtime.stateDir, "profiles");
     })(),
 
     // --- Canary security extensions ---
@@ -248,7 +252,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       // Auto-enable when dashboard is active
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboard === "boolean" ? raw.dashboard : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     driftThreshold: (() => {
       const env = process.env.SHROUD_DRIFT_THRESHOLD;
@@ -269,7 +274,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.shadowExecutionEnabled === "boolean") return raw.shadowExecutionEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboard === "boolean" ? raw.dashboard : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     shadowExecutionMaxSteps: (() => {
       const env = process.env.SHROUD_SHADOW_MAX_STEPS;
@@ -289,12 +295,19 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       const env = process.env.SHROUD_DASHBOARD;
       if (env === "true") return true;
       if (env === "false") return false;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      return dashboardFlag;
     })(),
     dashboardPort: (() => {
       const env = process.env.SHROUD_DASHBOARD_PORT;
       if (env) return parseInt(env, 10) || 9380;
       return typeof raw.dashboardPort === "number" ? raw.dashboardPort : 9380;
+    })(),
+    dashboardBind: (() => {
+      const env = process.env.SHROUD_DASHBOARD_BIND;
+      if (env) return env;
+      return typeof raw.dashboardBind === "string" && raw.dashboardBind.trim()
+        ? raw.dashboardBind
+        : runtime.dashboardBind;
     })(),
 
     // --- Causal coherence tracking ---
@@ -305,7 +318,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.coherenceEnabled === "boolean") return raw.coherenceEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     coherenceZScore: (() => {
       const env = process.env.SHROUD_COHERENCE_ZSCORE;
@@ -326,7 +340,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.vectorStoreEnabled === "boolean") return raw.vectorStoreEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     vectorStoreMax: (() => {
       const env = process.env.SHROUD_VECTOR_STORE_MAX;
@@ -340,7 +355,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.clusteringEnabled === "boolean") return raw.clusteringEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     urlCorrelationEnabled: (() => {
       const env = process.env.SHROUD_URL_CORRELATION_ENABLED;
@@ -349,7 +365,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.urlCorrelationEnabled === "boolean") return raw.urlCorrelationEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
 
     // --- Multi-agent intent chain ---
@@ -360,7 +377,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.intentChainEnabled === "boolean") return raw.intentChainEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     delegationDriftThreshold: (() => {
       const env = process.env.SHROUD_DELEGATION_DRIFT_THRESHOLD;
@@ -376,7 +394,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.redTeamEnabled === "boolean") return raw.redTeamEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     redTeamMaxScenarios: (() => {
       const env = process.env.SHROUD_RED_TEAM_MAX_SCENARIOS;
@@ -402,7 +421,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.immuneEnabled === "boolean") return raw.immuneEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     immuneTtlSec: (() => {
       const env = process.env.SHROUD_IMMUNE_TTL;
@@ -433,7 +453,8 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       if (typeof raw.transformerEnabled === "boolean") return raw.transformerEnabled;
       const dash = process.env.SHROUD_DASHBOARD;
       if (dash === "true") return true;
-      return typeof raw.dashboardEnabled === "boolean" ? raw.dashboardEnabled : false;
+      if (dash === "false") return false;
+      return dashboardFlag;
     })(),
     transformerThreshold: (() => {
       const env = process.env.SHROUD_TRANSFORMER_THRESHOLD;

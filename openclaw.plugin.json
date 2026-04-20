@@ -206,9 +206,9 @@
       },
       "profilingMode": {
         "type": "string",
-        "enum": ["learning", "enforcing"],
+        "enum": ["learning", "active", "strict", "enforcing"],
         "default": "learning",
-        "description": "Profiling mode: learning (baseline) or enforcing (alert on deviation)"
+        "description": "Profiling mode: learning (baseline), active (flag anomalies), strict (block severe anomalies). 'enforcing' is accepted as a legacy alias for 'active'."
       },
       "dashboard": {
         "type": "boolean",
@@ -222,7 +222,7 @@
       },
       "dashboardBind": {
         "type": "string",
-        "default": "127.0.0.1",
+        "default": "0.0.0.0",
         "description": "Dashboard bind address"
       },
       "transformerEnabled": {

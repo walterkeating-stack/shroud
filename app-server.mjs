@@ -15,17 +15,16 @@
  *
  * Environment:
  *   SHROUD_PLUGIN_CONFIG   JSON config for the engine
- *   SHROUD_STORE_FILE      Persistent store file path
- *   SHROUD_STATS_FILE      Stats dump file path
- *   SHROUD_APP_EVENTS_FILE JSONL file for security events (dashboard bridge)
- *   SHROUD_APP_SESSIONS_FILE JSON file for agent sessions (dashboard bridge)
+ *   SHROUD_STATS_FILE      Optional stats dump file override
+ *   SHROUD_APP_EVENTS_FILE Optional JSONL file for security events (dashboard bridge)
+ *   SHROUD_APP_SESSIONS_FILE Optional legacy session file override
  */
 
 import { createHash, randomBytes } from "node:crypto";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { resolve, dirname } from "node:path";
-import { writeFileSync, readFileSync, appendFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -40,6 +39,9 @@ const { Obfuscator } = await import(
 );
 const { resolveConfig } = await import(
   pathToFileURL(resolve(shroudDist, "config.js")).href
+);
+const { resolveRuntimePaths, resolveAppSessionOutputPath, resolveAppStatsOutputPath } = await import(
+  pathToFileURL(resolve(shroudDist, "runtime.js")).href
 );
 
 // Read version from package.json
@@ -64,11 +66,32 @@ if (process.env.SHROUD_PLUGIN_CONFIG) {
 
 let config = resolveConfig(pluginConfig);
 let obfuscator = new Obfuscator(config);
+const runtime = resolveRuntimePaths(config, process.env);
+const STATS_FILE = process.env.SHROUD_STATS_FILE || resolveAppStatsOutputPath(runtime, { pid: process.pid });
+const APP_EVENTS_FILE = process.env.SHROUD_APP_EVENTS_FILE || runtime.appEventsFile;
+let appSessionFile = process.env.SHROUD_APP_SESSIONS_FILE || null;
 
-const STATS_FILE = process.env.SHROUD_STATS_FILE || "/tmp/shroud-stats.json";
-const STORE_FILE = process.env.SHROUD_STORE_FILE || "";
-const APP_EVENTS_FILE = process.env.SHROUD_APP_EVENTS_FILE || "/tmp/shroud-app-events.jsonl";
-const APP_SESSIONS_FILE = process.env.SHROUD_APP_SESSIONS_FILE || "/tmp/shroud-app-sessions.json";
+function ensureParentDir(filePath) {
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+  } catch {
+    // best-effort
+  }
+}
+
+function getSessionFilePath() {
+  if (!appSessionFile) {
+    appSessionFile = resolveAppSessionOutputPath(runtime, {
+      agentLabel,
+      agentBuildId,
+      pid: process.pid,
+    });
+  }
+  return appSessionFile;
+}
+
+ensureParentDir(STATS_FILE);
+ensureParentDir(APP_EVENTS_FILE);
 
 // ---------------------------------------------------------------------------
 // Security modules (optional — degrade gracefully if not built)
@@ -86,16 +109,9 @@ let securityEnabled = false;
 // Tool sequence tracking (for profiling + transformer)
 const toolSequence = [];
 // Agent classification (inferred from text on first obfuscate calls)
-// Reload previous classification from session file to survive restarts
 let agentClassification = null;
 let classificationTextSampled = 0;
 let classificationTextBuffer = "";
-try {
-  const prev = JSON.parse(readFileSync(APP_SESSIONS_FILE, "utf-8"));
-  if (prev && prev.classification && prev.classification.role !== "APP Agent") {
-    agentClassification = prev.classification;
-  }
-} catch { /* no previous session or parse error */ }
 
 try {
   const secMod = await import(pathToFileURL(resolve(shroudDist, "security-event.js")).href);
@@ -258,6 +274,7 @@ function dumpStats() {
     const stats = getObfuscator().getStats();
     stats.updatedAt = new Date().toISOString();
     stats.pid = process.pid;
+    ensureParentDir(STATS_FILE);
     writeFileSync(STATS_FILE, JSON.stringify(stats, null, 2) + "\n");
   } catch { /* best-effort */ }
 }
@@ -269,6 +286,7 @@ function dumpStats() {
 function dumpSessionFile() {
   if (!agentIdentified) return;
   try {
+    const sessionFile = getSessionFilePath();
     const session = {
       agentLabel,
       agentBuildId,
@@ -291,8 +309,22 @@ function dumpSessionFile() {
       } : null,
       updatedAt: new Date().toISOString(),
     };
-    writeFileSync(APP_SESSIONS_FILE, JSON.stringify(session, null, 2) + "\n");
+    ensureParentDir(sessionFile);
+    writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n");
   } catch { /* best-effort */ }
+}
+
+function restorePreviousSession() {
+  try {
+    const sessionFile = getSessionFilePath();
+    if (!existsSync(sessionFile)) return;
+    const prev = JSON.parse(readFileSync(sessionFile, "utf-8"));
+    if (prev && prev.classification && prev.classification.role !== "APP Agent") {
+      agentClassification = prev.classification;
+    }
+  } catch {
+    // best-effort
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +419,7 @@ function handleIdentify(id, params) {
     .digest("hex")
     .slice(0, 16);
   agentIdentified = true;
+  restorePreviousSession();
 
   process.stderr.write(
     `[app-server] Agent identified: ${agentLabel} v${agentVersion} (${agentChannel}) buildId=${agentBuildId}\n`

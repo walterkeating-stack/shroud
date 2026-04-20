@@ -26,6 +26,7 @@ const RESTART_ONLY = new Set([
   "persistentSalt",
   "dashboardEnabled",
   "dashboardPort",
+  "dashboardBind",
   "maxStoreMappings",
 ]);
 
@@ -418,6 +419,8 @@ function applyEnvOverrides(config: ShroudConfig): ShroudConfig {
   }
   if (env.SHROUD_PROFILING_MODE === "learning" || env.SHROUD_PROFILING_MODE === "active" || env.SHROUD_PROFILING_MODE === "strict") {
     result.profilingMode = env.SHROUD_PROFILING_MODE;
+  } else if (env.SHROUD_PROFILING_MODE === "enforcing") {
+    result.profilingMode = "active";
   }
 
   // String env overrides
@@ -425,6 +428,7 @@ function applyEnvOverrides(config: ShroudConfig): ShroudConfig {
     ["SHROUD_SECRET_KEY", "secretKey"],
     ["SHROUD_PERSISTENT_SALT", "persistentSalt"],
     ["SHROUD_PROFILING_DIR", "profilingProfileDir"],
+    ["SHROUD_DASHBOARD_BIND", "dashboardBind"],
     ["SHROUD_SIGNATURES_URL", "signaturesUrl"],
     ["SHROUD_SIGNATURES_FILE", "signaturesFile"],
     ["SHROUD_SIEM_WEBHOOK_URL", "siemWebhookUrl"],

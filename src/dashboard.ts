@@ -22,7 +22,6 @@
 import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { STATS_FILE } from "./config.js";
 import type { SecurityEventBus, SecurityEvent } from "./security-event.js";
 import type { AgentSessionTracker } from "./agent-session.js";
 import { getBehaviorWarmupState } from "./agent-session.js";
@@ -40,6 +39,7 @@ import type { IntentChain } from "./intent-chain.js";
 import { pca } from "./pca.js";
 import { RuleSuggestionEngine } from "./rule-suggestions.js";
 import { computeAdaptiveThresholds } from "./adaptive-thresholds.js";
+import { loadAppSessions, resolveRuntimePaths, type AppSessionRecord, type ShroudRuntimePaths } from "./runtime.js";
 
 export interface DashboardDeps {
   securityBus: SecurityEventBus | null;
@@ -48,16 +48,15 @@ export interface DashboardDeps {
   obfuscator: Obfuscator;
   profiler: BehaviouralProfiler | null;
   config: ShroudConfig;
+  runtime?: ShroudRuntimePaths;
   policyEngine: PolicyEngine | null;
   /** Path to persisted agent-sessions.json (for cross-process agent visibility). */
   agentSessionFile?: string;
   /** Drift detector instance for trajectory visualization. */
   driftDetector?: DriftDetector | null;
-  /** JSONL file written by APP server for security events (dashboard bridge). */
-  appEventsFile?: string;
-  /** JSON file written by APP server for agent session state. */
-  appSessionsFile?: string;
 }
+
+type DashboardAgentSnapshot = import("./agent-session.js").AgentSession & Record<string, any>;
 
 /**
  * Start the dashboard HTTP server.
@@ -69,6 +68,7 @@ export function startDashboard(
 ): ReturnType<typeof createServer> {
   const sseClients: Set<ServerResponse> = new Set();
   const suggestionEngine = new RuleSuggestionEngine();
+  const runtime = deps.runtime ?? resolveRuntimePaths(deps.config);
 
   // Subscribe to security events for real-time SSE streaming
   if (deps.securityBus) {
@@ -86,17 +86,18 @@ export function startDashboard(
 
   // ── APP event bridge: poll JSONL file for events from APP server processes ──
   let appEventsOffset = 0;
-  let appSession: Record<string, unknown> | null = null;
-  if (deps.appEventsFile || deps.appSessionsFile) {
+  let appSessions: AppSessionRecord[] = [];
+  if (runtime.appEventsFile || runtime.appSessionsDir || runtime.appSessionsFile) {
+    appSessions = loadAppSessions(runtime);
     let polling = false; // guard against overlapping async polls
     const pollInterval = setInterval(async () => {
       if (polling) return;
       polling = true;
       try {
         // Read new events from APP JSONL file (async — avoids blocking event loop)
-        if (deps.appEventsFile && deps.securityBus) {
+        if (runtime.appEventsFile && deps.securityBus) {
           try {
-            const content = await readFile(deps.appEventsFile, "utf-8");
+            const content = await readFile(runtime.appEventsFile, "utf-8");
             const lines = content.split("\n").filter(Boolean);
             if (lines.length > appEventsOffset) {
               for (let i = appEventsOffset; i < lines.length; i++) {
@@ -111,12 +112,7 @@ export function startDashboard(
           } catch { /* file may not exist yet */ }
         }
 
-        // Read APP agent session state (async)
-        if (deps.appSessionsFile) {
-          try {
-            appSession = JSON.parse(await readFile(deps.appSessionsFile, "utf-8"));
-          } catch { appSession = null; }
-        }
+        appSessions = loadAppSessions(runtime);
       } finally {
         polling = false;
       }
@@ -202,14 +198,14 @@ export function startDashboard(
         json(res, 200, { status: "ok", timestamp: new Date().toISOString() });
       }
       else if (url === "/api/overview") {
-        handleOverview(res, deps, appSession);
+        handleOverview(res, deps, appSessions);
       }
       else if (url === "/api/agents") {
-        handleAgents(res, deps, appSession);
+        handleAgents(res, deps, appSessions);
       }
       else if (url?.startsWith("/api/agents/")) {
         const buildId = url.slice("/api/agents/".length);
-        handleAgentDetail(res, deps, buildId, appSession);
+        handleAgentDetail(res, deps, buildId, appSessions);
       }
       else if (url === "/api/event-summary") {
         handleEventSummary(res, deps);
@@ -231,7 +227,7 @@ export function startDashboard(
         handleProfilingDetail(res, deps, buildId);
       }
       else if (url === "/api/contracts") {
-        handleContracts(res, deps, appSession);
+        handleContracts(res, deps, appSessions);
       }
       else if (url === "/api/leases") {
         handleLeases(res);
@@ -241,7 +237,7 @@ export function startDashboard(
       }
       else if (url?.startsWith("/api/features/")) {
         const buildId = url.slice("/api/features/".length);
-        handleFeatureDetail(res, deps, buildId, appSession);
+        handleFeatureDetail(res, deps, buildId, appSessions);
       }
       else if (url === "/api/stats") {
         handleStats(res, deps);
@@ -260,7 +256,7 @@ export function startDashboard(
             writeFileSync(deps.agentSessionFile, JSON.stringify(sessions, null, 2));
           } catch {}
         }
-        try { writeFileSync(STATS_FILE, "{}\n"); } catch {}
+        try { writeFileSync(runtime.statsFile, "{}\n"); } catch {}
         json(res, 200, { ok: true, message: "All counters reset to zero" });
       }
       else if (url === "/api/policy") {
@@ -395,7 +391,7 @@ export function startDashboard(
       }
       // --- Transformer stats ---
       else if (url === "/api/obfuscation") {
-        handleObfuscation(res, deps, appSession);
+        handleObfuscation(res, deps, appSessions);
       }
       else if (url === "/api/transformer") {
         const scorer = (globalThis as any).__shroudTransformerScorer;
@@ -438,7 +434,6 @@ export function startDashboard(
     }
   });
 
-  const bindAddr = process.env.SHROUD_DASHBOARD_BIND || "0.0.0.0";
   server.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code === "EADDRINUSE") {
       // Port already taken — another Shroud instance (e.g. gateway) owns it.
@@ -447,7 +442,7 @@ export function startDashboard(
     // Other errors (EACCES etc.) are intentionally swallowed — dashboard
     // is non-critical and should never crash the agent process.
   });
-  server.listen(port, bindAddr);
+  server.listen(port, runtime.dashboardBind);
 
   return server;
 }
@@ -471,34 +466,115 @@ function getAgentFeatureSummary(buildId?: string, label?: string) {
   };
 }
 
-function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
-  // Use disk-merged agent count for overview (same as /api/agents)
-  let agentCount = deps.agentTracker.getAllSessions().length;
-  let totalCalls = deps.agentTracker.getAllSessions().reduce((sum, a) => sum + a.llmCallCount, 0);
-  if (deps.agentSessionFile) {
-    try {
-      const raw = readFileSync(deps.agentSessionFile, "utf-8");
-      const diskSessions = JSON.parse(raw) as any[];
-      const inMemoryLabels = new Set(deps.agentTracker.getAllSessions().map(s => s.agentLabel.toLowerCase().trim()));
-      for (const entry of diskSessions) {
-        const key = (entry.agentLabel as string || "").toLowerCase().trim();
-        if (key && !inMemoryLabels.has(key)) {
-          agentCount++;
-          totalCalls += (entry.llmCallCount as number) || 0;
-        }
-      }
-    } catch {}
+function appSessionLabel(session: AppSessionRecord): string {
+  return typeof session.agentLabel === "string" ? session.agentLabel.toLowerCase().trim() : "";
+}
+
+function mergeAppSessionIntoAgents(agents: any[], appSession: AppSessionRecord, inMemoryMap?: Map<string, any>): void {
+  const app = appSession as any;
+  const label = appSessionLabel(appSession);
+  if (!label) return;
+
+  const existingIdx = agents.findIndex((agent) => agent.agentLabel.toLowerCase().trim() === label);
+  if (existingIdx >= 0) {
+    const existing = agents[existingIdx];
+    const ep = existing.privacy || {};
+    const ap = app.privacy || {};
+    existing.privacy = {
+      obfuscationCalls: Math.max(ep.obfuscationCalls || 0, ap.obfuscationCalls || 0),
+      deobfuscationCalls: Math.max(ep.deobfuscationCalls || 0, ap.deobfuscationCalls || 0),
+      entitiesObfuscated: Math.max(ep.entitiesObfuscated || 0, ap.entitiesObfuscated || 0),
+      replacementsDeobfuscated: Math.max(ep.replacementsDeobfuscated || 0, ap.replacementsDeobfuscated || 0),
+      categoryCounts: { ...ep.categoryCounts, ...ap.categoryCounts },
+    };
+    existing.llmCallCount = Math.max(existing.llmCallCount || 0, app.requestCount || 0);
+    existing.securityEventCount = Math.max(existing.securityEventCount || 0, app.securityEvents || 0);
+    if (app.classification && app.classification.role !== "APP Agent") existing.classification = app.classification;
+    return;
   }
-  // Count APP agent if present
-  if (appSession && (appSession as any).agentLabel) {
-    const appLabel = ((appSession as any).agentLabel as string).toLowerCase().trim();
-    const inMemoryLabels = new Set(deps.agentTracker.getAllSessions().map(s => s.agentLabel.toLowerCase().trim()));
-    if (!inMemoryLabels.has(appLabel)) {
-      agentCount++;
-      totalCalls += (appSession as any).requestCount || 0;
-    }
+
+  if (inMemoryMap?.has(label)) return;
+
+  agents.push({
+    agentLabel: app.agentLabel,
+    agentBuildId: app.agentBuildId || "",
+    sessionId: "",
+    llmCallCount: app.requestCount || 0,
+    channels: [app.channel || "app"],
+    classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+    toolInventory: app.toolSequence || [],
+    startedAt: Date.now() - (app.uptimeMs || 0),
+    lastCallAt: Date.now(),
+    securityEventCount: app.securityEvents || 0,
+    detectedModel: "app-server",
+    channelSource: "app-server",
+    soulExtract: "",
+    cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
+    heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+    privacy: app.privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
+  });
+}
+
+function readPersistedAgentSessions(agentSessionFile?: string): DashboardAgentSnapshot[] {
+  if (!agentSessionFile) return [];
+  try {
+    const raw = readFileSync(agentSessionFile, "utf-8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
   }
-  const agents = deps.agentTracker.getAllSessions();
+}
+
+function collectDashboardAgents(deps: DashboardDeps, appSessions: AppSessionRecord[] = []): DashboardAgentSnapshot[] {
+  const inMemory = deps.agentTracker.getAllSessions();
+  const inMemoryMap = new Map(inMemory.map((session) => [session.agentLabel.toLowerCase().trim(), session]));
+  const agents: DashboardAgentSnapshot[] = [...inMemory];
+
+  for (const entry of readPersistedAgentSessions(deps.agentSessionFile)) {
+    const key = (entry.agentLabel as string || "").toLowerCase().trim();
+    if (!key || inMemoryMap.has(key)) continue;
+
+    agents.push({
+      agentLabel: entry.agentLabel,
+      agentBuildId: entry.agentBuildId || "",
+      sessionId: entry.sessionId || "",
+      llmCallCount: entry.llmCallCount || 0,
+      channels: entry.channels || [],
+      classification: entry.classification || { role: "Unknown", confidencePct: 0, confidence: "low", colour: "#484f58", signals: [] },
+      toolInventory: entry.toolInventory || [],
+      startedAt: entry.startedAt || 0,
+      lastCallAt: entry.lastCallAt || 0,
+      securityEventCount: entry.securityEventCount || 0,
+      detectedModel: entry.detectedModel || "",
+      channelSource: "",
+      soulExtract: entry.soulExtract || "",
+      behavior: entry.behavior || {
+        toolFrequency: {},
+        totalToolCalls: 0,
+        avgSimilarity: 0,
+        driftCheckCount: 0,
+        recentSimilarities: [],
+        archetype: "Unknown",
+        archetypeConfidence: 0,
+      },
+      cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
+      heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
+      privacy: entry.privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
+    });
+  }
+
+  for (const session of appSessions) {
+    mergeAppSessionIntoAgents(agents, session, inMemoryMap);
+  }
+
+  return agents;
+}
+
+function handleOverview(res: ServerResponse, deps: DashboardDeps, appSessions: AppSessionRecord[] = []) {
+  const agents = collectDashboardAgents(deps, appSessions);
+  const agentCount = agents.length;
+  const totalCalls = agents.reduce((sum, agent) => sum + (agent.llmCallCount || 0), 0);
   const secStats = deps.securityBus?.getStats();
   const profiler = deps.profiler;
   const featureRegistry = getFeatureRegistry();
@@ -533,19 +609,18 @@ function handleOverview(res: ServerResponse, deps: DashboardDeps, appSession?: R
     agents: {
       total: agentCount,
       totalLlmCalls: totalCalls,
-      totalSecurityEvents: agents.reduce((sum, a) => sum + a.securityEventCount, 0),
+      totalSecurityEvents: agents.reduce((sum, a) => sum + (a.securityEventCount || 0), 0),
       eventsLastHour: allEvents.filter(e => e.timestamp > now - 3_600_000).length,
       eventsLastDay: allEvents.filter(e => e.timestamp > now - 86_400_000).length,
       eventsLastWeek: allEvents.filter(e => e.timestamp > now - 604_800_000).length,
       withBaseline: deps.baselineStore
-        ? agents.filter(a => deps.baselineStore!.exists(a.agentBuildId)).length
+        ? agents.filter(a => a.agentBuildId && deps.baselineStore!.exists(a.agentBuildId)).length
         : 0,
     },
     obfuscation: (() => {
-      // Aggregate from per-agent data (agents list already includes APP via merge)
       const obfStats = deps.obfuscator.getStats() as any;
-      const perAgentObf = agents.reduce((s, a) => s + (a.privacy?.entitiesObfuscated || 0), 0);
-      const perAgentDeob = agents.reduce((s, a) => s + (a.privacy?.replacementsDeobfuscated || 0), 0);
+      const perAgentObf = agents.reduce((sum, agent) => sum + (agent.privacy?.entitiesObfuscated || 0), 0);
+      const perAgentDeob = agents.reduce((sum, agent) => sum + (agent.privacy?.replacementsDeobfuscated || 0), 0);
       return {
         storeMappings: obfStats.storeMappings,
         totalObfuscated: Math.max(obfStats.totalEntitiesObfuscated || 0, perAgentObf),
@@ -696,71 +771,8 @@ function computeAgentHealth(
   return { status, colour, compliant, issues, lastActiveAgo, eventRate, warmingUp: warmup.active };
 }
 
-function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
-  // OpenClaw runs multiple gateway processes — each one has its own agent tracker.
-  // The dashboard lives in one process but needs to show ALL agents.
-  // Strategy: disk-persisted sessions are the primary source (written by all processes),
-  // enriched with in-memory data from this process for live stats.
-  const inMemory = deps.agentTracker.getAllSessions();
-  const inMemoryMap = new Map(inMemory.map(s => [s.agentLabel.toLowerCase().trim(), s]));
-  let agents: any[] = [...inMemory];
-  if (deps.agentSessionFile) {
-    try {
-      const raw = readFileSync(deps.agentSessionFile, "utf-8");
-      const diskSessions = JSON.parse(raw) as any[];
-      for (const entry of diskSessions) {
-        const key = (entry.agentLabel as string || "").toLowerCase().trim();
-        if (!key || inMemoryMap.has(key)) continue;
-        // Disk-only session (from another OC process) — add with persisted data
-        agents.push({
-          agentLabel: entry.agentLabel, agentBuildId: entry.agentBuildId || "",
-          sessionId: entry.sessionId || "", llmCallCount: entry.llmCallCount || 0,
-          channels: entry.channels || [], classification: entry.classification || { role: "Unknown", confidencePct: 0, confidence: "low", colour: "#484f58", signals: [] },
-          toolInventory: entry.toolInventory || [], startedAt: entry.startedAt || 0,
-          lastCallAt: entry.lastCallAt || 0, securityEventCount: entry.securityEventCount || 0, detectedModel: entry.detectedModel || "",
-          channelSource: "", soulExtract: entry.soulExtract || "",
-          cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
-          heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
-          privacy: entry.privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
-        });
-      }
-    } catch { /* file may not exist or be malformed */ }
-  }
-
-  // Merge APP server agent session (if available)
-  if (appSession && typeof appSession === "object" && (appSession as any).agentLabel) {
-    const app = appSession as any;
-    const appLabel = (app.agentLabel as string || "").toLowerCase().trim();
-    const existingIdx = agents.findIndex(a => a.agentLabel.toLowerCase().trim() === appLabel);
-    if (existingIdx >= 0) {
-      // Merge: keep higher counters (persisted pre-restart data vs live post-restart data)
-      const existing = agents[existingIdx];
-      const ep = existing.privacy || {};
-      const ap = app.privacy || {};
-      existing.privacy = {
-        obfuscationCalls: Math.max(ep.obfuscationCalls || 0, ap.obfuscationCalls || 0),
-        deobfuscationCalls: Math.max(ep.deobfuscationCalls || 0, ap.deobfuscationCalls || 0),
-        entitiesObfuscated: Math.max(ep.entitiesObfuscated || 0, ap.entitiesObfuscated || 0),
-        replacementsDeobfuscated: Math.max(ep.replacementsDeobfuscated || 0, ap.replacementsDeobfuscated || 0),
-        categoryCounts: { ...ep.categoryCounts, ...ap.categoryCounts },
-      };
-      existing.llmCallCount = Math.max(existing.llmCallCount || 0, app.requestCount || 0);
-      if (app.classification && app.classification.role !== "APP Agent") existing.classification = app.classification;
-    } else if (appLabel && !inMemoryMap.has(appLabel)) {
-      agents.push({
-        agentLabel: app.agentLabel, agentBuildId: app.agentBuildId || "",
-        sessionId: "", llmCallCount: app.requestCount || 0,
-        channels: [app.channel || "app"], classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
-        toolInventory: [], startedAt: Date.now() - (app.uptimeMs || 0),
-        lastCallAt: Date.now(), securityEventCount: app.securityEvents || 0, detectedModel: "app-server",
-        channelSource: "app-server", soulExtract: "",
-        cache: { totalInputTokens: 0, totalOutputTokens: 0, totalCacheRead: 0, totalCacheWrite: 0, avgHitRatio: 0, baselineHitRatio: -1, baselineSamples: 0, callsWithCache: 0 },
-        heartbeat: { enabled: false, recent: [], avgIntervalMs: -1, lastAt: 0, status: "unknown", lastResponse: "" },
-        privacy: app.privacy || { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} },
-      });
-    }
-  }
-
+function handleAgents(res: ServerResponse, deps: DashboardDeps, appSessions: AppSessionRecord[] = []) {
+  const agents = collectDashboardAgents(deps, appSessions);
   const allEvents = deps.securityBus?.getEvents() ?? [];
 
   const enriched = agents.map(agent => {
@@ -806,8 +818,8 @@ function handleAgents(res: ServerResponse, deps: DashboardDeps, appSession?: Rec
   json(res, 200, { agents: enriched });
 }
 
-function handleContracts(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
-  const contracts = deps.agentTracker.getAllSessions().map(agent => ({
+function handleContracts(res: ServerResponse, deps: DashboardDeps, appSessions: AppSessionRecord[] = []) {
+  const contracts = collectDashboardAgents(deps, appSessions).map(agent => ({
     agentBuildId: agent.agentBuildId,
     agentLabel: agent.agentLabel,
     contract: resolveAgentContract(
@@ -815,19 +827,6 @@ function handleContracts(res: ServerResponse, deps: DashboardDeps, appSession?: 
       agent.classification?.role || "General Agent",
     ),
   }));
-  if (appSession && typeof appSession === "object" && (appSession as any).agentLabel) {
-    const app = appSession as any;
-    if (!contracts.some(c => c.agentLabel === app.agentLabel)) {
-      contracts.push({
-        agentBuildId: app.agentBuildId || "",
-        agentLabel: app.agentLabel,
-        contract: resolveAgentContract(
-          app.agentLabel,
-          app.classification?.role || "General Agent",
-        ),
-      });
-    }
-  }
   json(res, 200, { contracts });
 }
 
@@ -876,7 +875,7 @@ function handleFeatures(res: ServerResponse) {
   });
 }
 
-function handleFeatureDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSession?: Record<string, unknown> | null) {
+function handleFeatureDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSessions: AppSessionRecord[] = []) {
   const registry = getFeatureRegistry();
   if (!registry) {
     json(res, 200, { enabled: false, features: [] });
@@ -890,8 +889,9 @@ function handleFeatureDetail(res: ServerResponse, deps: DashboardDeps, buildId: 
       agentLabel = diskSessions.find((e: any) => e.agentBuildId === buildId)?.agentLabel;
     } catch {}
   }
-  if (!agentLabel && appSession && (appSession as any).agentBuildId === buildId) {
-    agentLabel = (appSession as any).agentLabel;
+  if (!agentLabel) {
+    const app = appSessions.find((entry) => entry.agentBuildId === buildId);
+    if (app) agentLabel = app.agentLabel;
   }
   json(res, 200, {
     enabled: true,
@@ -902,9 +902,9 @@ function handleFeatureDetail(res: ServerResponse, deps: DashboardDeps, buildId: 
   });
 }
 
-function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?: Record<string, unknown> | null) {
+function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSessions: AppSessionRecord[] = []) {
   const stats = deps.obfuscator.getStats() as Record<string, any>;
-  const agents = deps.agentTracker.getAllSessions();
+  const agents = collectDashboardAgents(deps, appSessions);
 
   // Per-agent privacy stats
   const perAgent = agents.map(a => {
@@ -922,32 +922,11 @@ function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?
     };
   });
 
-  // Merge APP server agent (NCG etc.)
-  if (appSession && typeof appSession === "object" && (appSession as any).agentLabel) {
-    const app = appSession as any;
-    const appLabel = (app.agentLabel as string || "").toLowerCase().trim();
-    const alreadyPresent = perAgent.some(a => a.agentLabel.toLowerCase().trim() === appLabel);
-    if (!alreadyPresent && app.privacy) {
-      const p = app.privacy;
-      perAgent.push({
-        agentLabel: app.agentLabel,
-        agentBuildId: app.agentBuildId || "",
-        channels: [app.channel || "app"],
-        classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
-        obfuscationCalls: p.obfuscationCalls || 0,
-        deobfuscationCalls: p.deobfuscationCalls || 0,
-        entitiesObfuscated: p.entitiesObfuscated || 0,
-        replacementsDeobfuscated: p.replacementsDeobfuscated || 0,
-        categoryCounts: p.categoryCounts || {},
-      });
-    }
-  }
-
   // Aggregate category totals across all agents
   const aggregateCategories: Record<string, number> = {};
   for (const a of perAgent) {
     for (const [cat, count] of Object.entries(a.categoryCounts)) {
-      aggregateCategories[cat] = (aggregateCategories[cat] || 0) + count;
+      aggregateCategories[cat] = (aggregateCategories[cat] || 0) + Number(count || 0);
     }
   }
 
@@ -979,7 +958,7 @@ function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSession?
   });
 }
 
-function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSession?: Record<string, unknown> | null) {
+function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSessions: AppSessionRecord[] = []) {
   let agent: any = deps.agentTracker.getSession(buildId);
   // Also search disk-persisted sessions (other OC processes)
   if (!agent && deps.agentSessionFile) {
@@ -989,19 +968,26 @@ function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: st
       agent = diskSessions.find((e: any) => e.agentBuildId === buildId) || null;
     } catch {}
   }
-  // Check APP server session
-  if (!agent && appSession && (appSession as any).agentBuildId === buildId) {
-    const app = appSession as any;
-    agent = {
-      agentLabel: app.agentLabel, agentBuildId: app.agentBuildId,
-      sessionId: "", llmCallCount: app.requestCount || 0,
-      channels: [app.channel || "app"],
-      classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
-      toolInventory: app.toolSequence || [], startedAt: Date.now() - (app.uptimeMs || 0),
-      lastCallAt: Date.now(), securityEventCount: app.securityEvents || 0,
-      detectedModel: "app-server", channelSource: "app-server",
-      source: "app-server", version: app.agentVersion,
-    };
+  if (!agent) {
+    const app = appSessions.find((entry) => entry.agentBuildId === buildId) as any;
+    if (app) {
+      agent = {
+        agentLabel: app.agentLabel,
+        agentBuildId: app.agentBuildId,
+        sessionId: "",
+        llmCallCount: app.requestCount || 0,
+        channels: [app.channel || "app"],
+        classification: app.classification || { role: "APP Agent", confidencePct: 100, confidence: "high", colour: "#06b6d4", signals: ["app-server"] },
+        toolInventory: app.toolSequence || [],
+        startedAt: Date.now() - (app.uptimeMs || 0),
+        lastCallAt: Date.now(),
+        securityEventCount: app.securityEvents || 0,
+        detectedModel: "app-server",
+        channelSource: "app-server",
+        source: "app-server",
+        version: app.agentVersion,
+      };
+    }
   }
   if (!agent) {
     json(res, 404, { error: `Agent ${buildId} not found` });
