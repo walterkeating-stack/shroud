@@ -255,9 +255,9 @@ describe("RegexDetector - URL/connection-string credentials", () => {
   const detector = new RegexDetector();
 
   test("detect password in query param", () => {
-    const entities = detector.detect("https://app.corp.internal/api?password=SHROUD_TEST_PASSWORD=admin");
+    const entities = detector.detect("https://app.corp.internal/api?password=SHROUD_TEST_PASSWORD&user=admin");
     expect(entities.some((e) => e.category === Category.NETWORK_CREDENTIAL
-      && e.value === "s3cr3tValue")).toBe(true);
+      && e.value === "SHROUD_TEST_PASSWORD")).toBe(true);
   });
 
   test("detect token in query param", () => {

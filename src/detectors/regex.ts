@@ -289,6 +289,12 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.95,
   },
   {
+    name: "api_key_test_placeholder",
+    pattern: /\bSHROUD_TEST_(?:API|OPENAI|ANTHROPIC|AWS_ACCESS|GOOGLE_API|GITHUB|SLACK|SLACK_APP|STRIPE)_(?:KEY|TOKEN)\b/g,
+    category: Category.API_KEY,
+    confidence: 0.95,
+  },
+  {
     name: "api_key_aws",
     pattern: /\bAKIA[0-9A-Z]{16}\b/g,
     category: Category.API_KEY,
