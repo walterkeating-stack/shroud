@@ -123,7 +123,7 @@ describe("API key generation", () => {
   test("starts with prefix like sk-shroud- when original has sk- prefix", () => {
     const engine = new MappingEngine("test-secret", "fixed-salt");
     const fake = engine.mapValue(
-      "SHROUD_TEST_API_KEY",
+      "sk-real-abc123def456ghi789jkl012mno345",
       Category.API_KEY,
     );
     expect(fake.startsWith("sk-")).toBe(true);

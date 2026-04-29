@@ -110,7 +110,7 @@ export class CodeGenerator implements BaseGenerator {
     buf.writeUInt32BE(((seed >>> 16) ^ 0xcafebabe) >>> 0, 4);
     const h = createHash("sha256").update(buf).digest("hex");
 
-    if (original) {
+    if (original && !original.startsWith("SHROUD_TEST_")) {
       // Preserve prefix pattern (e.g., "sk-prod-" -> "sk-test-")
       const prefixMatch = original.match(/^([a-zA-Z]+[-_](?:[a-zA-Z]+[-_])?)/);
       if (prefixMatch) {
