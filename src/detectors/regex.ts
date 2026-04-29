@@ -290,7 +290,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   },
   {
     name: "api_key_test_placeholder",
-    pattern: /\bSHROUD_TEST_(?:API|OPENAI|ANTHROPIC|AWS_ACCESS|GOOGLE_API|GITHUB|SLACK|SLACK_APP|STRIPE)_(?:KEY|TOKEN)\b/g,
+    pattern: /\bSHROUD_TEST_(?:API|OPENAI|ANTHROPIC|AWS_ACCESS|AWS_SECRET|GOOGLE_API|GITHUB|SLACK|SLACK_APP|STRIPE|SENDGRID)_(?:KEY|TOKEN)\b/g,
     category: Category.API_KEY,
     confidence: 0.95,
   },
@@ -697,6 +697,12 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     confidence: 0.95,
   },
   {
+    name: "jwt_test_placeholder",
+    pattern: /\bSHROUD_TEST_JWT\b/g,
+    category: Category.JWT,
+    confidence: 0.95,
+  },
+  {
     name: "oauth_refresh_token",
     pattern: /(?:refresh_token["':\s]+)([A-Za-z0-9\-_]{20,})/g,
     category: Category.API_KEY,
@@ -777,6 +783,12 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
   {
     name: "pem_private_key",
     pattern: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----/g,
+    category: Category.CERTIFICATE,
+    confidence: 1.00,
+  },
+  {
+    name: "pem_key_block",
+    pattern: /-----BEGIN [A-Z ]*KEY-----[\s\S]*?-----END [A-Z ]*KEY-----/g,
     category: Category.CERTIFICATE,
     confidence: 1.00,
   },
@@ -1076,7 +1088,7 @@ export const BUILTIN_PATTERNS: PatternDef[] = [
     // DB_PASSWORD=SHROUD_TEST_PASSWORD
     // Excludes quoted values — those are handled by the attribute_password rule.
     name: "env_var_secret",
-    pattern: /(?:^|[\n;])\s*\w*(?:PASSWORD|PASSWD|SECRET|_KEY|_TOKEN)\w*\s*=\s*(?!"|\s*$)(\S+)/gmi,
+    pattern: /(?:^|[\n;])\s*(?:export\s+)?\w*(?:PASSWORD|PASSWD|SECRET|_KEY|_TOKEN)\w*\s*=\s*(?!"|\s*$)(\S+)/gmi,
     category: Category.NETWORK_CREDENTIAL,
     confidence: 0.95,
   },

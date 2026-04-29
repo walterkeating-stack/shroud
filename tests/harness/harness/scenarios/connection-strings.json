@@ -53,8 +53,8 @@
     "name": "URL query param: password",
     "input": "https://app.internal/login?password=SHROUD_TEST_PASSWORD=admin",
     "assertions": {
-      "llm_must_not_see": ["MyS3cretP@ss"],
-      "user_must_see": ["MyS3cretP@ss"],
+      "llm_must_not_see": ["SHROUD_TEST_PASSWORD"],
+      "user_must_see": ["SHROUD_TEST_PASSWORD"],
       "entity_count_min": 1,
       "roundtrip": true
     }
@@ -73,8 +73,8 @@
     "name": "URL query param: token",
     "input": "https://api.internal/auth?token=SHROUD_TEST_TOKEN",
     "assertions": {
-      "llm_must_not_see": ["MyTokenValue12345"],
-      "user_must_see": ["MyTokenValue12345"],
+      "llm_must_not_see": ["SHROUD_TEST_TOKEN"],
+      "user_must_see": ["SHROUD_TEST_TOKEN"],
       "entity_count_min": 1,
       "roundtrip": true
     }

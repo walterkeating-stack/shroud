@@ -90,8 +90,8 @@
     "name": "JWT three-part token",
     "input": "Token: SHROUD_TEST_JWT",
     "assertions": {
-      "llm_must_not_see": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
-      "user_must_see": ["eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"],
+      "llm_must_not_see": ["SHROUD_TEST_JWT"],
+      "user_must_see": ["SHROUD_TEST_JWT"],
       "entity_count_min": 1,
       "categories": ["jwt"],
       "roundtrip": true
@@ -101,7 +101,8 @@
     "name": "Bearer token in Authorization header",
     "input": "Authorization: Bearer SHROUD_TEST_JWT",
     "assertions": {
-      "llm_must_not_see": ["eyJhbGciOiJIUzI1NiJ9"],
+      "llm_must_not_see": ["SHROUD_TEST_JWT"],
+      "user_must_see": ["SHROUD_TEST_JWT"],
       "entity_count_min": 1,
       "roundtrip": true
     }
