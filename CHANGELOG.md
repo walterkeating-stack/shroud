@@ -2,6 +2,50 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added — Per-agent ob/deob mode (enforce / shadow / off)
+
+Each agent can now run the obfuscation pipeline in one of three modes, independently selectable:
+
+- **`enforce`** (default) — existing behaviour; PII is detected and replaced.
+- **`shadow`** — PII is detected and logged per-agent, but the payload is NOT mutated. Use this to observe what *would* have been obfuscated for a specific agent before flipping it to enforce. Solves the diagnosis problem where detector tuning is blocked by fear of breaking a live agent.
+- **`off`** — detection is skipped entirely for this agent. No scan, no log. Use only when you have external justification (e.g. an agent's data is already sanitised upstream).
+
+**Configuration** — `shroud.config.json`:
+```json
+{
+  "agents": {
+    "agentdesk": { "mode": "shadow" },
+    "research-*": { "mode": "shadow" },
+    "marketing-bot": { "mode": "off" },
+    "*": { "mode": "enforce" }
+  },
+  "dashboardModeControl": "readonly"
+}
+```
+Precedence: exact label > wildcard pattern > `"*"` fallback > `"enforce"`. Hot-reloads like other config fields.
+
+**Dashboard** — the Obfuscation tab now shows:
+- Mode summary strip (enforce / shadow / off counts + total shadow hits)
+- Per-agent table extended with **Mode**, **Shadow hits**, **Top shadow category** columns
+- Shadow Feed panel: per-agent × per-category rollup with recent masked samples (raw values never surfaced)
+- Mode pills and mode-change buttons — visible and live only when `dashboardModeControl === "mutate"`
+
+**API endpoints** (all localhost dashboard port):
+- `GET /api/agents/modes` — resolved mode per agent (plus mutability flag)
+- `GET /api/shadow` — shadow detection feed keyed by `{agent, category}`
+- `POST /api/agents/:label/mode` with `{ "mode": "enforce"|"shadow"|"off" }` — persists through ConfigManager, emits a `mode_change` audit event on the security bus. Returns 403 when `dashboardModeControl === "readonly"`.
+
+**Safety guardrails:**
+- Mutation is gated by `dashboardModeControl` (defaults to `"readonly"`). Env var `SHROUD_DASHBOARD_MODE_CONTROL=mutate` overrides.
+- Every mode change emits a `mode_change` security event with `prevMode`, `newMode`, `source: "dashboard"`.
+- Shadow samples are masked at capture time (`RedactionFormatter.mask`) — raw values never hit the dashboard or logs.
+- Shadow ring buffer capped at 20 samples per agent.
+- `validateConfig` warns when any agent has `mode: "off"` and when `dashboardModeControl` is `mutate`.
+
+**Tests:** 24 new unit tests covering resolver precedence, obfuscator branching, config parsing, module state, and shadow telemetry. Full existing unit + APP integration suites pass.
+
 ## [2.4.0] - 2026-04-10
 
 ### Added — Healthcare, Finance, Legal, Cloud & Crypto Detection

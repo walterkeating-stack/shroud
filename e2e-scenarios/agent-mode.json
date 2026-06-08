@@ -1,0 +1,12 @@
+[
+  {
+    "name": "Per-agent mode: baseline enforce still obfuscates PII",
+    "input": "Book a call with helena@insurance-claims-daily.net from 10.42.88.7",
+    "assertions": {
+      "llm_must_not_see": ["helena@insurance-claims-daily.net", "10.42.88.7"],
+      "user_must_see": ["helena@insurance-claims-daily.net", "10.42.88.7"],
+      "entity_count_min": 2,
+      "roundtrip": true
+    }
+  }
+]

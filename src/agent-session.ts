@@ -121,6 +121,12 @@ export interface AgentPrivacyStats {
   replacementsDeobfuscated: number;
   /** Per-category entity counts (category → count). */
   categoryCounts: Record<string, number>;
+  /** Shadow-mode detections — entities detected but NOT replaced because the agent was in shadow mode. */
+  shadowDetections?: number;
+  /** Per-category shadow detection counts. */
+  shadowCategoryCounts?: Record<string, number>;
+  /** Ring buffer of recent shadow detections (masked values only). */
+  shadowSamples?: Array<{ category: string; masked: string; detector: string; confidence: number; at: number }>;
 }
 
 /** Per-agent heartbeat tracking. */
@@ -562,6 +568,36 @@ export class AgentSessionTracker {
     }
     session.privacy.deobfuscationCalls++;
     session.privacy.replacementsDeobfuscated += replacementCount;
+  }
+
+  /**
+   * Record shadow-mode detections for the current agent.
+   * Samples are masked (never raw) and capped to the last 20 per agent.
+   */
+  recordShadow(
+    entityCount: number,
+    categories: Record<string, number>,
+    samples: Array<{ category: string; masked: string; detector: string; confidence: number }> = [],
+  ): void {
+    const session = this._sessions.get(this._currentLabel);
+    if (!session) return;
+    if (!session.privacy) {
+      session.privacy = { obfuscationCalls: 0, deobfuscationCalls: 0, entitiesObfuscated: 0, replacementsDeobfuscated: 0, categoryCounts: {} };
+    }
+    session.privacy.shadowDetections = (session.privacy.shadowDetections || 0) + entityCount;
+    if (!session.privacy.shadowCategoryCounts) session.privacy.shadowCategoryCounts = {};
+    for (const [cat, count] of Object.entries(categories)) {
+      session.privacy.shadowCategoryCounts[cat] = (session.privacy.shadowCategoryCounts[cat] || 0) + count;
+    }
+    if (!session.privacy.shadowSamples) session.privacy.shadowSamples = [];
+    const now = Date.now();
+    for (const s of samples) {
+      session.privacy.shadowSamples.push({ ...s, at: now });
+    }
+    // Ring buffer cap
+    if (session.privacy.shadowSamples.length > 20) {
+      session.privacy.shadowSamples = session.privacy.shadowSamples.slice(-20);
+    }
   }
 
   /** Get the current active agent session. */

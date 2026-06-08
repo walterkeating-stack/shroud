@@ -67,6 +67,8 @@ export interface ObfuscationResult {
   mappingsUsed: Record<string, string>;
   /** Filtering stats — how many entities were skipped and why. */
   filterStats?: FilterStats;
+  /** True when per-agent mode was "shadow" — entities were detected but not replaced. */
+  shadow?: boolean;
 }
 
 /** Breakdown of skipped/filtered entities during obfuscation. */
@@ -113,6 +115,23 @@ export interface ScopeDecision {
   /** Fields to never scan (always applied). */
   neverScanFields: Set<string>;
 }
+
+/**
+ * Per-agent ob/deob mode.
+ * - enforce: normal behaviour; detect and replace.
+ * - shadow:  detect and log, but do NOT mutate payloads. Lets operators
+ *   measure false-positive pressure on a specific agent before enforcing.
+ * - off:     skip obfuscation entirely for this agent (no detection run).
+ */
+export type AgentMode = "enforce" | "shadow" | "off";
+
+/** Configuration for a single agent (or label pattern). */
+export interface AgentModeConfig {
+  mode: AgentMode;
+}
+
+/** Per-agent configuration keyed by agent label or wildcard pattern. */
+export type AgentsConfig = Record<string, AgentModeConfig>;
 
 /** Configuration for the Shroud plugin. */
 export interface ShroudConfig {
@@ -316,4 +335,12 @@ export interface ShroudConfig {
 
   /** Per-tool and per-agent obfuscation scoping. Undefined = scan everything (backward compatible). */
   fieldScoping?: FieldScopingConfig;
+
+  // --- Per-agent ob/deob mode ---
+
+  /** Per-agent ob/deob mode. Keys are agent labels or wildcard patterns; "*" is the default fallback. */
+  agents: AgentsConfig;
+
+  /** Whether the dashboard UI can mutate agent modes. "readonly" forbids writes; "mutate" allows them. */
+  dashboardModeControl: "readonly" | "mutate";
 }

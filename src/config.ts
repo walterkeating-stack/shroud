@@ -7,7 +7,7 @@
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 
-import { Category, ShroudConfig, FieldScopingConfig } from "./types.js";
+import { Category, ShroudConfig, FieldScopingConfig, AgentsConfig, AgentMode } from "./types.js";
 import type { RedactionLevel } from "./redaction.js";
 import { resolveRuntimePaths } from "./runtime.js";
 
@@ -482,6 +482,28 @@ export function resolveConfig(pluginConfig?: unknown): ShroudConfig {
       return typeof raw.transformerIntentAttentionThreshold === "number" ? raw.transformerIntentAttentionThreshold : 0.05;
     })(),
 
+    // --- Per-agent ob/deob mode ---
+    agents: (() => {
+      const a = raw.agents;
+      if (!a || typeof a !== "object") return {};
+      const out: AgentsConfig = {};
+      for (const [label, rule] of Object.entries(a as Record<string, unknown>)) {
+        if (!rule || typeof rule !== "object") continue;
+        const m = (rule as Record<string, unknown>).mode;
+        if (m === "enforce" || m === "shadow" || m === "off") {
+          out[label] = { mode: m as AgentMode };
+        }
+      }
+      return out;
+    })(),
+    dashboardModeControl: (() => {
+      const env = process.env.SHROUD_DASHBOARD_MODE_CONTROL;
+      if (env === "mutate" || env === "readonly") return env;
+      const val = raw.dashboardModeControl;
+      if (val === "mutate" || val === "readonly") return val as "mutate" | "readonly";
+      return "readonly";
+    })(),
+
     // --- Field scoping (optional, backward compatible) ---
     fieldScoping: (() => {
       const fs = raw.fieldScoping;
@@ -579,6 +601,20 @@ export function validateConfig(config: ShroudConfig): ConfigIssue[] {
         }
       }
     }
+  }
+
+  // Per-agent mode config
+  const agentCount = Object.keys(config.agents).length;
+  if (agentCount > 0) {
+    const shadow = Object.values(config.agents).filter(a => a.mode === "shadow").length;
+    const off = Object.values(config.agents).filter(a => a.mode === "off").length;
+    issues.push({ severity: "info", field: "agents", message: `${agentCount} agent mode rule(s) configured (${shadow} shadow, ${off} off).` });
+    if (off > 0) {
+      issues.push({ severity: "warning", field: "agents", message: `${off} agent(s) have mode="off" — obfuscation is fully disabled for those agents.` });
+    }
+  }
+  if (config.dashboardModeControl === "mutate") {
+    issues.push({ severity: "warning", field: "dashboardModeControl", message: "Dashboard can mutate agent modes. Safe only on trusted localhost deployments." });
   }
 
   // Injection detection

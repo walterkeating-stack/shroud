@@ -2750,6 +2750,79 @@ describe("EXIT 44: Hostname patterns", () => {
 });
 
 // ---------------------------------------------------------------------------
+// 44.5. NetBox inventory fields
+// ---------------------------------------------------------------------------
+
+describe("EXIT 44.5: NetBox inventory fields", () => {
+  test("site names, slugs, and regions are obfuscated in NetBox site results", () => {
+    const ob = resolvedObfuscator();
+    const payload = JSON.stringify({
+      endpoint: "dcim/sites/",
+      count: 2,
+      results: [
+        {
+          name: "++ATABS",
+          slug: "ATABS",
+          status: { value: "active", label: "Active" },
+          region: { name: "AT East", slug: "at-east" },
+          physical_address: "Tower 1, Airfield Road",
+        },
+        {
+          name: "++LOWL+LLZ08",
+          slug: "LOWL-LLZ08",
+          status: { value: "planned", label: "Planned" },
+        },
+      ],
+    });
+
+    const r = ob.obfuscate(payload);
+
+    expect(r.obfuscated).not.toContain("++ATABS");
+    expect(r.obfuscated).not.toContain("ATABS");
+    expect(r.obfuscated).not.toContain("AT East");
+    expect(r.obfuscated).not.toContain("Tower 1, Airfield Road");
+    expect(r.obfuscated).not.toContain("++LOWL+LLZ08");
+    expect(r.obfuscated).not.toContain("LOWL-LLZ08");
+    expect(r.obfuscated).toContain("dcim/sites/");
+    expect(r.obfuscated).toContain("Active");
+    expect(r.entities.some((e: any) => e.detector.startsWith("netbox:"))).toBe(true);
+    expect(r.entities.some((e: any) => e.category === "location")).toBe(true);
+  });
+
+  test("device names, nested sites, tenants, serials, and asset tags are obfuscated", () => {
+    const ob = resolvedObfuscator();
+    const payload = JSON.stringify({
+      endpoint: "dcim/devices/",
+      results: [
+        {
+          name: "f-e-nb-01.ops.austrocontrol.at",
+          display: "f-e-nb-01.ops.austrocontrol.at",
+          site: { name: "++ATABS", slug: "ATABS" },
+          tenant: { name: "Austro Control", slug: "austro-control" },
+          manufacturer: { name: "Cisco", slug: "cisco" },
+          platform: { name: "IOS-XE", slug: "ios-xe" },
+          serial: "FOC1234ABCD",
+          asset_tag: "AT-NB-0001",
+        },
+      ],
+    });
+
+    const r = ob.obfuscate(payload);
+
+    expect(r.obfuscated).not.toContain("f-e-nb-01.ops.austrocontrol.at");
+    expect(r.obfuscated).not.toContain("++ATABS");
+    expect(r.obfuscated).not.toContain("Austro Control");
+    expect(r.obfuscated).not.toContain("FOC1234ABCD");
+    expect(r.obfuscated).not.toContain("AT-NB-0001");
+    expect(r.obfuscated).toContain("Cisco");
+    expect(r.obfuscated).toContain("IOS-XE");
+    expect(r.entities.some((e: any) => e.category === "hostname")).toBe(true);
+    expect(r.entities.some((e: any) => e.category === "org_name")).toBe(true);
+    expect(r.entities.some((e: any) => e.category === "custom")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 45. Redaction mode matrix — every mode × every category
 // ---------------------------------------------------------------------------
 

@@ -11,6 +11,7 @@ import {
   FilterStats,
   ObfuscationResult,
   ShroudConfig,
+  AgentMode,
 } from "./types.js";
 import { MemoryStore, MappingStore } from "./store.js";
 import { MappingEngine } from "./mapping.js";
@@ -22,7 +23,9 @@ import { RegexDetector } from "./detectors/regex.js";
 import { CustomPatternDetector } from "./detectors/patterns.js";
 import { CodeDetector } from "./detectors/code.js";
 import { ContextDetector } from "./detectors/context.js";
+import { NetBoxDetector } from "./detectors/netbox.js";
 import { RedactionFormatter, RedactionLevel } from "./redaction.js";
+import { getCurrentAgentMode } from "./agent-mode.js";
 
 /** Regex to find CGNAT IPs (100.64.0.0/10) in text. */
 const CGNAT_IP_RE = /\b(100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3})\b/g;
@@ -296,6 +299,7 @@ export class Obfuscator {
     // hostname propagation, learned entities, and frequency decay
     this._contextDetector = new ContextDetector(regexDetector);
     this._detectors.push(this._contextDetector);
+    this._detectors.push(new NetBoxDetector());
 
     // Custom patterns if configured
     if (this.config.customPatterns.length > 0) {
@@ -371,8 +375,28 @@ export class Obfuscator {
    * 6. Map and replace (with redaction level)
    * 7. Inject canary if enabled
    */
-  obfuscate(text: string, context?: string, exemptCategories?: Set<string>): ObfuscationResult {
+  obfuscate(text: string, context?: string, exemptCategories?: Set<string>, mode?: AgentMode): ObfuscationResult {
     const startTime = Date.now();
+    const resolvedMode: AgentMode = mode ?? getCurrentAgentMode();
+
+    // Agent mode "off" — skip detection entirely.
+    if (resolvedMode === "off") {
+      return {
+        original: text,
+        obfuscated: text,
+        entities: [],
+        mappingsUsed: {},
+        filterStats: {
+          totalDetected: 0,
+          replaced: 0,
+          belowThreshold: 0,
+          allowlisted: 0,
+          docExamples: 0,
+          alreadyObfuscated: 0,
+          exempted: 0,
+        },
+      };
+    }
 
     // 0. Strip Slack/chat mrkdwn link formatting so detection sees clean text.
     //    Slack wraps emails as <mailto:X|DISPLAY> and URLs as <URL|DISPLAY>,
@@ -459,7 +483,8 @@ export class Obfuscator {
     let resultText = text;
     const mappingsUsed: Record<string, string> = {};
 
-    if (!this.config.dryRun && filtered.length > 0) {
+    const suppressReplace = this.config.dryRun || resolvedMode === "shadow";
+    if (!suppressReplace && filtered.length > 0) {
       // Collect text segments and replacements in one forward pass
       const segments: string[] = [];
       let cursor = 0;
@@ -566,6 +591,7 @@ export class Obfuscator {
       entities: filtered,
       mappingsUsed,
       filterStats,
+      shadow: resolvedMode === "shadow",
     };
   }
 
@@ -667,6 +693,13 @@ export class Obfuscator {
    * Used by audit logging to report deobfuscation stats without logging text.
    */
   deobfuscateWithStats(text: string, source?: string): { text: string; replacementCount: number } {
+    // Per-agent mode "off" — no detection ran on the way in; skip the deob pass.
+    // For shadow mode, the store was not populated for this agent, so running
+    // deob is safe (it scans global mappings and reverses any that match).
+    if (getCurrentAgentMode() === "off") {
+      return { text, replacementCount: 0 };
+    }
+
     const startTime = Date.now();
     let replacementCount = 0;
 
@@ -732,12 +765,11 @@ export class Obfuscator {
       replacementCount += rangeCleanup.count;
     }
 
-    // Always count the deobfuscation event (pipeline ran on this text)
-    this._deobfuscationEvents++;
-    const src = source ?? "fetch";
-    this._deobBySource.set(src, (this._deobBySource.get(src) ?? 0) + 1);
     if (replacementCount > 0) {
+      this._deobfuscationEvents++;
       this._totalReplacementsDeobfuscated += replacementCount;
+      const src = source ?? "fetch";
+      this._deobBySource.set(src, (this._deobBySource.get(src) ?? 0) + replacementCount);
     }
 
     if (this._audit && replacementCount > 0) {

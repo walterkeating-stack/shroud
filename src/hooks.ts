@@ -27,7 +27,9 @@ import { homedir } from "node:os";
 import { writeFile, readFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { Obfuscator } from "./obfuscator.js";
-import { ObfuscationResult } from "./types.js";
+import { ObfuscationResult, AgentMode } from "./types.js";
+import { AgentModeResolver, setAgentModeResolver, setCurrentAgentMode, getCurrentAgentMode } from "./agent-mode.js";
+import { RedactionFormatter } from "./redaction.js";
 import { BUILTIN_PATTERNS } from "./detectors/regex.js";
 import { IS_TEST } from "./config.js";
 import { DnsCache } from "./dns-cache.js";
@@ -359,6 +361,56 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
     _fieldScopeResolver = new FieldScopeResolver(liveConfig);
     _fieldScopeConfigRef = liveConfig;
     return _fieldScopeResolver;
+  }
+
+  // Agent mode resolver — reconstructed on access to pick up hot-reloaded config.
+  let _agentModeResolver: AgentModeResolver | undefined;
+  let _agentModeConfigRef: unknown;
+  function getAgentModeResolverLocal(): AgentModeResolver {
+    const liveConfig = ob().config.agents;
+    if (_agentModeResolver && _agentModeConfigRef === liveConfig) return _agentModeResolver;
+    _agentModeResolver = new AgentModeResolver(liveConfig);
+    _agentModeConfigRef = liveConfig;
+    // Keep the module-level singleton in sync so non-hook callers can access it.
+    setAgentModeResolver(_agentModeResolver);
+    return _agentModeResolver;
+  }
+
+  /**
+   * Resolve and set the current agent mode from the active session.
+   * Called at the top of each hook that runs ob/deob so the obfuscator picks
+   * it up as the default on this sync call stack.
+   */
+  function applyAgentMode(): { label: string; mode: AgentMode } {
+    const session = agentTracker.getCurrentSession();
+    const label = session?.agentLabel ?? "Unknown Agent";
+    const mode = getAgentModeResolverLocal().resolve(label);
+    setCurrentAgentMode(label, mode);
+    return { label, mode };
+  }
+
+  /**
+   * Record obfuscation stats — routes to shadow counters when the agent is
+   * in shadow mode. Samples are masked (first 5 entities per call) so raw
+   * PII never lands in the dashboard/logs.
+   */
+  function recordObfOrShadow(
+    entityCount: number,
+    categoryCounts: Record<string, number>,
+    sampleEntities: ObfuscationResult["entities"] = [],
+  ): void {
+    if (entityCount === 0) return;
+    if (getCurrentAgentMode() === "shadow") {
+      const samples = sampleEntities.slice(0, 5).map((e) => ({
+        category: e.category,
+        masked: RedactionFormatter.mask(e.value, e.category as any),
+        detector: e.detector,
+        confidence: e.confidence,
+      }));
+      agentTracker.recordShadow(entityCount, categoryCounts, samples);
+    } else {
+      agentTracker.recordObfuscation(entityCount, categoryCounts);
+    }
   }
   const auditActive = config.auditEnabled || config.verboseLogging;
   const featureRegistry = (globalThis as any).__shroudFeatureRegistry
@@ -1184,6 +1236,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   api.on("before_prompt_build", async (event: any, ctx?: any) => {
 
+    // Resolve per-agent ob/deob mode for this hook's call stack.
+    applyAgentMode();
+
     // Reset tool depth at the start of each turn — tool calls from the
     // previous turn are complete, so the counter should not carry over.
     if (ob().toolDepth > 0) {
@@ -1434,6 +1489,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
     let totalEntities = 0;
     const _obfCategoryCounts: Record<string, number> = {};
+    const _obfSampleEntities: ObfuscationResult["entities"] = [];
 
     // Resolve per-agent category exemptions from contract
     const _resolver = getFieldScopeResolver();
@@ -1471,6 +1527,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           const result = ob().obfuscate(cleaned, undefined, _exemptCats);
           totalEntities += result.entities.length;
           for (const e of result.entities) _obfCategoryCounts[e.category] = (_obfCategoryCounts[e.category] || 0) + 1;
+          if (_obfSampleEntities.length < 5 && result.entities.length > 0) _obfSampleEntities.push(...result.entities.slice(0, 5 - _obfSampleEntities.length));
           if (result.entities.length > 0 || cleaned !== msg.content) {
             msg.content = result.entities.length > 0 ? result.obfuscated : cleaned;
           }
@@ -1513,9 +1570,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       }
     }
 
-    // Record per-agent obfuscation stats
+    // Record per-agent obfuscation stats (routes to shadow counters when the agent is in shadow mode)
     if (totalEntities > 0) {
-      agentTracker.recordObfuscation(totalEntities, _obfCategoryCounts);
+      recordObfOrShadow(totalEntities, _obfCategoryCounts, _obfSampleEntities);
     }
 
     if (totalEntities === 0 && !config.honeypotEnabled) return;
@@ -1583,6 +1640,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   api.on("before_message_write", (event: any) => {
     if (!event?.message || typeof event.message !== "object") return;
+
+    // Resolve per-agent ob/deob mode for this hook's call stack.
+    applyAgentMode();
 
     const msg = event.message;
     const role = msg.role ?? "";
@@ -1715,7 +1775,7 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       if (result.entities.length === 0) return;
       const _cats: Record<string, number> = {};
       for (const e of result.entities) _cats[e.category] = (_cats[e.category] || 0) + 1;
-      agentTracker.recordObfuscation(result.entities.length, _cats);
+      recordObfOrShadow(result.entities.length, _cats, result.entities);
       noteFeature("privacy_obfuscation", {
         outcome: "observed",
         explanation: `Obfuscated ${result.entities.length} entities in outbound message content.`,
@@ -1782,11 +1842,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       {
         const _cats: Record<string, number> = {};
         let _totalEnt = 0;
+        const _sampleEnt: ObfuscationResult["entities"] = [];
         for (const result of allResults) {
           _totalEnt += result.entities.length;
           for (const e of result.entities) _cats[e.category] = (_cats[e.category] || 0) + 1;
+          if (_sampleEnt.length < 5 && result.entities.length > 0) _sampleEnt.push(...result.entities.slice(0, 5 - _sampleEnt.length));
         }
-        if (_totalEnt > 0) agentTracker.recordObfuscation(_totalEnt, _cats);
+        if (_totalEnt > 0) recordObfOrShadow(_totalEnt, _cats, _sampleEnt);
         if (_totalEnt > 0) {
           noteFeature("privacy_obfuscation", {
             outcome: "observed",
@@ -1813,6 +1875,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   api.on("before_tool_call", async (event: any) => {
     if (!event?.params || typeof event.params !== "object") return;
+
+    // Resolve per-agent ob/deob mode for this hook's call stack.
+    applyAgentMode();
 
     // Block the message tool for send actions. The gateway auto-delivers
     // responses — using the message tool causes duplicate messages (one
@@ -2741,6 +2806,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   api.on("tool_result_persist", (event: any) => {
     if (!event?.message) return;
 
+    // Resolve per-agent ob/deob mode for this hook's call stack.
+    applyAgentMode();
+
     // Exit tool depth
     ob().exitToolCall();
 
@@ -2819,6 +2887,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
   // -----------------------------------------------------------------------
   api.on("message_sending", async (event: any) => {
     if (!event?.content) return;
+
+    // Resolve per-agent ob/deob mode for this hook's call stack.
+    applyAgentMode();
 
     // String content — direct deobfuscation.
     // IMPORTANT: Always return { content } even if deobfuscation is a no-op.
@@ -3062,6 +3133,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       const callSession = agentTracker.recordLlmCall();
       _callUrl = url;
       _callModel = "";
+
+      // Resolve per-agent ob/deob mode for the obfuscation that runs inside
+      // this fetch call (both request obfuscation below and response deob
+      // in the TransformStream further down). Captured in closure so the
+      // async transform callbacks can re-apply it after any interleaving
+      // fetch has set its own mode.
+      const _fetchModeCtx = applyAgentMode();
 
       // Parse the body and obfuscate user message content
       try {
@@ -3502,13 +3580,13 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
             headers.set("content-length", String(new TextEncoder().encode(newBody).length));
             newInit.headers = headers;
           }
-          return deobfuscateResponse(originalFetch.call(globalThis, input, newInit));
+          return deobfuscateResponse(originalFetch.call(globalThis, input, newInit), _fetchModeCtx);
         }
       } catch {
         // JSON parse failed or other error — pass through unmodified
       }
 
-      return deobfuscateResponse(originalFetch.call(globalThis, input, init));
+      return deobfuscateResponse(originalFetch.call(globalThis, input, init), _fetchModeCtx);
     };
 
     // ── Response deobfuscation ──────────────────────────────
@@ -3707,7 +3785,10 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
       responseTextAccum = "";
     }
 
-    async function deobfuscateResponse(fetchPromise: Promise<Response>): Promise<Response> {
+    async function deobfuscateResponse(
+      fetchPromise: Promise<Response>,
+      fetchModeCtx: { label: string; mode: AgentMode } = { label: "Unknown Agent", mode: "enforce" },
+    ): Promise<Response> {
       const response = await fetchPromise;
       if (!response.ok || !response.body) return response;
 
@@ -3735,6 +3816,9 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
 
         const transform = new TransformStream<Uint8Array, Uint8Array>({
           transform(chunk, controller) {
+            // Re-apply this fetch's agent mode — the module-level default
+            // may have been reset by an interleaving fetch.
+            setCurrentAgentMode(fetchModeCtx.label, fetchModeCtx.mode);
             const text = sseRemainder + new TextDecoder().decode(chunk);
             // SSE events are separated by \n\n
             const parts = text.split("\n\n");
@@ -3970,6 +4054,8 @@ export function registerHooks(api: PluginApi, obfuscator: Obfuscator): void {
           },
 
           flush(controller) {
+            // Re-apply this fetch's agent mode for the closing deob pass.
+            setCurrentAgentMode(fetchModeCtx.label, fetchModeCtx.mode);
             // Flush any remaining buffered content (stream ended mid-block)
             for (const [idx, buffered] of blockBuffer) {
               const accumulated = blockAccum.get(idx) || "";

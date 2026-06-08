@@ -38,6 +38,8 @@ export interface ScorerConfig {
   minSessionsToTrain: number;   // 30
   trainIntervalSessions: number; // 50
   intentAttentionThreshold: number; // 0.05 (below this = intent hijack)
+  trainingMaxEpochs?: number;   // 10 by default
+  trainingMaxSequences?: number; // 500 by default
 }
 
 export interface ToolPrediction {
@@ -451,7 +453,11 @@ export class TransformerScorer {
     }
 
     // Train (pass attack traces for contrastive learning + threat labels for Tier 4)
-    const trainer = new TransformerTrainer(this._model, this._tokenizer);
+    const trainer = new TransformerTrainer(this._model, this._tokenizer, {
+      ...DEFAULT_TRAINER_CONFIG,
+      maxEpochs: this._config.trainingMaxEpochs ?? DEFAULT_TRAINER_CONFIG.maxEpochs,
+      maxSequences: this._config.trainingMaxSequences ?? DEFAULT_TRAINER_CONFIG.maxSequences,
+    });
     const traces = this._attackTraceStore.getAll();
     const result = await trainer.trainOnSequences(
       sequences,

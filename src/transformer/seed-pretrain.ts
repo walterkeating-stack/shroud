@@ -81,7 +81,10 @@ export async function seedPretrain(profileDir: string): Promise<SeedPretrainResu
     threatLabels,
   );
 
+  traceStore.save();
+
   // Save weights
+  mkdirSync(profileDir, { recursive: true });
   const weightsBuf = model.serializeWeights();
   writeFileSync(`${profileDir}/transformer-weights.bin`, weightsBuf);
 
@@ -97,9 +100,11 @@ export async function seedPretrain(profileDir: string): Promise<SeedPretrainResu
     seed: PRETRAIN_SEED,
     pretrainVersion: 1,
   };
+  mkdirSync(profileDir, { recursive: true });
   writeFileSync(`${profileDir}/transformer-config.json`, JSON.stringify(configJson, null, 2));
 
   // Save threat head weights
+  mkdirSync(profileDir, { recursive: true });
   const threatBuf = threatClassifier.serialize();
   writeFileSync(`${profileDir}/threat-heads-weights.bin`, Buffer.from(threatBuf.buffer));
 

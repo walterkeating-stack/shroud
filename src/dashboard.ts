@@ -29,7 +29,8 @@ import { resolveAgentContract } from "./contracts.js";
 import type { BaselineStore } from "./profiler-store.js";
 import type { Obfuscator } from "./obfuscator.js";
 import type { BehaviouralProfiler } from "./profiler.js";
-import type { ShroudConfig } from "./types.js";
+import type { ShroudConfig, AgentMode } from "./types.js";
+import { AgentModeResolver } from "./agent-mode.js";
 import type { PolicyEngine } from "./policy.js";
 import type { FeatureCounterRegistry } from "./feature-counters.js";
 import type { DriftDetector } from "./detectors/drift-detector.js";
@@ -54,6 +55,8 @@ export interface DashboardDeps {
   agentSessionFile?: string;
   /** Drift detector instance for trajectory visualization. */
   driftDetector?: DriftDetector | null;
+  /** ConfigManager for hot-reload + programmatic writes (required for mode mutation endpoint). */
+  configManager?: { getEffective(): ShroudConfig; setFields(partial: Partial<ShroudConfig>): { changedFields: string[]; warnings: string[] } };
 }
 
 type DashboardAgentSnapshot = import("./agent-session.js").AgentSession & Record<string, any>;
@@ -135,6 +138,22 @@ export function startDashboard(
       return;
     }
 
+    // POST /api/agents/:label/mode — update a per-agent ob/deob mode.
+    // Gated by config.dashboardModeControl === "mutate". Emits a
+    // "mode_change" security event so the change is auditable.
+    if (method === "POST" && url?.startsWith("/api/agents/") && url.endsWith("/mode")) {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          handleSetAgentMode(res, deps, url!, body);
+        } catch (err: any) {
+          json(res, 500, { error: err.message });
+        }
+      });
+      return;
+    }
+
     // Policy endpoints accept POST/PUT
     if ((method === "POST" || method === "PUT") && url?.startsWith("/api/policy")) {
       let body = "";
@@ -206,6 +225,12 @@ export function startDashboard(
       else if (url?.startsWith("/api/agents/")) {
         const buildId = url.slice("/api/agents/".length);
         handleAgentDetail(res, deps, buildId, appSessions);
+      }
+      else if (url === "/api/agents/modes") {
+        handleAgentModes(res, deps);
+      }
+      else if (url === "/api/shadow") {
+        handleShadowFeed(res, deps, appSessions);
       }
       else if (url === "/api/event-summary") {
         handleEventSummary(res, deps);
@@ -956,6 +981,137 @@ function handleObfuscation(res: ServerResponse, deps: DashboardDeps, appSessions
     perAgent,
     aggregateCategories,
   });
+}
+
+/**
+ * GET /api/agents/modes — list every agent's resolved mode.
+ *
+ * Returns, for each agent the tracker knows about plus every configured label
+ * pattern: `{ label, mode, source, configured }`. `source` is "exact",
+ * "wildcard", or "fallback"; `configured` is true when the mode came from
+ * the config file rather than from the default.
+ */
+function handleAgentModes(res: ServerResponse, deps: DashboardDeps): void {
+  const agentsCfg = deps.config.agents || {};
+  const resolver = new AgentModeResolver(agentsCfg);
+  const sessions = deps.agentTracker.getAllSessions();
+  const labels = new Set<string>();
+  for (const s of sessions) labels.add(s.agentLabel);
+  for (const pat of Object.keys(agentsCfg)) labels.add(pat);
+  if (!labels.has("*")) labels.add("*");
+  const perAgent: Array<{ label: string; mode: AgentMode; source: string; configured: boolean }> = [];
+  for (const label of labels) {
+    const exact = agentsCfg[label];
+    const mode = label === "*"
+      ? ((agentsCfg["*"]?.mode ?? "enforce") as AgentMode)
+      : resolver.resolve(label);
+    let source = "fallback";
+    if (exact) source = label.includes("*") || label.includes("?") ? "wildcard" : "exact";
+    perAgent.push({ label, mode, source, configured: Boolean(exact) });
+  }
+  json(res, 200, {
+    mutable: deps.config.dashboardModeControl === "mutate",
+    agents: perAgent,
+  });
+}
+
+/**
+ * GET /api/shadow — shadow-mode detection feed.
+ *
+ * Aggregates shadow detections across all tracked agents, returning:
+ *   - perAgentCategory: flat rows keyed by {agent, category} with hit counts
+ *     and the most recent masked samples
+ *   - totals: overall shadow hit count and mode-distribution summary
+ */
+function handleShadowFeed(res: ServerResponse, deps: DashboardDeps, appSessions: AppSessionRecord[] = []): void {
+  const sessions = deps.agentTracker.getAllSessions();
+  const rows: Array<{
+    agent: string;
+    category: string;
+    hits: number;
+    samples: Array<{ masked: string; detector: string; confidence: number; at: number }>;
+  }> = [];
+  let total = 0;
+  for (const s of sessions) {
+    const p = s.privacy;
+    if (!p?.shadowCategoryCounts) continue;
+    const samplesByCat: Record<string, typeof rows[number]["samples"]> = {};
+    for (const sample of p.shadowSamples || []) {
+      if (!samplesByCat[sample.category]) samplesByCat[sample.category] = [];
+      samplesByCat[sample.category].push({
+        masked: sample.masked,
+        detector: sample.detector,
+        confidence: sample.confidence,
+        at: sample.at,
+      });
+    }
+    for (const [cat, hits] of Object.entries(p.shadowCategoryCounts)) {
+      rows.push({ agent: s.agentLabel, category: cat, hits, samples: samplesByCat[cat] || [] });
+      total += hits;
+    }
+  }
+  rows.sort((a, b) => b.hits - a.hits);
+  const resolver = new AgentModeResolver(deps.config.agents || {});
+  const modeSummary: Record<AgentMode, number> = { enforce: 0, shadow: 0, off: 0 };
+  for (const s of sessions) {
+    const m = resolver.resolve(s.agentLabel);
+    modeSummary[m]++;
+  }
+  json(res, 200, { total, rows, modeSummary });
+}
+
+/**
+ * POST /api/agents/:label/mode — update a per-agent mode.
+ *
+ * Body: { mode: "enforce" | "shadow" | "off" }
+ * Gated by `config.dashboardModeControl === "mutate"`. Writes through the
+ * ConfigManager so the change persists in shroud.config.json and hot-reloads
+ * via the existing watch mechanism. Emits a security event `mode_change`
+ * so the Events tab shows an audit trail.
+ */
+function handleSetAgentMode(res: ServerResponse, deps: DashboardDeps, url: string, body: string): void {
+  if (deps.config.dashboardModeControl !== "mutate") {
+    json(res, 403, { error: "Dashboard mode control is read-only. Set dashboardModeControl: \"mutate\" in shroud.config.json to enable." });
+    return;
+  }
+  if (!deps.configManager) {
+    json(res, 500, { error: "ConfigManager not wired — cannot persist mode change." });
+    return;
+  }
+  const pathPart = url.slice("/api/agents/".length, url.length - "/mode".length);
+  const label = decodeURIComponent(pathPart);
+  if (!label) {
+    json(res, 400, { error: "Missing agent label in path." });
+    return;
+  }
+  let parsed: any;
+  try { parsed = JSON.parse(body || "{}"); } catch { parsed = {}; }
+  const mode = parsed.mode;
+  if (mode !== "enforce" && mode !== "shadow" && mode !== "off") {
+    json(res, 400, { error: `mode must be "enforce", "shadow", or "off" — got ${JSON.stringify(mode)}` });
+    return;
+  }
+  const existing = { ...(deps.configManager.getEffective().agents || {}) };
+  const prevMode = existing[label]?.mode;
+  existing[label] = { mode };
+  const { changedFields, warnings } = deps.configManager.setFields({ agents: existing });
+
+  // Emit audit event through the security bus so it shows in Events tab.
+  if (deps.securityBus) {
+    try {
+      deps.securityBus.emit({
+        id: `mode-change-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        kind: "mode_change" as any,
+        severity: "low",
+        agentLabel: label,
+        timestamp: Date.now(),
+        reason: `Agent mode changed from ${prevMode ?? "enforce"} to ${mode}`,
+        metadata: { prevMode: prevMode ?? "enforce", newMode: mode, source: "dashboard" },
+      } as any);
+    } catch { /* non-fatal */ }
+  }
+
+  json(res, 200, { ok: true, label, mode, prevMode: prevMode ?? "enforce", changedFields, warnings });
 }
 
 function handleAgentDetail(res: ServerResponse, deps: DashboardDeps, buildId: string, appSessions: AppSessionRecord[] = []) {
@@ -2157,6 +2313,36 @@ async function fetchJson(path) {
   return r.json();
 }
 
+/**
+ * Change an agent's ob/deob mode from the dashboard.
+ * Prompts for confirmation, POSTs to /api/agents/:label/mode, re-renders.
+ * Only works when config.dashboardModeControl === "mutate".
+ */
+async function shroudSetAgentMode(labelEnc, mode) {
+  const label = decodeURIComponent(labelEnc);
+  const warning = mode === 'off'
+    ? '\\n\\nWARNING: "off" disables obfuscation entirely for this agent. All PII will flow through unredacted.'
+    : mode === 'shadow'
+    ? '\\n\\nShadow mode detects and logs PII but will NOT replace it — outbound text is unchanged.'
+    : '';
+  if (!confirm('Change "' + label + '" mode to ' + mode.toUpperCase() + '?' + warning)) return;
+  try {
+    const r = await fetch(BASE + '/api/agents/' + encodeURIComponent(label) + '/mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    });
+    const body = await r.json();
+    if (!r.ok) {
+      alert('Mode change failed: ' + (body.error || r.statusText));
+      return;
+    }
+    renderObfuscation();
+  } catch (e) {
+    alert('Mode change error: ' + e.message);
+  }
+}
+
 function timeAgo(ts) {
   const s = Math.floor((Date.now() - ts) / 1000);
   // Show HH:MM:SS for recent events, relative for older
@@ -2360,7 +2546,7 @@ async function refresh() {
       html += '<div class="stat-mini"><span class="num">' + a.llmCallCount + '</span><span class="lbl">calls</span></div>';
       html += '<div class="stat-mini"><span class="num">' + (p.sessionCount||0) + '</span><span class="lbl">sessions</span></div>';
       html += '<div class="stat-mini"><span class="num green">' + (priv.entitiesObfuscated||0) + '</span><span class="lbl">obfuscated</span></div>';
-      html += '<div class="stat-mini"><span class="num">' + (priv.deobfuscationCalls||0) + '</span><span class="lbl">deobfuscated</span></div>';
+      html += '<div class="stat-mini"><span class="num">' + (priv.replacementsDeobfuscated||0) + '</span><span class="lbl">deobfuscated</span></div>';
       const evtN = a.securityEventCount;
       const evtLabel = evtN >= 10000 ? (evtN/1000).toFixed(1).replace(/\.0$/,'') + 'k' : evtN >= 1000 ? (evtN/1000).toFixed(1).replace(/\.0$/,'') + 'k' : evtN;
       html += '<div class="stat-mini"><span class="pill ' + eventPill + '" style="white-space:nowrap">' + evtLabel + ' evt</span></div>';
@@ -3527,7 +3713,52 @@ async function renderObfuscation() {
       html += '</div>';
     }
 
-    // ── Per-agent breakdown ──
+    // ── Per-agent mode summary + shadow feed ──
+    // Pulls data in parallel so the existing Obfuscation tab gets new capabilities
+    // without blocking the existing category and heatmap renders.
+    let modesData = null, shadowData = null;
+    try { modesData = await fetchJson('/api/agents/modes'); } catch { /* endpoint optional */ }
+    try { shadowData = await fetchJson('/api/shadow'); } catch { /* endpoint optional */ }
+
+    if (modesData || shadowData) {
+      const modeSummary = (shadowData && shadowData.modeSummary) || { enforce: 0, shadow: 0, off: 0 };
+      const mutable = modesData?.mutable === true;
+      const modeTile = (label, count, colour, tabHash) =>
+        '<div class="stat-group" style="cursor:pointer" onclick="window._shroudFilterMode=\\'' + tabHash + '\\';renderObfuscation()">' +
+        '<div class="stat" style="color:' + colour + '">' + count + '</div>' +
+        '<div class="stat-label">' + label + '</div></div>';
+      html += '<div class="card card-wide"><h2>Agent Modes';
+      html += mutable
+        ? ' <span style="font-size:10px;color:#d29922;margin-left:8px">● MUTABLE (dashboard can change modes)</span>'
+        : ' <span style="font-size:10px;color:var(--text-muted);margin-left:8px">○ read-only</span>';
+      html += '</h2>';
+      html += '<div class="stat-row" style="justify-content:flex-start;gap:40px">';
+      html += modeTile('Enforce', modeSummary.enforce || 0, 'var(--success)', 'enforce');
+      html += modeTile('Shadow',  modeSummary.shadow  || 0, '#d29922',        'shadow');
+      html += modeTile('Off',     modeSummary.off     || 0, '#8b949e',        'off');
+      html += modeTile('Total shadow hits', (shadowData && shadowData.total) || 0, '#f85149', 'all');
+      html += '</div></div>';
+    }
+
+    // Build a quick lookup: agentLabel -> mode
+    const _modeByLabel = {};
+    if (modesData && Array.isArray(modesData.agents)) {
+      for (const a of modesData.agents) _modeByLabel[a.label] = a.mode;
+    }
+    const _shadowByAgent = {};
+    if (shadowData && Array.isArray(shadowData.rows)) {
+      for (const r of shadowData.rows) {
+        if (!_shadowByAgent[r.agent]) _shadowByAgent[r.agent] = { hits: 0, topCat: null, topCatHits: 0 };
+        _shadowByAgent[r.agent].hits += r.hits;
+        if (r.hits > _shadowByAgent[r.agent].topCatHits) {
+          _shadowByAgent[r.agent].topCatHits = r.hits;
+          _shadowByAgent[r.agent].topCat = r.category;
+        }
+      }
+    }
+
+    // ── Per-agent breakdown (with mode controls) ──
+    const mutable = modesData?.mutable === true;
     html += '<div class="card card-wide"><h2>Per-Agent Privacy Stats</h2>';
     if (agents.length === 0) {
       html += '<p style="color:var(--text-muted)">No agents tracked yet.</p>';
@@ -3536,30 +3767,79 @@ async function renderObfuscation() {
       html += '<thead><tr style="border-bottom:2px solid var(--border);background:#161b22">';
       html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Agent</th>';
       html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Role</th>';
+      html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Mode</th>';
       html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Obf Calls</th>';
       html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Entities</th>';
       html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Deob Calls</th>';
       html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Restored</th>';
+      html += '<th style="text-align:right;padding:8px 10px;color:#d29922">Shadow hits</th>';
+      html += '<th style="text-align:left;padding:8px 10px;color:#d29922">Top shadow cat</th>';
       html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Top Categories</th>';
+      if (mutable) html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Actions</th>';
       html += '</tr></thead><tbody>';
       const sorted = [...agents].sort((a,b) => b.entitiesObfuscated - a.entitiesObfuscated);
       for (const a of sorted) {
         const topCats = Object.entries(a.categoryCounts || {}).sort((x,y) => y[1] - x[1]).slice(0, 3);
         const topCatStr = topCats.map(([c,n]) => c.replace(/_/g, ' ') + ' (' + n + ')').join(', ') || '—';
         const cls = a.classification || {};
+        const mode = _modeByLabel[a.agentLabel] || 'enforce';
+        const modeColour = mode === 'enforce' ? 'var(--success)' : mode === 'shadow' ? '#d29922' : '#8b949e';
+        const modePill = '<span class="mode-pill" data-agent="' + encodeURIComponent(a.agentLabel) + '" style="padding:2px 8px;border-radius:10px;background:' + modeColour + '22;color:' + modeColour + ';font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px">' + mode + '</span>';
+        const sh = _shadowByAgent[a.agentLabel];
+        const shadowHits = sh ? sh.hits : 0;
+        const shadowTop = sh ? (sh.topCat + ' (' + sh.topCatHits + ')') : '—';
         html += '<tr style="border-bottom:1px solid var(--border)">';
         html += '<td style="padding:6px 10px;color:var(--text-secondary);font-weight:500">' + a.agentLabel + '</td>';
         html += '<td style="padding:6px 10px;color:' + (cls.colour || '#8b949e') + '">' + (cls.role || '—') + '</td>';
+        html += '<td style="padding:6px 10px">' + modePill + '</td>';
         html += '<td style="padding:6px 10px;text-align:right">' + a.obfuscationCalls + '</td>';
         html += '<td style="padding:6px 10px;text-align:right;color:var(--success);font-weight:600">' + a.entitiesObfuscated + '</td>';
         html += '<td style="padding:6px 10px;text-align:right">' + a.deobfuscationCalls + '</td>';
         html += '<td style="padding:6px 10px;text-align:right;color:#58a6ff;font-weight:600">' + a.replacementsDeobfuscated + '</td>';
+        html += '<td style="padding:6px 10px;text-align:right;color:' + (shadowHits > 0 ? '#d29922' : 'var(--text-muted)') + ';font-weight:600">' + shadowHits + '</td>';
+        html += '<td style="padding:6px 10px;color:var(--text-muted);font-size:11px">' + shadowTop + '</td>';
         html += '<td style="padding:6px 10px;color:var(--text-muted);font-size:11px">' + topCatStr + '</td>';
+        if (mutable) {
+          html += '<td style="padding:6px 10px">';
+          // Show the two non-current modes as buttons — the natural next steps.
+          const allModes = ['enforce','shadow','off'];
+          for (const m of allModes) {
+            if (m === mode) continue;
+            const c = m === 'enforce' ? 'var(--success)' : m === 'shadow' ? '#d29922' : '#8b949e';
+            html += '<button onclick="shroudSetAgentMode(\\'' + encodeURIComponent(a.agentLabel) + '\\',\\'' + m + '\\')" style="margin-right:4px;padding:3px 8px;font-size:10px;background:transparent;border:1px solid ' + c + ';color:' + c + ';border-radius:3px;cursor:pointer;text-transform:uppercase">' + m + '</button>';
+          }
+          html += '</td>';
+        }
         html += '</tr>';
       }
       html += '</tbody></table>';
     }
     html += '</div>';
+
+    // ── Shadow feed (category rollup) ──
+    if (shadowData && shadowData.rows && shadowData.rows.length > 0) {
+      html += '<div class="card card-wide"><h2>Shadow Feed — Detections Without Replacement</h2>';
+      html += '<p style="color:var(--text-muted);font-size:11px;margin-bottom:12px">Agents in shadow mode detect PII but do not mutate the payload. This feed shows what would have been obfuscated, so you can tune rules before enforcing. Values are masked.</p>';
+      html += '<table style="width:100%;border-collapse:collapse;font-size:12px">';
+      html += '<thead><tr style="border-bottom:2px solid var(--border);background:#161b22">';
+      html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Agent</th>';
+      html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Category</th>';
+      html += '<th style="text-align:right;padding:8px 10px;color:var(--text-muted)">Hits</th>';
+      html += '<th style="text-align:left;padding:8px 10px;color:var(--text-muted)">Recent samples (masked)</th>';
+      html += '</tr></thead><tbody>';
+      for (const r of shadowData.rows) {
+        const samples = (r.samples || []).slice(-5).map(s =>
+          '<code style="padding:1px 4px;background:#0d1117;border-radius:2px;margin-right:4px">' + (s.masked || '***') + '</code>'
+        ).join('');
+        html += '<tr style="border-bottom:1px solid var(--border)">';
+        html += '<td style="padding:6px 10px;color:var(--text-secondary);font-weight:500">' + r.agent + '</td>';
+        html += '<td style="padding:6px 10px;color:#d29922">' + r.category.replace(/_/g, ' ') + '</td>';
+        html += '<td style="padding:6px 10px;text-align:right;font-weight:600">' + r.hits + '</td>';
+        html += '<td style="padding:6px 10px;font-size:11px">' + (samples || '<span style="color:var(--text-muted)">no recent samples</span>') + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></div>';
+    }
 
     // ── Per-agent category heatmap ──
     if (agents.length > 0) {

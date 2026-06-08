@@ -46,6 +46,11 @@ export class RedactionFormatter {
     this._counters.clear();
   }
 
+  /** Public mask helper — use for shadow-mode samples to keep raw values out of dashboards/logs. */
+  static mask(value: string, category: Category): string {
+    return (new RedactionFormatter())._mask(value, category);
+  }
+
   private _mask(value: string, category: Category): string {
     const len = value.length;
 

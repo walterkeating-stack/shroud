@@ -17,6 +17,7 @@ import type { BaseGenerator } from "./generators/base.js";
 import { NameGenerator } from "./generators/names.js";
 import { NetworkGenerator, SubnetMapper } from "./generators/network.js";
 import { CodeGenerator } from "./generators/codes.js";
+import { IdentifierGenerator } from "./generators/identifier.js";
 
 export class MappingEngine {
   private readonly _secretKey: Buffer;
@@ -46,6 +47,11 @@ export class MappingEngine {
       new NameGenerator(),
       new NetworkGenerator(subnetMapper ?? new SubnetMapper()),
       new CodeGenerator(),
+      // Format-preserving identifiers (hostnames, interface descriptions,
+      // custom inventory fields). Registered last so it owns these categories
+      // instead of the opaque [REDACTED-...] fallback — preserves shape so an
+      // agent can still suffix-match / group / dedup obfuscated values.
+      new IdentifierGenerator(),
     ];
     for (const gen of generators) {
       for (const cat of gen.categories) {

@@ -327,6 +327,7 @@ export default {
           policyEngine,
           agentSessionFile: `${profileDir}/agent-sessions.json`,
           driftDetector: (globalThis as any).__shroudDriftDetector ?? null,
+          configManager,
         });
         api.logger?.info(`[shroud] Security dashboard started on http://${runtime.dashboardBind}:${config.dashboardPort}`);
       } catch (err: any) {
