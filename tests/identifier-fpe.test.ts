@@ -180,4 +180,16 @@ describe("deobfuscation survives the LLM restoring an inferable token", () => {
     const out = (ob.deobfuscate(innocent) as any);
     expect(typeof out === "string" ? out : out.text).toBe(innocent);
   });
+
+  test("deobfuscateWithStats (the app-server path) also recovers restored tokens", () => {
+    const ob: any = new Obfuscator(cfg);
+    const reals = ["vvoondi1asr_01_new", "wgoormt1aro_new"];
+    const payload = JSON.stringify({ results: reals.map((n, i) => ({ url: `https://10.28.5.3/api/dcim/devices/${i}/`, name: n })) });
+    const fakes: string[] = JSON.parse(ob.obfuscate(payload).obfuscated).results.map((r: any) => r.name);
+    const rewritten = fakes.map((f) => f.replace(/[a-z0-9]+$/i, "new"));
+    const r = ob.deobfuscateWithStats("Devices: " + rewritten.join(", "));
+    const text = typeof r === "string" ? r : r.text;
+    for (const x of reals) expect(text).toContain(x);
+  });
 });
+

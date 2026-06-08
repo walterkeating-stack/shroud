@@ -792,6 +792,8 @@ export class Obfuscator {
     for (const [real, fake] of allMappings) {
       reverse.set(fake, real);
     }
+    // Recognise LLM-restored partial-real variants (same fix as deobfuscate()).
+    addPartialRealVariants(reverse, allMappings);
 
     const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
     const knownFakeSet = new Set(fakes);
