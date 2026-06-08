@@ -143,3 +143,41 @@ describe("end-to-end obfuscate/deobfuscate over a NetBox result", () => {
     expect(JSON.parse(backText).results.map((r: any) => r.name)).toEqual(names);
   });
 });
+
+describe("deobfuscation survives the LLM restoring an inferable token", () => {
+  const cfg: any = {
+    secretKey: "test-secret-key-1234567890abcdef", persistentSalt: "fixed-test-salt",
+    minConfidence: 0, allowlist: [], denylist: [], canaryEnabled: false,
+    canaryPrefix: "C", auditEnabled: false, logMappings: false, customPatterns: [],
+    verboseLogging: false, auditLogFormat: "human", auditIncludeProofHashes: false,
+    auditHashSalt: "", auditHashTruncate: 12, auditMaxFakesSample: 0, detectorOverrides: {},
+    tenantId: "ncg", maxToolDepth: 10, lockedCategories: [], exposureWindow: 60000,
+    exposureThresholds: {}, exposureGlobalThreshold: 100, policyFile: "", redactionLevel: "full",
+    sharedStorePath: "", sharedStoreTtlMs: 5000, provenanceTagging: false, sessionHandoff: false,
+    dryRun: false, maxStoreMappings: 0,
+  };
+
+  test("agent rewriting the obfuscated suffix back to '_new' still reverses", () => {
+    const ob = new Obfuscator(cfg);
+    const reals = ["vvoondi1asr_01_new", "vvoonsa4asw_new", "wgoormt1aro_new"];
+    const payload = JSON.stringify({
+      results: reals.map((n, i) => ({ url: `https://10.28.5.3/api/dcim/devices/${i}/`, name: n })),
+    });
+    const fakes: string[] = JSON.parse((ob.obfuscate(payload) as any).obfuscated).results.map((r: any) => r.name);
+    // none of the fakes leak the real names
+    for (const r of reals) expect(fakes.join(",")).not.toContain(r);
+    // simulate the LLM restoring the inferable suffix it knows from the query
+    const rewritten = fakes.map((f) => f.replace(/[a-z0-9]+$/i, "new"));
+    const out = (ob.deobfuscate("Devices: " + rewritten.join(", ")) as any);
+    const text = typeof out === "string" ? out : out.text;
+    for (const r of reals) expect(text).toContain(r);
+  });
+
+  test("does not reverse innocent text that was never obfuscated", () => {
+    const ob = new Obfuscator(cfg);
+    ob.obfuscate(JSON.stringify({ results: [{ url: "https://10.28.5.3/api/dcim/devices/1/", name: "vvoondi1asr_01_new" }] }));
+    const innocent = "The new router is online and the network is stable.";
+    const out = (ob.deobfuscate(innocent) as any);
+    expect(typeof out === "string" ? out : out.text).toBe(innocent);
+  });
+});

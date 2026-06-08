@@ -127,6 +127,62 @@ function stripSlackLinks(text: string): string {
   return text;
 }
 
+function _isAlnum(c: string): boolean {
+  return (c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || (c >= "0" && c <= "9");
+}
+
+/**
+ * True when `a` and `b` have identical "shape": same length, alnum vs separator
+ * at every position, and identical separator characters. This is exactly the
+ * property a format-preserving obfuscation (IdentifierGenerator) guarantees
+ * between a real value and its fake.
+ */
+function _fpeSameShape(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const aa = _isAlnum(a[i]);
+    if (aa !== _isAlnum(b[i])) return false;
+    if (!aa && a[i] !== b[i]) return false; // separators must match exactly
+  }
+  return true;
+}
+
+/**
+ * Augment the fake->real reverse map with "partial-real" variants.
+ *
+ * An LLM often restores an *inferable* sub-token of an obfuscated identifier —
+ * e.g. it knows the user queried for `_new` devices, so it rewrites the
+ * obfuscated suffix of `qaensls2roq_30_<fake>` back to `qaensls2roq_30_new`.
+ * That edited string no longer matches the stored fake, so exact-match
+ * deobfuscation leaves the (still-sensitive) fake prefix in place and leaks it.
+ *
+ * For each format-preserving (same-shape) pair we therefore add the variants
+ * produced by swapping ONE alnum run of the fake back to the real run, mapping
+ * each variant to the full real value. These are still exact strings (no fuzzy
+ * matching), so the existing combined-regex pass reverses them safely. Anchor:
+ * NCG /netbox 2026-06-08 delivered `qaensls2roq_30_new` instead of
+ * `vvoondi1asr_01_new`.
+ */
+function addPartialRealVariants(
+  reverse: Map<string, string>,
+  allMappings: Map<string, string>,
+): void {
+  const RUN = /[a-zA-Z0-9]+|[^a-zA-Z0-9]+/g;
+  for (const [real, fake] of allMappings) {
+    if (real === fake || !_fpeSameShape(real, fake)) continue;
+    const rRuns = real.match(RUN);
+    const fRuns = fake.match(RUN);
+    if (!rRuns || !fRuns || rRuns.length !== fRuns.length) continue;
+    for (let i = 0; i < fRuns.length; i++) {
+      if (!_isAlnum(fRuns[i][0]) || fRuns[i] === rRuns[i]) continue;
+      const variant = fRuns.slice(0, i).join("") + rRuns[i] + fRuns.slice(i + 1).join("");
+      if (variant === fake) continue;
+      // Never clobber a genuine fake mapping; first writer wins on collision.
+      if (!reverse.has(variant)) reverse.set(variant, real);
+    }
+  }
+}
+
 /**
  * Build a single combined regex from an array of literal strings.
  * Strings are escaped and joined with alternation (|), sorted longest-first
@@ -635,6 +691,9 @@ export class Obfuscator {
     for (const [real, fake] of allMappings) {
       reverse.set(fake, real);
     }
+    // Also recognise LLM-restored partial-real variants (e.g. the agent
+    // rewrote an inferable obfuscated suffix back to its real token).
+    addPartialRealVariants(reverse, allMappings);
 
     // Build a single combined regex for all fakes (longest-match-first).
     const fakes = [...reverse.keys()].sort((a, b) => b.length - a.length);
