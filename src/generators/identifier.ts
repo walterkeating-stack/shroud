@@ -63,15 +63,46 @@ function makeRng(seed: number): () => number {
 }
 
 /**
- * Map one same-class token to a deterministic, same-length fake of that class.
- * Seeded by the token itself so identical tokens always produce identical
- * fakes (consistency), independent of the surrounding value.
+ * Build a deterministic derangement (permutation with no fixed points) of an
+ * alphabet. Used for a bijective per-character substitution: distinct
+ * characters always map to distinct, different characters.
  */
-function mapToken(token: string, alphabet: string, category: string): string {
-  const rng = makeRng(fnv1a(`${category}:${PEPPER}:${token}`));
+function buildPerm(alphabet: string): string[] {
+  const a = alphabet.split("");
+  const rng = makeRng(fnv1a(`${PEPPER}:perm:${alphabet}`));
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = rng() % (i + 1);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  // Eliminate any fixed point (char mapping to itself) by swapping with a
+  // neighbour — keeps it a valid permutation, just no identity positions.
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === alphabet[i]) {
+      const k = i === a.length - 1 ? 0 : i + 1;
+      [a[i], a[k]] = [a[k], a[i]];
+    }
+  }
+  return a;
+}
+
+const PERM_LOWER = buildPerm(LOWER);
+const PERM_UPPER = buildPerm(UPPER);
+const PERM_DIGIT = buildPerm(DIGIT);
+
+/**
+ * Map one same-class token to a same-length fake via a fixed bijective
+ * per-character substitution. Identical tokens always produce identical fakes
+ * (consistency for grouping), and — crucially — DISTINCT same-length tokens
+ * always produce DISTINCT fakes (the substitution is injective per position),
+ * so two different device names can never collide onto the same fake. That
+ * eliminates the store's collision disambiguation (the spurious " 2" suffixes
+ * and the occasional un-reversible leaked name observed on NCG 2026-06-08).
+ */
+function mapToken(token: string, alphabet: string, _category: string): string {
+  const perm = alphabet === LOWER ? PERM_LOWER : alphabet === UPPER ? PERM_UPPER : PERM_DIGIT;
   let out = "";
   for (let i = 0; i < token.length; i++) {
-    out += alphabet[rng() % alphabet.length];
+    out += perm[alphabet.indexOf(token[i])];
   }
   return out;
 }

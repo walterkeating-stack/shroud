@@ -71,6 +71,17 @@ describe("IdentifierGenerator (format-preserving)", () => {
   });
 });
 
+  test("bijective: near-identical names never collide (no \" 2\" disambiguation)", () => {
+    const gen = new IdentifierGenerator();
+    const f = (x: string) => gen.generate(Category.HOSTNAME, 0, x);
+    const fam = ["1a","1b","2a","2b","3a","3b","4a","4b"].map(s => `vvoonsa${s}sw_new`);
+    const fakes = fam.map(f);
+    expect(new Set(fakes).size).toBe(fam.length);          // all distinct
+    for (const n of fam) expect(f(n)).not.toBe(n);          // none map to itself
+    expect(f("vvoonsa3asw_new")).not.toBe(f("vvoonsa4asw_new")); // the exact collision pair
+  });
+
+
 describe("end-to-end obfuscate/deobfuscate over a NetBox result", () => {
   const cfg: ShroudConfig = {
     secretKey: "test-secret-key-1234567890abcdef",
