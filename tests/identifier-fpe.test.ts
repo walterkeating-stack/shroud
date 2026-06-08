@@ -71,6 +71,20 @@ describe("IdentifierGenerator (format-preserving)", () => {
   });
 });
 
+  test("ORG_NAME (tenant/provider) is now bijective format-preserving", () => {
+    const gen = new IdentifierGenerator();
+    expect(gen.categories).toContain(Category.ORG_NAME);
+    const f = (x: string) => gen.generate(Category.ORG_NAME, 0, x);
+    const tenants = Array.from({ length: 30 }, (_, i) => `NET_ATM-T${String(i + 1).padStart(3, "0")}`);
+    const fakes = tenants.map(f);
+    expect(new Set(fakes).size).toBe(tenants.length);  // no collisions
+    for (const t of tenants) {
+      expect(shape(f(t))).toBe(shape(t));              // structure preserved
+      expect(f(t)).not.toBe(t);                        // actually obfuscated
+    }
+  });
+
+
   test("bijective: near-identical names never collide (no \" 2\" disambiguation)", () => {
     const gen = new IdentifierGenerator();
     const f = (x: string) => gen.generate(Category.HOSTNAME, 0, x);

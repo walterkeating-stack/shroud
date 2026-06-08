@@ -129,6 +129,13 @@ export class IdentifierGenerator implements BaseGenerator {
     // better fit than substituting a fake place name, so there is no separate
     // address carve-out.
     Category.LOCATION,
+    // Tenant / provider names (the netbox detector's ORG_NAME category), e.g.
+    // `NET_ATM-TOPSKY`. Structured, private, and the agent may group/filter by
+    // tenant — so they get the same bijective, collision-free, round-trippable
+    // treatment as the other identifiers rather than a semantic fake org name.
+    // (PERSON_NAME stays with the semantic NameGenerator — a fake person name is
+    // the right treatment for a real person, not a format-preserving scramble.)
+    Category.ORG_NAME,
   ];
 
   generate(category: Category, seed: number, original = ""): string {
