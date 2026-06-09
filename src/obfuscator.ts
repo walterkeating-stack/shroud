@@ -842,6 +842,58 @@ export class Obfuscator {
   }
 
   /**
+   * Scan-only leak check for the write path. Returns the fake tokens/components
+   * from the store that still appear in `text` (typically an already-
+   * deobfuscated tool-input payload about to be written to a backend).
+   *
+   * A non-empty result means the caller is about to write a value the model
+   * INVENTED or RECOMBINED from fakes — it was never a real value, so
+   * deobfuscate() could not reverse it. We detect this by the genuinely-
+   * obfuscated alnum RUNS of each fake (the parts that differ from the real
+   * value), so a composed value like "<fakehost>8/4/1" is caught even though
+   * the whole string is not an exact known fake. Plus residual CGNAT/ULA IPs.
+   *
+   * Does NOT mutate the store or reverse anything.
+   */
+  findResidualFakes(text: string): string[] {
+    if (!text) return [];
+    const hits = new Set<string>();
+    const allMappings = this._store.allMappings();
+    if (allMappings.size > 0) {
+      const RUN = /[a-zA-Z0-9]+|[^a-zA-Z0-9]+/g;
+      const components = new Set<string>();
+      for (const [real, fake] of allMappings) {
+        if (real === fake) continue;
+        const rRuns = real.match(RUN) || [];
+        const fRuns = fake.match(RUN) || [];
+        if (rRuns.length === fRuns.length && _fpeSameShape(real, fake)) {
+          // format-preserving: flag each obfuscated alnum run that differs from
+          // its real counterpart (>=4 chars, contains a letter -> distinctive)
+          for (let i = 0; i < fRuns.length; i++) {
+            const fr = fRuns[i];
+            if (fr.length >= 4 && /[A-Za-z]/.test(fr) && fr !== rRuns[i]) components.add(fr);
+          }
+        } else if (fake.length >= 4) {
+          // opaque / [REDACTED]-style fake: match the whole token
+          components.add(fake);
+        }
+      }
+      const sorted = [...components].sort((a, b) => b.length - a.length);
+      const re = buildCombinedFakeRegex(sorted);
+      if (re) {
+        re.lastIndex = 0;
+        for (const m of text.matchAll(re)) hits.add(m[0]);
+      }
+    }
+    // residual fake IPs the deobfuscator would also have reversed
+    const CGNAT = /\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}\b/g;
+    const ULA = /\bfd00:[0-9a-fA-F:]{2,39}\b/g;
+    for (const m of text.match(CGNAT) || []) hits.add(m);
+    for (const m of text.match(ULA) || []) hits.add(m);
+    return [...hits];
+  }
+
+  /**
    * Subnet-aware reverse mapping for CGNAT IPs not in the store.
    */
   private _deobfuscateResidualCgnat(text: string, knownFakes: Set<string>): { text: string; count: number } {

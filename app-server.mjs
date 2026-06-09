@@ -613,6 +613,26 @@ function handleDeobfuscate(id, params) {
   return jsonResult(id, result);
 }
 
+// Write-path leak guard: does `text` still contain any fake token/component?
+// Used by the client BEFORE a write reaches a backend. clean=false means the
+// payload carries a value the model invented/recombined from fakes (never a
+// real value) that deobfuscate() could not reverse. Scan-only; mutates nothing.
+function handleVerifyClean(id, params) {
+  const gate = requireIdentified(id);
+  if (gate) return gate;
+
+  if (!params || typeof params.text !== "string") {
+    return jsonError(id, ERR_BAD_PARAMS, "Missing required param: text");
+  }
+
+  const obf = resolvePartition(params);
+  const residual = typeof obf.findResidualFakes === "function"
+    ? obf.findResidualFakes(params.text)
+    : [];
+
+  return jsonResult(id, { clean: residual.length === 0, residual: residual.slice(0, 50) });
+}
+
 async function handleBatch(id, params) {
   const gate = requireIdentified(id);
   if (gate) return gate;
@@ -931,6 +951,7 @@ const METHODS = {
   identify: handleIdentify,
   obfuscate: handleObfuscate,
   deobfuscate: handleDeobfuscate,
+  verify_clean: handleVerifyClean,
   batch: handleBatch,
   reset: handleReset,
   stats: handleStats,
@@ -1034,6 +1055,7 @@ const handshake = {
   capabilities: [
     "obfuscate",
     "deobfuscate",
+    "verify_clean",
     "batch",
     "stats",
     "health",
